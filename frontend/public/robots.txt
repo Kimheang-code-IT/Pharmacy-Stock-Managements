@@ -1,0 +1,30 @@
+# Authenticated workspace — do not index private app routes.
+User-agent: *
+Disallow: /
+
+# Public assets required for link previews (Telegram / WhatsApp / Facebook / X).
+Allow: /logo.png
+Allow: /og-image.png
+Allow: /favicon.ico
+Allow: /robots.txt
+Allow: /auth/login
+Allow: /auth/forget-password
+
+# Social crawlers need the HTML page to read Open Graph tags.
+User-agent: TelegramBot
+Allow: /
+
+User-agent: facebookexternalhit
+Allow: /
+
+User-agent: Facebot
+Allow: /
+
+User-agent: Twitterbot
+Allow: /
+
+User-agent: WhatsApp
+Allow: /
+
+User-agent: LinkedInBot
+Allow: /

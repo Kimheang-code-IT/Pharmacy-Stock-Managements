@@ -1,0 +1,43 @@
+---
+description: Stock & POS repository conventions, approved pages, transactional inventory and debt rules, API integration, and migration boundaries
+globs:
+alwaysApply: true
+---
+
+# Stock & POS Management System rule
+
+Follow `AGENTS.md`. Treat `docs/stock_pos_ai_agent_project_spec.md` as the single source of truth, `docs/PAGE_ROUTE_MAP.md` as the exact UI/API allowlist, `docs/IMPLEMENTATION_PLAN.md` as the replacement sequence, `docs/DOCKER_INFRASTRUCTURE.md` for the **lean** Compose stack (no MinIO or Docker scheduler by default), and `docs/DO_NOT_USE.md` as the exclusion filter. Do not add `docs/prompts/`.
+
+## Migration boundary
+
+- The current HollyWing motorcycle-rental code is legacy migration input.
+- Build only the Stock & POS system. Do not add or retain user-facing rentals, motorcycles, fleet, rental charges, rental pricing, or rental-report behavior.
+- Reuse generic infrastructure only when it matches the new specification. Replace legacy domain code and tests slice by slice.
+- Preserve unrelated user edits and inspect a file before replacing it.
+
+## Product invariants
+
+- Use a modular monolith: Nuxt/Vue/TypeScript/Nuxt UI frontend and FastAPI/SQLAlchemy/PostgreSQL/Redis backend. Images are local disk. RabbitMQ, Celery beat, and extra Telegram containers are off by default.
+- New endpoints use `/api/v1`.
+- PostgreSQL is authoritative for business data; Redis stores only transient state and cache. Store images on local disk. Never store invoice PDFs or exports in object storage.
+- Daily expiry scans run inside the FastAPI process. Do not add a Docker scheduler.
+- RabbitMQ + Celery are not part of the default stack. Do not generate or store invoice PDFs.
+- Use decimal-safe money and quantity values.
+- One stock mutation service owns Stock In, Sale, Return, Adjustment, Damage, and Expiry.
+- Every stock change creates a movement record and participates in one database transaction.
+- POS sales, debt payments, and sequence allocation are atomic and permission checked.
+- Backend authorization is mandatory; hidden UI controls are not security.
+- Initial setup runs once. Telegram password-reset codes are hashed, expiring, single-use, attempt-limited, and rate-limited.
+- Telegram is approved for two Settings-configured expiry alerts and view-only keyboard stock inquiry (no mutations, no invoice/payment send). Invoices print in the browser only.
+
+## Page boundary
+
+Sidebar top-level items are limited to Dashboard, Stock, POS, Delivery Notes, Setup, Reports, and Administration. Authentication stays outside the sidebar.
+
+Setup expands to exactly: Categories, Units of Measure (UOM), Brands, Suppliers, Customers — routes under `/setup/*`.
+
+Sales, purchases, returns, debt ledgers, Stock In, Adjustment, Damage, Expiry, and expenses are not standalone pages. Place them in the approved parent page as actions, modals, drawers, tabs, detail sections, or reports. Operating expenses are added from the Finance Report table via Add Expense modal only (Finance itself stays under Reports — no chart on that page). Stock quantity history opens from Stock list cells as a short dialog. Delivery Notes is the approved page for tracking delivery of products customers bought.
+
+## Verification
+
+Run the focused tests for the changed slice, followed by relevant frontend test/typecheck/lint/build, backend pytest, and Compose validation. Never claim an unrun check passed.

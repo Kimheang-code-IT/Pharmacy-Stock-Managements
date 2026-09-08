@@ -1,0 +1,44 @@
+# Nuxt dev/build outputs
+.output
+.nuxt
+.nitro
+.cache
+.data
+dist
+.env
+.env.*
+!.env.example
+
+# Node dependencies
+node_modules
+# Commit lockfile to ensure same dependencies across dev envs
+# pnpm-lock.yaml
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# IDE/Tools
+.history
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/settings.json
+.idea
+.fleet
+.DS_Store
+Thumbs.db
+
+# Logs (runtime/output only — do not ignore app page folders)
+/logs
+*.log
+
+# Misc
+*.swp
+*.local
+coverage/
+.temp
+.pnpm-store
+
+.vercel
+

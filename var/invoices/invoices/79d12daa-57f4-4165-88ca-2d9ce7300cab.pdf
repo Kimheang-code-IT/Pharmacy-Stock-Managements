@@ -1,0 +1,55 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 1073 >>
+stream
+BT /F2 16 Tf 48 794.0 Td (My Shop) Tj ET
+BT /F1 10 Tf 48 772.0 Td () Tj ET
+BT /F1 10 Tf 48 756.0 Td (Invoice No: RCPT-00000064) Tj ET
+BT /F1 10 Tf 48 740.0 Td (Date: 2026-09-08 04:53:32) Tj ET
+BT /F1 10 Tf 48 724.0 Td (Cashier: System Administrator) Tj ET
+BT /F1 10 Tf 48 708.0 Td (Customer: Rep Customer 5c7fa2) Tj ET
+BT /F1 10 Tf 48 692.0 Td () Tj ET
+BT /F2 10 Tf 48 676.0 Td (Item                        Qty      Price    Discount    Total) Tj ET
+BT /F1 10 Tf 48 660.0 Td (Rep Widget 5c7fa2        2.0000      10.00       0.00      20.00) Tj ET
+BT /F1 10 Tf 48 644.0 Td () Tj ET
+BT /F1 10 Tf 48 628.0 Td (Subtotal: 20.00) Tj ET
+BT /F1 10 Tf 48 612.0 Td (Discount: 0.00) Tj ET
+BT /F1 10 Tf 48 596.0 Td (Delivery: 0.00) Tj ET
+BT /F2 10 Tf 48 580.0 Td (Grand Total: 20.00) Tj ET
+BT /F1 10 Tf 48 564.0 Td (Paid: 5.00) Tj ET
+BT /F1 10 Tf 48 548.0 Td (Change: 0.00) Tj ET
+BT /F1 10 Tf 48 532.0 Td (Debt Remaining: 15.00) Tj ET
+BT /F1 10 Tf 48 516.0 Td (Payment Method: CASH) Tj ET
+BT /F1 10 Tf 48 500.0 Td () Tj ET
+BT /F1 10 Tf 48 484.0 Td (Thank you for your purchase!) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000251 00000 n 
+0000001376 00000 n 
+0000001446 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+1521
+%%EOF

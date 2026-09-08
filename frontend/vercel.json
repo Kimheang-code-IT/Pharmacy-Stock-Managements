@@ -1,0 +1,10 @@
+{
+  "framework": "nuxtjs",
+  "installCommand": "corepack enable && corepack prepare pnpm@10.30.3 --activate && pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm build",
+  "env": {
+    "NUXT_PUBLIC_USE_MOCK_DATA": "false",
+    "NUXT_PUBLIC_API_BASE": "http://localhost:8000",
+    "NUXT_PUBLIC_SITE_URL": "https://docetra-delta.vercel.app"
+  }
+}

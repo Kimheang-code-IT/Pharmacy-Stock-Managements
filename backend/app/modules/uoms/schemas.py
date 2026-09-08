@@ -1,0 +1,39 @@
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class UOMCreate(BaseModel):
+    code: str = Field(min_length=1, max_length=50)
+    name: str = Field(min_length=1, max_length=200)
+    symbol: str = Field(min_length=1, max_length=20)
+    description: str | None = None
+    status: str = Field(default="ACTIVE", pattern="^(ACTIVE|INACTIVE)$")
+
+    class Config:
+        str_strip_whitespace = True
+
+
+class UOMUpdate(BaseModel):
+    code: str | None = Field(default=None, min_length=1, max_length=50)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    symbol: str | None = Field(default=None, min_length=1, max_length=20)
+    description: str | None = None
+    status: str | None = Field(default=None, pattern="^(ACTIVE|INACTIVE)$")
+
+    class Config:
+        str_strip_whitespace = True
+
+
+class UOMOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    code: str
+    name: str
+    symbol: str
+    description: str | None
+    status: str
+    created_at: datetime
+    updated_at: datetime

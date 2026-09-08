@@ -1,0 +1,81 @@
+# Production overlay for Stock & POS Management System.
+#
+# First-time setup on the production host:
+#   1. Copy this repo (needed for compose files + backend/rabbitmq.conf)
+#   2. Copy `.env.production.example` to `.env` and fill real secrets
+#   3. docker login ghcr.io -u YOUR_GITHUB_USERNAME
+#   4. docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+#   5. docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Do not pass `--build` on the production host; images come from GHCR.
+# Set IMAGE_TAG to `latest` (default here), a git SHA, or a version tag such as `v1.0.0`.
+#
+# Differences from development:
+# - Pulls pre-built images instead of building from source
+# - ENVIRONMENT=production, DEBUG=false
+# - CORS private-network helper disabled
+# - Database / Redis ports are not published to the host
+# - API port is not published (reverse proxy exposes `/api` and `/health`)
+# - MinIO / S3 are not used (images are a local API volume)
+# - RabbitMQ / Celery workers stay off unless Compose profiles are enabled
+# - Expiry scheduler runs inside the API process (no scheduler container)
+
+services:
+  db:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  rabbitmq:
+    ports: !reset []
+
+  api:
+    image: ${IMAGE_REGISTRY:-ghcr.io/kimheang-code-it/stock_pos}/api:${IMAGE_TAG:-latest}
+    build: !reset {}
+    pull_policy: ${PULL_POLICY:-always}
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DEBUG: ${DEBUG:-false}
+      CORS_ALLOW_PRIVATE_NETWORKS: ${CORS_ALLOW_PRIVATE_NETWORKS:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+    ports: !reset []
+
+  frontend:
+    image: ${IMAGE_REGISTRY:-ghcr.io/kimheang-code-it/stock_pos}/frontend:${IMAGE_TAG:-latest}
+    build: !reset {}
+    pull_policy: ${PULL_POLICY:-always}
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+
+  worker-default:
+    image: ${IMAGE_REGISTRY:-ghcr.io/kimheang-code-it/stock_pos}/api:${IMAGE_TAG:-latest}
+    build: !reset {}
+    pull_policy: ${PULL_POLICY:-always}
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DEBUG: ${DEBUG:-false}
+
+  worker-telegram:
+    image: ${IMAGE_REGISTRY:-ghcr.io/kimheang-code-it/stock_pos}/api:${IMAGE_TAG:-latest}
+    build: !reset {}
+    pull_policy: ${PULL_POLICY:-always}
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DEBUG: ${DEBUG:-false}
+
+  worker-export:
+    image: ${IMAGE_REGISTRY:-ghcr.io/kimheang-code-it/stock_pos}/api:${IMAGE_TAG:-latest}
+    build: !reset {}
+    pull_policy: ${PULL_POLICY:-always}
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DEBUG: ${DEBUG:-false}
+
+  telegram-bot:
+    image: ${IMAGE_REGISTRY:-ghcr.io/kimheang-code-it/stock_pos}/telegram-bot:${IMAGE_TAG:-latest}
+    build: !reset {}
+    pull_policy: ${PULL_POLICY:-always}
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DEBUG: ${DEBUG:-false}
