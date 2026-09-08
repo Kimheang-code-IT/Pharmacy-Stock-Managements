@@ -6,7 +6,7 @@ This file converts the product specification into an implementation allowlist. I
 
 | Topic | Rule |
 |---|---|
-| Invoices | Frontend HTML print only (`frontend/app/utils/print/`). Heading is វិក្កយបត្រ / INVOICE — no shop-name title. Khmer fonts. Empty line rows (A4 18 / A5 12). Bordered summary table. |
+| Invoices | Frontend HTML print only (`frontend/app/utils/print/`). Underlined heading វិក្កយបត្រ / INVOICE — no shop-name title. Khmer fonts; bold larger meta. Headers Khmer-over-English, center-aligned; **0.5px** borders. Empty filler rows ≈ **70%** printable height. Summary aligned to Price+Discount \| Amount; left/right/bottom borders only (no top); Buyer/Seller signatures. |
 | Delivery notes | HTML print from the list (**Delivery OK** + **Print**). POS sale snapshot only; no contact/driver form. Detail route optional. |
 | PDFs | Do not generate, store, or download invoice/receipt PDFs. No `GET /pos/sales/{id}/invoice.pdf`. |
 | Local images | Disk under `LOCAL_STORAGE_DIR`. Keys in PostgreSQL. `GET /api/v1/images/{key}`. No S3/MinIO. Never invoices. |
@@ -21,7 +21,7 @@ Default shop name: **Yoeun Sokhon Pharmacy**. Logo: `frontend/app/assets/images/
 | Navigation item | Frontend route | Purpose |
 |---|---|---|
 | Dashboard | `/` | Exactly four KPI cards in one desktop row; Income/Expense chart with auto-fit height; complete Business Summary |
-| Stock | `/stock` | Products with image thumbnails, stock qty columns + history dialogs, Expire Date before Status, stock-operation actions. **Stock In history dialog** includes **Add Stock In** (purchase form, product prefilled). Product tabs: **General** \| **Pricing** (No, Original UOM, Convert UOM, Conversion qty, Sale price, Default sale, delete) \| **Expire**. No Stock History tab |
+| Stock | `/stock` | Products with image thumbnails, stock qty columns + history dialogs, Expire Date before Status, stock-operation actions. **Stock In** / **Damage** history dialogs include toolbar **Add** (nested form, product locked). Product tabs: **General** \| **Pricing** (No, Original UOM, Convert UOM, Conversion qty, Sale price, Default sale, delete) \| **Expire**. No Stock History tab |
 | POS | `/pos` | Full-width POS. Cart UOM select = product Pricing Original UOMs; change UOM updates price from Pricing; print-only invoice |
 | Delivery Notes | `/delivery-notes` | Track delivery from POS sales. List: `AppListTable`, **Update Status**, Delivery OK, Print. Add: multi-select invoices (search on table) + phone/location; auto-open from POS with invoice preselected. Nested detail optional. |
 | Setup → Categories | `/setup/categories` | Category list and add/edit/disable actions |
@@ -31,8 +31,8 @@ Default shop name: **Yoeun Sokhon Pharmacy**. Logo: `frontend/app/assets/images/
 | Setup → Customers | `/setup/customers` | Customer list/add/edit (name, phone, location). List Outstanding Debt is read-only from POS. Sales/debt/delivery history is Reports / Delivery Notes |
 | Sales Report | `/reports/sales` | Sales reporting; row **Actions (`...`) → Return** (customer return modal) |
 | Purchase Report | `/reports/purchases` | Stock-in/purchase reporting; row **Actions (`...`) → Return** (return to supplier). New purchases via Stock In, not this page |
-| Customer Debt Report | `/reports/customer-debts` | Invoice-level debts with Date + Invoice No.; balances and payment history |
-| Supplier Debt Report | `/reports/supplier-debts` | Document-level debts with Date + Invoice/Purchase No.; balances and payment history |
+| Customer Debt Report | `/reports/customer-debts` | Invoice-level debts with Date + Invoice No.; row **Actions (`...`) → Pay** (payment modal); payment history |
+| Supplier Debt Report | `/reports/supplier-debts` | Document-level debts with Date + Invoice/Purchase No.; row **Actions (`...`) → Pay** (payment modal); payment history |
 | Finance Report | `/reports/finance` | Income/expense table (no chart); Add Expense modal; filters on table toolbar only |
 | Users | `/administration/users` | User and role assignment management |
 | Roles & Permissions | `/administration/roles` | Grouped permission management |
@@ -64,13 +64,13 @@ Authentication is outside the application sidebar.
 | Sale return (customer) | Sales Report row **Actions (`...`) → Return** (or sale detail action). Modal/drawer only — no `/returns` |
 | Purchase / supplier return | Purchase Report row **Actions (`...`) → Return**. Modal/drawer only — no `/returns` |
 | Purchase history | Purchase Report (search/filter). Not on supplier Setup records |
-| Customer debt/payment | Customer Debt Report (search/filter). Not on customer Setup records |
-| Supplier debt/payment | Supplier Debt Report (search/filter). Not on supplier Setup records |
-| Stock In (purchase) | Stock row action, **Stock In history dialog → Add Stock In**, or Setup → Supplier action/modal/drawer. Same form + `POST /stock/in` |
+| Customer debt/payment | Customer Debt Report: search/filter + row **Pay** modal (`payCustomerDebt`). Not on customer Setup records |
+| Supplier debt/payment | Supplier Debt Report: search/filter + row **Pay** modal (`paySupplierDebt`). Not on supplier Setup records |
+| Stock In (purchase) | Stock row action, **Stock In history dialog → Add Stock In** (nested form), or Setup → Supplier action/modal/drawer. Same form + `POST /stock/in` |
 | Stock Adjustment | Stock action/modal/drawer |
-| Stock Damage | Stock action/modal/drawer |
+| Stock Damage | Stock row action, or **Damage history dialog → Add Damage** (nested form). Same `createStockOperation` |
 | Stock Expiry | Stock action/modal/drawer |
-| Stock movement history for one product/qty column | Wide (~70% viewport) dialog from Stock list cells (**Stock In / Stock Out / Damage only**). Body uses `TableAppListTable`. **Stock In dialog** has **Add Stock In**. **Current Stock is a number only — not clickable, no dialog.** |
+| Stock movement history for one product/qty column | Wide (~70% viewport) dialog from Stock list cells (**Stock In / Stock Out / Damage only**). Body uses `TableAppListTable`. **Stock In** / **Damage** dialogs have toolbar **Add** (nested dialog on top). **Stock Out** read-only. **Current Stock is a number only — not clickable, no dialog.** |
 | Cost price history (stock-in lots) | Wide dialog from Stock list **Cost** cell. `TableAppListTable`: Date, Product name, Cost price, Qty, Amount, Version. Read-only. |
 | Sale price versions (POS-active) | Wide dialog from Stock list **Price** cell. `TableAppListTable`: Checkbox (exactly one POS-active), Date, Product name, Sale price. **Add Sale Price** in the dialog. |
 | Product Pricing (multi-UOM sale prices) | Product **Pricing** tab: No, Original UOM, Convert UOM, Conversion qty, Sale price, Default sale (one), delete. POS cart UOM select = Original UOMs; select UOM applies that row's sale price / factor. |

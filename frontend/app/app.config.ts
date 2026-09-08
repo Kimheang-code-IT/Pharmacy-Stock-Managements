@@ -28,6 +28,8 @@ export default defineAppConfig({
      */
     formField: {
       slots: {
+        root: 'w-full',
+        container: 'w-full',
         label: 'block text-sm font-medium text-toned',
         help: 'mt-1.5 text-xs text-muted leading-relaxed',
         error: 'mt-1.5 text-xs text-error',
@@ -76,6 +78,10 @@ export default defineAppConfig({
     },
 
     selectMenu: {
+      slots: {
+        // Override default inline-flex shrink-to-content so dialog/forms fill width.
+        base: 'relative group rounded-md flex w-full items-center disabled:cursor-not-allowed disabled:opacity-75 transition-colors',
+      },
       variants: {
         variant: {
           soft: 'text-highlighted bg-elevated/70 hover:bg-elevated focus:bg-elevated focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary focus-visible:outline-none disabled:bg-elevated/50 disabled:opacity-75 disabled:focus-visible:ring-0',
@@ -102,6 +108,10 @@ export default defineAppConfig({
     },
 
     inputNumber: {
+      slots: {
+        // Override default inline-flex shrink-to-content so qty/money fill the dialog.
+        root: 'relative flex w-full items-center',
+      },
       variants: {
         variant: {
           soft: 'text-highlighted bg-elevated/70 hover:bg-elevated focus:bg-elevated focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary focus-visible:outline-none disabled:bg-elevated/50 disabled:opacity-75 disabled:focus-visible:ring-0',

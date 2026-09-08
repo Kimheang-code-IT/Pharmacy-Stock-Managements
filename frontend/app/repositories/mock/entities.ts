@@ -810,13 +810,29 @@ export function createMockPosRepository(): PosCommandRepository {
       if (!customer) throw new Error(`Unknown customer: ${input.customerId}`)
       const amount = round2(Number(input.amount || 0))
       if (amount <= 0) throw new Error('Payment amount must be greater than zero')
-      if (amount > Number(customer.debtBalance || 0)) throw new Error('Payment exceeds the outstanding balance')
-      customer.debtBalance = round2(Number(customer.debtBalance || 0) - amount)
-      // Settle the customer's open debt documents oldest-first (immutable rows).
+
+      const openDebts = db.collections.customerDebts.filter(debt =>
+        String(debt.customerId) === String(customer.id) && Number(debt.remainingAmount || 0) > 0)
+
+      let targets = openDebts
+        .slice()
+        .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+      if (input.debtId) {
+        const selected = openDebts.find(debt => String(debt.id) === String(input.debtId))
+        if (!selected) throw new Error(`Unknown debt: ${input.debtId}`)
+        if (amount > Number(selected.remainingAmount || 0)) {
+          throw new Error('Payment exceeds the outstanding balance')
+        }
+        targets = [selected]
+      }
+      else if (amount > Number(customer.debtBalance || 0)) {
+        throw new Error('Payment exceeds the outstanding balance')
+      }
+
+      customer.debtBalance = round2(Math.max(0, Number(customer.debtBalance || 0) - amount))
       let left = amount
-      for (const debt of db.collections.customerDebts) {
+      for (const debt of targets) {
         if (left <= 0) break
-        if (String(debt.customerId) !== String(customer.id)) continue
         const remaining = round2(Number(debt.remainingAmount || 0))
         if (remaining <= 0) continue
         const applied = round2(Math.min(remaining, left))
@@ -833,10 +849,12 @@ export function createMockPosRepository(): PosCommandRepository {
           sale.status = stillOpen <= 0 ? 'Paid' : Number(sale.paidAmount) > 0 ? 'Partial' : 'Unpaid'
         }
       }
+
       const payment = mockInsert('customerDebtPayments', {
         date: nowIso().slice(0, 10),
         customerId: customer.id,
         customer: customer.name,
+        debtId: input.debtId || null,
         amount,
         paymentMethod: input.paymentMethod,
         reference: input.reference || sequenceNext('PAYMENT', 'PAY', 5),
@@ -852,13 +870,29 @@ export function createMockPosRepository(): PosCommandRepository {
       if (!supplier) throw new Error(`Unknown supplier: ${input.supplierId}`)
       const amount = round2(Number(input.amount || 0))
       if (amount <= 0) throw new Error('Payment amount must be greater than zero')
-      if (amount > Number(supplier.totalDebt || 0)) throw new Error('Payment exceeds the outstanding balance')
-      supplier.totalDebt = round2(Number(supplier.totalDebt || 0) - amount)
-      // Settle the supplier's open debt documents oldest-first (immutable rows).
+
+      const openDebts = db.collections.supplierDebts.filter(debt =>
+        String(debt.supplierId) === String(supplier.id) && Number(debt.remainingAmount || 0) > 0)
+
+      let targets = openDebts
+        .slice()
+        .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+      if (input.debtId) {
+        const selected = openDebts.find(debt => String(debt.id) === String(input.debtId))
+        if (!selected) throw new Error(`Unknown debt: ${input.debtId}`)
+        if (amount > Number(selected.remainingAmount || 0)) {
+          throw new Error('Payment exceeds the outstanding balance')
+        }
+        targets = [selected]
+      }
+      else if (amount > Number(supplier.totalDebt || 0)) {
+        throw new Error('Payment exceeds the outstanding balance')
+      }
+
+      supplier.totalDebt = round2(Math.max(0, Number(supplier.totalDebt || 0) - amount))
       let left = amount
-      for (const debt of db.collections.supplierDebts) {
+      for (const debt of targets) {
         if (left <= 0) break
-        if (String(debt.supplierId) !== String(supplier.id)) continue
         const remaining = round2(Number(debt.remainingAmount || 0))
         if (remaining <= 0) continue
         const applied = round2(Math.min(remaining, left))
@@ -875,10 +909,12 @@ export function createMockPosRepository(): PosCommandRepository {
           purchase.status = stillOpen <= 0 ? 'Completed' : 'Partial'
         }
       }
+
       const payment = mockInsert('supplierDebtPayments', {
         date: nowIso().slice(0, 10),
         supplierId: supplier.id,
         supplier: supplier.name,
+        debtId: input.debtId || null,
         amount,
         paymentMethod: input.paymentMethod,
         reference: input.reference || sequenceNext('PAYMENT', 'PAY', 5),

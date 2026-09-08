@@ -664,7 +664,17 @@
       "returnQtyRequired": "បញ្ចូលបរិមាណត្រឡប់យ៉ាងហោចណាស់មួយបន្ទាត់។",
       "returnOverQty": "បរិមាណត្រឡប់មិនអាចលើសបរិមាណដែលនៅអាចត្រឡប់បានទេ។",
       "returnSaved": "បានកត់ត្រាការត្រឡប់",
-      "returnFailed": "មិនអាចកត់ត្រាការត្រឡប់បានទេ"
+      "returnFailed": "មិនអាចកត់ត្រាការត្រឡប់បានទេ",
+      "pay": "បង់ប្រាក់",
+      "payCustomerDebtTitle": "បង់បំណុលអតិថិជន",
+      "paySupplierDebtTitle": "បង់បំណុលអ្នកផ្គត់ផ្គង់",
+      "remainingAmount": "នៅសល់",
+      "paymentAmount": "ចំនួនបង់",
+      "paymentOverRemaining": "ចំនួនបង់មិនអាចលើសសមតុល្យនៅសល់ទេ។",
+      "paymentReferenceHint": "លេខយោងបង្កាន់ដៃ / ផ្ទេរប្រាក់ (ជាជម្រើស)",
+      "confirmPayment": "បញ្ជាក់ការបង់",
+      "paymentSaved": "បានកត់ត្រាការបង់ប្រាក់",
+      "paymentFailed": "មិនអាចកត់ត្រាការបង់ប្រាក់បានទេ"
     },
     "stock": {
       "negativeHint": "បរិមាណខូចខាត និងផុតកំណត់នឹងត្រូវដកចេញពីស្តុកបច្ចុប្បន្ន។",
@@ -672,6 +682,8 @@
       "historyTitleStockOut": "ប្រវត្តិស្តុកចេញ",
       "historyTitleDamage": "ប្រវត្តិទំនិញខូច",
       "noHistory": "មិនមានប្រវត្តិ",
+      "addStockIn": "បន្ថែមស្តុកចូល",
+      "addDamage": "បន្ថែមទំនិញខូច",
       "costPriceHistory": "ប្រវត្តិតម្លៃទិញ",
       "salePriceHistory": "ប្រវត្តិតម្លៃលក់",
       "costPrice": "តម្លៃទិញ",

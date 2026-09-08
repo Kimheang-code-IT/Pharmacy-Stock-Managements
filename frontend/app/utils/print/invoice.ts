@@ -2,22 +2,6 @@ import { formatMoney } from '~/utils/format/format-service'
 import { cartTotal, lineNet, type PosCartLine } from '~/utils/pos/cart'
 import { escapeHtml, PAPER_STYLES, printHtmlDocument, type PrintPaperSize } from '~/utils/print/html'
 
-/** Fixed invoice chrome above/below the grid (title, meta, totals, signatures) at scale 1, mm. */
-const CHROME_MM = 84
-/** Fewest grid rows so even a one-line invoice reads like a shop form. */
-const MIN_GRID_ROWS = 18
-
-/**
- * Grid rows that fit between the invoice chrome and the page bottom on the
- * given paper — the bordered grid fills the printable area on both A4 and A5
- * with the same logic (printable height ÷ row height, per paper metrics).
- */
-function totalGridRows(paperSize: PrintPaperSize): number {
-  const style = PAPER_STYLES[paperSize]
-  const gridMm = Math.max(0, style.printableMm - CHROME_MM * style.scalePx)
-  return Math.max(MIN_GRID_ROWS, Math.floor(gridMm / style.rowMm))
-}
-
 export type SaleInvoicePrintLine = Pick<
   PosCartLine,
   'name' | 'uom' | 'quantity' | 'unitPrice' | 'discountPercent'
@@ -49,8 +33,19 @@ function asCartLine(line: SaleInvoicePrintLine): PosCartLine {
   }
 }
 
+/**
+ * Empty filler rows so the lines grid fills ~70% of the printable page
+ * height (shop-form look) without forcing a short sale onto page 2 when
+ * product rows already cover that space.
+ */
 function emptyInvoiceRows(filled: number, paperSize: PrintPaperSize): string {
-  const missing = Math.max(0, totalGridRows(paperSize) - filled)
+  const style = PAPER_STYLES[paperSize]
+  const targetMm = style.printableMm * 0.7
+  const headerMm = style.rowMm * 1.6
+  const bodyMm = Math.max(0, targetMm - headerMm)
+  const totalRows = Math.max(filled, Math.floor(bodyMm / style.rowMm))
+  // Trim 3 filler rows so the grid stays shorter and totals fit on page 1.
+  const missing = Math.max(0, totalRows - filled - 3)
   return Array.from({ length: missing }, () => `
     <tr class="empty">
       <td class="num">&nbsp;</td>
@@ -63,6 +58,20 @@ function emptyInvoiceRows(filled: number, paperSize: PrintPaperSize): string {
     </tr>`).join('')
 }
 
+function summaryRow(label: string, amountHtml: string, strong = false): string {
+  const cls = strong ? ' class="strong"' : ''
+  return `
+      <tr${cls}>
+        <td class="spacer" colspan="4"></td>
+        <td class="label" colspan="2">${label}</td>
+        <td class="num">${amountHtml}</td>
+      </tr>`
+}
+
+/**
+ * Build invoice HTML. Product rows + empty fillers (~70% page height).
+ * Totals label aligns with Price+Discount; amount aligns with Amount.
+ */
 export function buildSaleInvoiceHtml(
   input: SaleInvoicePrintInput,
   paperSize: PrintPaperSize = 'A4',
@@ -73,13 +82,24 @@ export function buildSaleInvoiceHtml(
   const rows = lines.map((line, index) => `
     <tr>
       <td class="num">${index + 1}</td>
-      <td>${escapeHtml(line.name)}</td>
+      <td class="product">${escapeHtml(line.name)}</td>
       <td>${escapeHtml(line.uom || '—')}</td>
       <td class="num">${escapeHtml(line.quantity)}</td>
       <td class="num">${money(line.unitPrice)}</td>
       <td class="num">${escapeHtml(line.discountPercent || 0)}%</td>
       <td class="num">${money(lineNet(line))}</td>
     </tr>`).join('')
+
+  const colgroup = `
+    <colgroup>
+      <col class="col-no">
+      <col class="col-product">
+      <col class="col-unit">
+      <col class="col-qty">
+      <col class="col-price">
+      <col class="col-discount">
+      <col class="col-amount">
+    </colgroup>`
 
   return `
 <article class="doc">
@@ -95,51 +115,38 @@ export function buildSaleInvoiceHtml(
     </div>
   </div>
   <table class="lines">
-    <colgroup>
-      <col class="col-no">
-      <col class="col-product">
-      <col class="col-unit">
-      <col class="col-qty">
-      <col class="col-price">
-      <col class="col-discount">
-      <col class="col-amount">
-    </colgroup>
+    ${colgroup}
     <thead>
       <tr>
-        <th>ល.រ N°</th>
-        <th>មុខទំនិញ Product</th>
-        <th>ឯកតា Unit</th>
-        <th class="num">ចំនួន Qty</th>
-        <th class="num">តម្លៃ Price</th>
-        <th class="num">បញ្ចុះតម្លៃ Discount</th>
-        <th class="num">តម្លៃសរុប Amount</th>
+        <th>ល.រ<span>N°</span></th>
+        <th>មុខទំនិញ<span>Product</span></th>
+        <th>ឯកតា<span>Unit</span></th>
+        <th class="num">ចំនួន<span>Qty</span></th>
+        <th class="num">តម្លៃ<span>Price</span></th>
+        <th class="num">បញ្ចុះតម្លៃ<span>Discount</span></th>
+        <th class="num">តម្លៃសរុប<span>Amount</span></th>
       </tr>
     </thead>
     <tbody>${rows}${emptyInvoiceRows(lines.length, paperSize)}</tbody>
   </table>
   <div class="totals">
     <table class="summary">
-      <tr>
-        <td class="label">ទឹកប្រាក់សរុប Total Amount</td>
-        <td class="num">${money(total)}</td>
-      </tr>
-      <tr>
-        <td class="label">តម្លៃដឹកជញ្ជូន Delivery</td>
-        <td class="num">${money(input.deliveryPrice)}</td>
-      </tr>
-      <tr>
-        <td class="label">បានទូទាត់ Deposit</td>
-        <td class="num">${money(input.depositAmount)}</td>
-      </tr>
-      <tr class="strong">
-        <td class="label">ខ្វះសរុប</td>
-        <td class="num">${money(input.outstandingAmount)}</td>
-      </tr>
+      ${colgroup}
+      ${summaryRow('ទឹកប្រាក់សរុប / Total Amount', money(total))}
+      ${summaryRow('តម្លៃដឹកជញ្ជូន_____/_____/_____', money(input.deliveryPrice))}
+      ${summaryRow('បានទូទាត់_____/_____/_____', money(input.depositAmount))}
+      ${summaryRow('ខ្វះសរុប', money(input.outstandingAmount), true)}
     </table>
   </div>
-  <div class="signs">
-    <p>អ្នកទិញ / Buyer</p>
-    <p>អ្នកលក់ / Seller</p>
+  <div class="signs"> 
+    <div class="sign">
+      <div class="line"></div>
+      <p>អ្នកទិញ / Buyer</p>
+    </div>
+    <div class="sign">
+      <div class="line"></div>
+      <p>អ្នកលក់ / Seller</p>
+    </div>
   </div>
 </article>`
 }

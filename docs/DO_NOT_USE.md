@@ -90,6 +90,8 @@ Use:
 NUXT_PUBLIC_USE_MOCK_DATA=true
 ```
 
+(Mock is the default when the env var is unset or not `false`. Set `NUXT_PUBLIC_USE_MOCK_DATA=false` only when a live `/api/v1` backend is available.)
+
 and `frontend/app/mocks/` seed/query helpers.
 
 ## 5. Data / architecture anti-patterns — do not use

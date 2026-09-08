@@ -27,6 +27,7 @@ import { usePosCommands } from '~/repositories/index'
 import { productImageUrl } from '~/utils/pos/cart'
 import { STOCK_OPERATION_META, STOCK_OPERATION_TYPES, type StockHistoryKind, type StockOperationType } from '~/config/pos-options'
 import { documentHasReturnableLines, type ReturnDocumentKind } from '~/utils/reports/returns'
+import type { DebtPaymentKind } from '~/components/reports/DebtPaymentDialog'
 
 const { module, route } = useModuleRoute()
 const store = useAppDataStore()
@@ -59,16 +60,22 @@ const returnOpen = ref(false)
 const returnKind = ref<ReturnDocumentKind>('sale')
 const returnDocument = ref<AppRecord | null>(null)
 const returnBusy = ref(false)
+const debtPayOpen = ref(false)
+const debtPayKind = ref<DebtPaymentKind>('customer')
+const debtPayRow = ref<AppRecord | null>(null)
+const debtPayBusy = ref(false)
 
 const current = computed(() => module.value)
 const pending = computed(() => Boolean(current.value && store.isLoading(current.value.collection)))
 const isTableOnly = computed(() => Boolean(current.value?.tableOnly))
-/** Sales / Purchase reports stay table-only but still need Actions → Return. */
+/** Table-only reports that still need row actions (Return / Pay). */
 const showRowActions = computed(() => {
   if (!isTableOnly.value) return true
   const collection = current.value?.collection
   if (collection === 'sales') return canReturnSale.value
   if (collection === 'stockIns') return canReturnPurchase.value
+  if (collection === 'customerDebts') return canPayCustomerDebt.value
+  if (collection === 'supplierDebts') return canPaySupplierDebt.value
   return false
 })
 const permissionPrefix = computed(() => current.value?.permission.replace(/\.view$/, '') || '')
@@ -99,6 +106,18 @@ const canReturnPurchase = computed(() =>
   auth.canAccessPage('products.edit')
   || auth.canAccessPage('products.operate')
   || auth.canAccessPage('products.create'),
+)
+const canPayCustomerDebt = computed(() =>
+  auth.canAccessPage('customers.edit')
+  || auth.canAccessPage('customers.operate')
+  || auth.canAccessPage('reports.view')
+  || auth.canAccessPage('ALL_PAGES'),
+)
+const canPaySupplierDebt = computed(() =>
+  auth.canAccessPage('suppliers.edit')
+  || auth.canAccessPage('suppliers.operate')
+  || auth.canAccessPage('reports.view')
+  || auth.canAccessPage('ALL_PAGES'),
 )
 const deactivationOnly = computed(() => current.value?.group === 'master' || current.value?.collection === 'documentSequences')
 const dateField = computed(() => {
@@ -210,11 +229,18 @@ type StockPriceKind = (typeof STOCK_PRICE_KIND)[keyof typeof STOCK_PRICE_KIND]
 const stockHistoryOpen = ref(false)
 const stockHistoryProduct = ref<AppRecord | null>(null)
 const stockHistoryKind = ref<StockHistoryKind>('stock_in')
+const stockHistoryReloadKey = ref(0)
 
 function openStockHistory(row: Record<string, unknown>, kind: StockHistoryKind) {
   stockHistoryProduct.value = row as AppRecord
   stockHistoryKind.value = kind
   stockHistoryOpen.value = true
+}
+
+function onStockHistorySaved() {
+  void store.fetchList('products')
+  void store.fetchList('stockMovements')
+  stockHistoryReloadKey.value += 1
 }
 
 const costPriceOpen = ref(false)
@@ -347,6 +373,26 @@ function rowMenuItems(row: Record<string, unknown>): DropdownMenuItem[][] {
       color: 'warning',
       disabled: !documentHasReturnableLines(row as AppRecord),
       onSelect: () => openReturn('purchase', row as AppRecord),
+    }]]
+  }
+  if (collection === 'customerDebts') {
+    if (!canPayCustomerDebt.value) return []
+    return [[{
+      label: t('app.reports.pay'),
+      icon: 'i-lucide-hand-coins',
+      color: 'success',
+      disabled: Number(row.remainingAmount || 0) <= 0,
+      onSelect: () => openDebtPayment('customer', row as AppRecord),
+    }]]
+  }
+  if (collection === 'supplierDebts') {
+    if (!canPaySupplierDebt.value) return []
+    return [[{
+      label: t('app.reports.pay'),
+      icon: 'i-lucide-hand-coins',
+      color: 'success',
+      disabled: Number(row.remainingAmount || 0) <= 0,
+      onSelect: () => openDebtPayment('supplier', row as AppRecord),
     }]]
   }
   const items: DropdownMenuItem[] = [
@@ -492,7 +538,9 @@ const columns = computed<TableColumn<Record<string, unknown>>[]>(() => {
       ? [listTableRowMetaColumn<Record<string, unknown>>({
           summary: pageSummary.value,
           items: rowMenuItems,
-          loadingId: busyId.value || (returnBusy.value ? String(returnDocument.value?.id || '') : ''),
+          loadingId: busyId.value
+            || (returnBusy.value ? String(returnDocument.value?.id || '') : '')
+            || (debtPayBusy.value ? String(debtPayRow.value?.id || '') : ''),
         })]
       : []),
   ]
@@ -502,6 +550,12 @@ function openReturn(kind: ReturnDocumentKind, row: AppRecord) {
   returnKind.value = kind
   returnDocument.value = row
   returnOpen.value = true
+}
+
+function openDebtPayment(kind: DebtPaymentKind, row: AppRecord) {
+  debtPayKind.value = kind
+  debtPayRow.value = row
+  debtPayOpen.value = true
 }
 
 async function submitReturn(payload: {
@@ -545,6 +599,55 @@ async function submitReturn(payload: {
   }
   finally {
     returnBusy.value = false
+    busyId.value = ''
+  }
+}
+
+async function submitDebtPayment(payload: {
+  kind: DebtPaymentKind
+  debtId: string
+  partyId: string
+  amount: number
+  paymentMethod: string
+  reference: string | null
+}) {
+  debtPayBusy.value = true
+  busyId.value = payload.debtId
+  try {
+    if (payload.kind === 'customer') {
+      await posCommands.payCustomerDebt({
+        customerId: payload.partyId,
+        debtId: payload.debtId,
+        amount: payload.amount,
+        paymentMethod: payload.paymentMethod,
+        reference: payload.reference,
+      })
+      await store.fetchList('customerDebts')
+      await store.fetchList('customers')
+    }
+    else {
+      await posCommands.paySupplierDebt({
+        supplierId: payload.partyId,
+        debtId: payload.debtId,
+        amount: payload.amount,
+        paymentMethod: payload.paymentMethod,
+        reference: payload.reference,
+      })
+      await store.fetchList('supplierDebts')
+      await store.fetchList('suppliers')
+    }
+    debtPayOpen.value = false
+    toast.add({ title: t('app.reports.paymentSaved'), color: 'success' })
+  }
+  catch (error: unknown) {
+    toast.add({
+      title: t('app.reports.paymentFailed'),
+      description: error instanceof Error ? error.message : String(error),
+      color: 'error',
+    })
+  }
+  finally {
+    debtPayBusy.value = false
     busyId.value = ''
   }
 }
@@ -735,6 +838,7 @@ async function submitStockOperation() {
     stockOperationOpen.value = false
     void store.fetchList('products')
     void store.fetchList('stockMovements')
+    if (stockHistoryOpen.value) stockHistoryReloadKey.value += 1
     toast.add({
       title: `${stockOperationMeta.value.label}: ${record.reference}`,
       description: `${record.product} · Qty ${record.quantity}`,
@@ -846,18 +950,20 @@ function filterItems(filter: { options?: readonly ModuleSelectOption[] | ModuleS
       size="sm"
       :loading="stockOperationBusy"
     >
-      <div class="space-y-3">
+      <div class="w-full space-y-3">
         <CommonAppSelectMenuField
           v-model="stockOperationProduct"
           :items="productOptions"
           :label="t('app.pos.product')"
           :required="true"
+          class="w-full"
         />
         <CommonAppSelectMenuField
           v-if="stockOperationType === 'stock_in'"
           v-model="stockOperationUomId"
           :items="stockOperationUomOptions"
           :label="t('app.pos.uom')"
+          class="w-full"
         />
         <CommonAppNumberField
           v-model="stockOperationQuantity"
@@ -880,6 +986,7 @@ function filterItems(filter: { options?: readonly ModuleSelectOption[] | ModuleS
           :min="0"
           :step="0.01"
           :help="t('app.stock.convCostHint')"
+          class="w-full"
         />
         <CommonAppTextareaField
           v-model="stockOperationNote"
@@ -916,6 +1023,9 @@ function filterItems(filter: { options?: readonly ModuleSelectOption[] | ModuleS
       v-model:open="stockHistoryOpen"
       :product="stockHistoryProduct"
       :kind="stockHistoryKind"
+      :can-add="canOperate"
+      :reload-key="stockHistoryReloadKey"
+      @saved="onStockHistorySaved"
     />
 
     <StockCostHistoryDialog
@@ -934,6 +1044,14 @@ function filterItems(filter: { options?: readonly ModuleSelectOption[] | ModuleS
       :document="returnDocument"
       :currency="preferences.currency"
       @submit="submitReturn"
+    />
+
+    <ReportsDebtPaymentDialog
+      v-model:open="debtPayOpen"
+      :kind="debtPayKind"
+      :debt="debtPayRow"
+      :currency="preferences.currency"
+      @submit="submitDebtPayment"
     />
   </div>
   <div v-else class="grid h-full min-h-0 flex-1 place-items-center p-8">

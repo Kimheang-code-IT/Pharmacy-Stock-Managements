@@ -31,7 +31,7 @@ This plan guides replacement of the legacy motorcycle-rental application. Produc
 
 - Implement the canonical stock mutation service and immutable stock movements.
 - Add Stock In, Adjustment, Damage, Expiry, product/batch history, locking, validation, audit, and rollback tests.
-- Supplier purchases and supplier debts are created from confirmed Stock In transactions. Stock In history dialog exposes **Add Stock In** (product prefilled) using the same purchase form.
+- Supplier purchases and supplier debts are created from confirmed Stock In transactions. Stock In history dialog exposes **Add Stock In** (nested form, product locked). Damage history dialog exposes **Add Damage** the same way.
 - Sales Report / Purchase Report include row **Actions (`...`) → Return** (customer return / return to supplier). No `/returns` page.
 
 ## Phase 4: POS, payments, and returns
@@ -41,10 +41,10 @@ This plan guides replacement of the legacy motorcycle-rental application. Produc
 - Cart UOM select is **per product** from Pricing **Original UOM** rows; Default sale pre-selects on add; changing UOM updates unit price and remaining stock; sale stocks out `qty × factor_to_base` in base/Convert UOM.
 - Implement cart rules, per-line unit price/discount, discount permissions/settings, customer selection, cash/Bank-QR/customer-debt payments, receipt numbering, and printing.
 - Complete sales atomically and use the canonical stock service.
-- Return a JSON receipt/print payload. The frontend prints bilingual HTML through the browser/OS print dialog (`frontend/app/utils/print/`). Do **not** generate, store, or download invoice PDFs; do not add `GET /pos/sales/{id}/invoice.pdf`.
+- Return a JSON receipt/print payload. The frontend prints bilingual HTML through the browser/OS print dialog (`frontend/app/utils/print/`: underlined title, Khmer/English stacked headers, ~70% filler rows, summary aligned to Amount column). Do **not** generate, store, or download invoice PDFs; do not add `GET /pos/sales/{id}/invoice.pdf`.
 - Add optional post-sale **Create Delivery Note** auto-open (invoice preselected; same customer may add more invoices). Fulfillment only — no second stock-out.
 - Add sale-return (restock) and purchase-return (supplier) behavior without a standalone Returns page; wire from Sales/Purchase Report row actions.
-- Implement immutable customer and supplier debt payments with partial/full settlement.
+- Implement immutable customer and supplier debt payments with partial/full settlement from Debt Report row **Actions (`...`) → Pay** (not Setup party documents).
 
 ## Phase 4b: Delivery Notes
 
@@ -58,7 +58,7 @@ This plan guides replacement of the legacy motorcycle-rental application. Produc
 
 - Dashboard: exactly four desktop KPI cards in one row (no Sales This Month card), Income/Expense chart with auto-fit height on all devices, and a complete Business Summary panel (system-wide metrics).
 - Implement the five and only five reports with server-side filtering, print, and **HTTP CSV export** (no MinIO export artifacts).
-- Customer Debt Report and Supplier Debt Report use **document-level rows** with required **Date** and **Invoice No.** / Purchase No. columns (not party-only aggregates that hide those fields). Party totals may be summary cards above the table.
+- Customer Debt Report and Supplier Debt Report use **document-level rows** with required **Date** and **Invoice No.** / Purchase No. columns (not party-only aggregates that hide those fields). Party totals may be summary cards above the table. Each open/partial row supports **Actions (`...`) → Pay**.
 - Finance Report: **no chart**; income/expense **table** with Add Expense modal; AppHeader has no date filter/refresh — filters stay on the table toolbar.
 - Verify cost of goods sold, gross profit, damage loss, expiry loss, debts, and net result against transaction data.
 

@@ -27,9 +27,7 @@ export const PRINT_FONT_LINKS = `<link rel="preconnect" href="https://fonts.goog
 
 /**
  * Print paper metrics. There is **one** invoice style; A5 is the same style
- * scaled down (px metrics × scalePx) on a smaller printable area. The grid
- * row height per paper drives how many filler rows fit below the invoice
- * chrome, so both sizes fill their page with the same bordered layout.
+ * scaled down (px metrics × scalePx) on a smaller printable area.
  */
 export const PAPER_STYLES: Record<PrintPaperSize, {
   page: 'A4' | 'A5'
@@ -38,7 +36,7 @@ export const PAPER_STYLES: Record<PrintPaperSize, {
   scalePx: number
   /** Printable height after @page margins (mm). */
   printableMm: number
-  /** One invoice grid row on paper (mm) — text line + cell padding. */
+  /** Typical line-row height on paper (mm) — used for layout estimates. */
   rowMm: number
 }> = {
   A4: { page: 'A4', marginMm: 8, scalePx: 1, printableMm: 281, rowMm: 6 },
@@ -48,17 +46,18 @@ export const PAPER_STYLES: Record<PrintPaperSize, {
 /** Base (A4-scale) invoice px metrics used by printPageCss. */
 const BASE_PX = {
   font: 10,
-  title: 13,
+  title: 16,
+  meta: 13,
   padX: 3,
   padY: 2,
-  summaryWidth: 210,
   signsTop: 24,
   signsGap: 24,
 } as const
 
 /**
- * Page CSS for a paper size. One shared template for A4 and A5 — the lines
- * grid and summary table are bordered on both; only the scale differs.
+ * Page CSS for a paper size. Shop-form invoice: underlined title, larger
+ * meta, gray header, empty filler rows (~70% printable height), totals
+ * aligned to Price+Discount | Amount (no top border on summary cells).
  */
 export function printPageCss(size: PrintPaperSize): string {
   const style = PAPER_STYLES[size]
@@ -75,36 +74,116 @@ html, body {
   background: #fff;
   color: #000;
   font-size: ${px(BASE_PX.font)};
-  line-height: 1.25;
-  font-weight: 700;
+  line-height: 1.3;
+  font-weight: 400;
 }
 .doc { width: 100%; }
-.title { text-align: center; font-size: ${px(BASE_PX.title)}; font-weight: 700; margin: 0 0 5px; }
-.meta { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 5px; }
-.meta p { margin: 0 0 1px; font-weight: 700; }
+.title {
+  text-align: center;
+  font-size: ${px(BASE_PX.title)};
+  font-weight: 700;
+  margin: 0 0 10px;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+  font-size: ${px(BASE_PX.meta)};
+  font-weight: 700;
+}
+.meta p {
+  margin: 0 0 5px;
+  font-weight: 700;
+  font-size: ${px(BASE_PX.meta)};
+  line-height: 1.45;
+}
+.meta strong { font-weight: 700; }
 .meta .right { text-align: right; }
 table { width: 100%; border-collapse: collapse; }
-table.lines { table-layout: fixed; }
-th, td { border: 1px solid #000; padding: ${pad}; vertical-align: top; }
-th { background: #e8e8e8; font-weight: 700; text-align: left; }
-th span { font-weight: 700; }
-tr.empty td { height: ${style.rowMm}mm; }
-.num { text-align: right; white-space: nowrap; }
-.col-no { width: 6%; }
-.col-product { width: 38%; }
-.col-unit { width: 12%; }
-.col-qty { width: 8%; }
-.col-price { width: 12%; }
-.col-discount { width: 12%; }
-.col-amount { width: 12%; }
-.totals { margin: 2px 0 0; display: flex; justify-content: flex-end; }
-table.summary {
-  width: ${px(BASE_PX.summaryWidth)};
-  border-collapse: collapse;
+table.lines {
+  table-layout: fixed;
+  border: 0.5px solid #000;
 }
-table.summary td.label { text-align: left; font-weight: 700; }
-table.summary tr.strong td { font-weight: 700; }
-.signs { display: flex; justify-content: space-between; gap: ${px(BASE_PX.signsGap)}; margin-top: ${px(BASE_PX.signsTop)}; text-align: center; }
+th, td {
+  border: 0.5px solid #000;
+  padding: ${pad};
+  vertical-align: middle;
+  font-weight: 400;
+}
+th {
+  background: #e8e8e8;
+  font-weight: 700;
+  text-align: center;
+  line-height: 1.2;
+}
+th span {
+  display: block;
+  font-weight: 700;
+  font-size: 0.92em;
+}
+th.num { text-align: center; }
+td.num { text-align: right; }
+td.product { text-align: left; word-wrap: break-word; overflow-wrap: anywhere; }
+tr.empty td { height: ${style.rowMm}mm; }
+.num { white-space: nowrap; }
+.col-no { width: 5%; }
+.col-product { width: 28%; }
+.col-unit { width: 9%; }
+.col-qty { width: 7%; }
+.col-price { width: 15%; }
+.col-discount { width: 18%; }
+.col-amount { width: 18%; }
+.totals { margin: 0; width: 100%; }
+table.summary {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  border: none;
+  margin-top: 0;
+}
+table.summary td {
+  padding: ${pad};
+  vertical-align: middle;
+  border: none;
+}
+table.summary td.spacer {
+  border: none;
+  padding: 0;
+}
+table.summary td.label {
+  text-align: left;
+  font-weight: 400;
+  border-top: none;
+  border-left: 0.5px solid #000;
+  border-right: 0.5px solid #000;
+  border-bottom: 0.5px solid #000;
+}
+table.summary td.num {
+  text-align: right;
+  white-space: nowrap;
+  border-top: none;
+  border-left: 0.5px solid #000;
+  border-right: 0.5px solid #000;
+  border-bottom: 0.5px solid #000;
+}
+table.summary tr.strong td.label,
+table.summary tr.strong td.num { font-weight: 700; }
+.signs {
+  display: flex;
+  justify-content: space-between;
+  gap: ${px(BASE_PX.signsGap)};
+  margin-top: ${px(BASE_PX.signsTop)};
+  text-align: center;
+}
+.signs .sign { flex: 1; max-width: 42%; }
+.signs .line {
+  border-top: 0.5px solid #000;
+  margin: 28px auto 6px;
+  width: 85%;
+}
 .signs p { margin: 0; font-weight: 700; }
 .note { margin-top: 8px; }
 `

@@ -76,9 +76,11 @@ These decisions are product truth. Do not reintroduce removed behavior from olde
 **Invoices and delivery notes are print-only**
 
 - After a confirmed POS sale, show the A4/A5 paper-size chooser, then print a bilingual HTML document through the hidden iframe (`frontend/app/utils/print/`). The OS/browser print dialog is the only output path.
-- Invoice paper heading is **វិក្កយបត្រ / INVOICE** only. Do not print the shop name as a document title.
-- Use a Khmer-first font stack (include Noto Sans Khmer) and wait for `document.fonts.ready` before printing.
-- Pad the line table with empty rows so the page fills (A4: 18 rows, A5: 12). Totals (Total, Delivery, Deposit/paid, outstanding) are a bordered summary table.
+- Invoice paper heading is **វិក្កយបត្រ / INVOICE** only (underlined). Do not print the shop name as a document title.
+- Use a Khmer-first font stack (include Noto Sans Khmer) and wait for `document.fonts.ready` before printing. Meta block (invoice no, date, customer, cashier) is larger and bold; A4 and A5 share one style (A5 scaled).
+- Line table headers are stacked **Khmer on top, English below** (e.g. ល.រ / N°), all header cells center-aligned. Cell borders are thin (**0.5px**).
+- Pad the line table with empty filler rows so the grid fills about **70%** of the printable height (trim a few rows so short sales stay on one page). Product / Unit / Qty columns stay compact.
+- Totals sit under the line table: label column width matches **Price + Discount**; amount column matches **Amount**. Summary cells have **left / right / bottom** borders only (no top). Rows: Total Amount, Delivery, Deposit/paid, outstanding (`ខ្វះសរុប`). Buyer / Seller signature lines below.
 - Delivery notes print the same way (HTML → browser print). List actions include **Delivery OK** and **Print**. A nested detail route is optional, not required.
 - Delivery notes store a **snapshot of the linked POS sale / customer** only. Do not add a contact, driver, vehicle, or schedule form.
 - Do **not** generate, store, or download invoice/receipt PDFs (MinIO, disk, PostgreSQL BYTEA, or Celery PDF jobs).
@@ -108,11 +110,11 @@ Do **not** send payment or invoice text (or PDFs) to Telegram.
 **Stock / POS / reports UI (must match PAGE_ROUTE_MAP)**
 
 - Dashboard: exactly four KPI cards in one desktop row — Today Sales, Income, Expense (operating expenses only), Outstanding Debt — plus Income/Expense chart with auto-fit height and complete Business Summary.
-- Stock list: Current Stock is a **number only** (not clickable). Stock In / Stock Out / Damage cells open a wide history dialog (`TableAppListTable`). **Stock In history dialog** has **Add Stock In** (creates a purchase / stock-in for that product). Cost cell opens cost-history dialog. Price cell opens sale-price versions (exactly one POS-active; Add Sale Price in the dialog).
+- Stock list: Current Stock is a **number only** (not clickable). Stock In / Stock Out / Damage cells open a wide history dialog (`TableAppListTable`). **Stock In** and **Damage** history dialogs have toolbar **Add** (nested form on top of the history dialog, product locked). Cost cell opens cost-history dialog. Price cell opens sale-price versions (exactly one POS-active; Add Sale Price in the dialog).
 - Product form tabs: **General** | **Pricing** | **Expire**. Pricing table columns: **No**, **Original UOM**, **Convert UOM**, **Conversion qty**, **Sale price**, **Default sale**, delete. Expire tab: Track Expiry + Expire Date (read-only from stock-in lots).
 - Sales Report and Purchase Report: each row has an **Actions (`...`)** column. Sales → **Return** (customer return). Purchase → **Return** (return to supplier). No `/returns` page.
 - Finance Report: income/expense **table** (no chart); Add Expense modal with plus icon and full-width fields; filters on the table toolbar only; no `/expenses` page.
-- Customer / Supplier Debt Reports: **document-level** rows with Date and Invoice No. / Purchase No. (not party-only aggregates that hide those columns).
+- Customer / Supplier Debt Reports: **document-level** rows with Date and Invoice No. / Purchase No. Row **Actions (`...`) → Pay** opens a payment modal for that open/partial debt (not on Setup customer/supplier documents).
 - POS: full-width workspace; two-step sell → checkout; cart UOM select = every Pricing row for that product; selecting a UOM updates unit price / remaining stock from that row; default cart UOM = row with **Default sale**; stock out `qty × factor` in base (Convert) UOM; print-only invoice after submit.
 - Delivery Notes: list **Update Status** (allowed transitions); Add = multi-select invoices with search on `AppListTable` + phone/location; auto-open from POS with invoice preselected; no driver/vehicle form; no second stock-out.
 
@@ -120,7 +122,7 @@ Do **not** send payment or invoice text (or PDFs) to Telegram.
 
 - No TODOs, stubs, unused exports, or dead compatibility layers.
 - Decimal-safe money and quantities; one canonical stock mutation service; every stock change is a movement in one database transaction.
-- Local mock frontend uses `NUXT_PUBLIC_USE_MOCK_DATA=true` and does not require Docker or live API.
+- Local mock frontend uses `NUXT_PUBLIC_USE_MOCK_DATA` (defaults to mock unless set to `false`) and does not require Docker or live API. Frontend-only / Vercel preview deploys should keep mock on so login works without a backend.
 
 ---
 
@@ -519,12 +521,15 @@ Clicking **Stock In**, **Stock Out**, or **Damage Stock** opens a history dialog
 - On tablet/mobile, use nearly full width (e.g. ~95% / full sheet) with horizontal scroll inside the table if needed.
 - Still a dialog/modal — never a separate page or route.
 
-**Stock In history dialog — Add Stock In (purchase):**
+**Stock In / Damage history dialog — Add:**
 
-- On the **Stock In** history dialog only (not Stock Out / Damage), show an **Add Stock In** button on the dialog toolbar / header actions (permission `stock.in` or equivalent; hide/disable when denied).
-- Clicking **Add Stock In** opens the Stock In / Purchase form (modal or drawer — not a new route) with **this product pre-selected** (product locked or clearly prefilled; user may still add more lines if the form supports multi-line).
-- This is the same Stock In / purchase transaction as row-action Stock In on the product list — one purchase workflow, two entry points.
-- Confirming creates a purchase: increases stock via the canonical stock mutation service, may create/update product cost, and creates **supplier debt** when not fully paid (see Stock In rules and §4.4).
+- On the **Stock In** history dialog, show **Add Stock In** on the table toolbar (`#actions`; permission `products.operate` / `products.edit` or equivalent; hide when denied).
+- On the **Damage** history dialog, show **Add Damage** the same way (same permission gate). **Stock Out** stays read-only (no Add).
+- Clicking Add opens a **nested** small form dialog stacked on top of the history dialog (elevated z-index; same pattern as Sale Price → Add Sale Price) — not a new route. Product is locked to the history product.
+- Stock In nested form: UOM (Pricing Original UOMs), qty, unit cost, note. Damage nested form: qty (−), note.
+- Confirming runs the same stock operation as the product-list row action (`createStockOperation`). After success, reload history rows and refresh the Stock list; keep the history dialog open.
+- Stock In confirming creates a purchase: increases stock via the canonical stock mutation service, may create/update product cost, and creates **supplier debt** when not fully paid (see Stock In rules and §4.4).
+- Stock operation / nested Add form fields are **full width** inside the dialog.
 
 **Cost Price cell (Stock list):**
 
@@ -601,7 +606,7 @@ Rules:
 
 ### Stock In (Purchase)
 
-Stock In **is** the supplier purchase for inventory. There is no separate Purchases page — create/manage Stock In from Stock list row actions, from the **Stock In history dialog → Add Stock In**, or (optionally) a supplier-scoped action. Purchase history and returns are managed on **Purchase Report**.
+Stock In **is** the supplier purchase for inventory. There is no separate Purchases page — create/manage Stock In from Stock list row actions, from the **Stock In history dialog → Add Stock In** (nested form), or (optionally) a supplier-scoped action. Purchase history and returns are managed on **Purchase Report**. Damage may also be created from the **Damage history dialog → Add Damage**.
 
 Header fields:
 
@@ -1132,6 +1137,8 @@ Required columns (order):
 
 Filters: date range, customer, status, search by invoice no / customer.
 
+**Pay (row action):** each open/partial row has **Actions (`...`) → Pay**. Opens a small payment modal (`ReportsDebtPaymentDialog`) for **that debt document** — amount (default = remaining; reject overpayment), payment method (Cash / Card / Mobile Payment / Bank Transfer — not Credit), optional reference. Confirm calls `payCustomerDebt` with `customerId` + `debtId`. Paid rows (`remaining = 0`) disable Pay. Do **not** put Record Payment on Setup → Customers.
+
 Support debt payment history (separate section or drill-down). Do not omit Date or Invoice No.
 
 ### Supplier Debt Report
@@ -1150,6 +1157,8 @@ Required columns (order):
 8. Status
 
 Filters: date range, supplier, status, search by document no / supplier.
+
+**Pay (row action):** same pattern as Customer Debt — **Actions (`...`) → Pay** → payment modal for that document → `paySupplierDebt` with `supplierId` + `debtId`. Do **not** put Record Payment on Setup → Suppliers.
 
 Support supplier debt payment history. Do not omit Date or document/Invoice No.
 
@@ -2669,12 +2678,14 @@ If any step fails -> rollback everything.
 
 ### Debt Payment Transaction
 
-1. lock debt row
-2. validate payment <= remaining
+1. lock debt row (by `debtId`)
+2. validate payment <= remaining for that document
 3. create payment record
-4. update paid / remaining
+4. update paid / remaining on that debt
 5. update status
 6. commit
+
+Frontend: Debt Report row **Pay** modal only (customer or supplier); pass `debtId` so the selected document is settled first.
 
 ---
 
@@ -2940,7 +2951,7 @@ Product list must also show quantity summary columns:
 - Body: `TableAppListTable` from `frontend/app/components/table` (search + optional date range + pagination). Not a raw HTML table. Not `AppLineTable`.
 - Give the dialog body a real height (flex / ~55–65vh) so `AppListTable` can fill (`min-h-0`, `flex-1`).
 - Close action in footer; no edit/delete of movements from this dialog.
-- **Stock In dialog only:** toolbar **Add Stock In** opens the purchase / Stock In form with the current product prefilled (see §2.1.5). After a successful save, refresh the history table and Stock list aggregates.
+- **Stock In / Damage dialogs:** toolbar **Add Stock In** / **Add Damage** opens a nested form dialog on top of history (product locked; see §2.1.5). After a successful save, refresh the history table and Stock list aggregates. **Stock Out** has no Add.
 
 **Cost Price** and **Sale Price** cells are clickable (same wide-dialog + `TableAppListTable` pattern):
 
@@ -3008,7 +3019,7 @@ Supplier Debt Report columns must include:
 2. **Invoice No.** / Purchase No. (document number)
 3. Total / Paid / Remaining / Status (as applicable)
 
-Do not show a debt ledger without Date and document/Invoice No.
+Row **Actions (`...`) → Pay** records a payment against that open/partial document (modal only). Do not show a debt ledger without Date and document/Invoice No.
 ---
 
 ## 5.11 POS UI
@@ -3075,11 +3086,12 @@ After a successful sale, do **not** open an invoice preview dialog. Auto-print t
 
 The invoice print document includes:
 
-- Centered title វិក្កយបត្រ / INVOICE only (do not print shop name as the document title)
+- Centered underlined title វិក្កយបត្រ / INVOICE only (do not print shop name as the document title)
 - Khmer-first fonts (Noto Sans Khmer); wait for `document.fonts.ready` before calling print
-- Invoice no, date (left); customer, cashier (right)
-- Line table: N°, Product, Unit (UOM), Qty, Price, Discount, Amount — pad with empty rows (A4: 18, A5: 12)
-- Bordered summary table: Total, Delivery, Deposit/paid, outstanding; Buyer / Seller signature lines
+- Bold, larger meta: Invoice no + Date (left); Customer + Cashier (right)
+- Line table headers stacked Khmer then English, all center-aligned; **0.5px** cell borders; compact Product / Unit / Qty widths
+- Empty filler rows so the grid fills ~70% printable height (short sales must still fit on one page)
+- Summary aligned to Price+Discount | Amount columns; borders left/right/bottom only (no top): Total, Delivery, Deposit/paid, outstanding; Buyer / Seller signature lines
 
 If Delivery was checked, open Create Delivery Note after the paper-size dialog is resolved (printed or cancelled), with that invoice **auto-selected** and phone/location defaulted.
 
@@ -3145,7 +3157,7 @@ Customer Debt Report columns must include:
 2. **Invoice No.**
 3. Totals / paid / remaining / status as applicable
 
-Do not omit Date or Invoice No. from customer debt tables.
+Row **Actions (`...`) → Pay** records a payment against that open/partial invoice debt (modal only). Do not omit Date or Invoice No. from customer debt tables.
 ---
 
 ## 5.13 Delivery Notes UI
@@ -3265,7 +3277,11 @@ Do not create full report editing forms for Sales/Purchase/Debt reports. Finance
 
 - Columns per §2.1.10, including trailing **Actions (`...`)** column.
 - Row menu **Return** opens return-to-supplier modal against that Stock In / purchase (see §2.1.10 Return to supplier).
-- Creating new purchases is **not** done on this report — use Stock list / Stock In dialog **Add Stock In**.
+- Creating new purchases is **not** done on this report — use Stock list / Stock In history dialog **Add Stock In**.
+
+**Customer Debt Report** / **Supplier Debt Report** UI:
+
+- Row **Actions (`...`) → Pay** for open/partial debts (see §2.1.10). Payment modal only — not on Setup customer/supplier documents.
 
 ---
 
@@ -4311,7 +4327,7 @@ Complete the product and inventory read capabilities inside `modules/stock/`: pr
 
 #### Stage 5 — Suppliers and Stock In
 
-Complete `modules/suppliers/` first, then add Stock In orchestration through the public interface of `modules/stock/` and `shared/documents/`. Supplier debt and supplier debt-payment history are owned by the Suppliers module. Supplier debt created by unpaid/partially paid Stock In belongs in the same transaction. Frontend entry points: Stock row action **Stock In**, and Stock In history dialog **Add Stock In** (product prefilled) — same form and API.
+Complete `modules/suppliers/` first, then add Stock In orchestration through the public interface of `modules/stock/` and `shared/documents/`. Supplier debt and supplier debt-payment history are owned by the Suppliers module. Supplier debt created by unpaid/partially paid Stock In belongs in the same transaction. Frontend entry points: Stock row action **Stock In**, and Stock In history dialog **Add Stock In** (nested form, product locked) — same form and API. Damage history dialog **Add Damage** is a Stage 6 entry point using the same stock-operation path.
 
 #### Stage 6 — Remaining Stock Operations
 
@@ -4348,6 +4364,11 @@ Complete `modules/delivery_notes/` with delivery note headers/lines, `delivery_n
 #### Stage 10 — Debt Payments
 
 Implement customer debt payments in `modules/customers/` and supplier debt payments in `modules/suppliers/`. They may reuse shared money/payment validation helpers, but keep separate domain methods, immutable histories, overpayment rejection, locked balances, and transaction-safe status updates.
+
+UI entry points only — no payment forms on Setup customer/supplier documents:
+
+- Customer Debt Report row **Actions (`...`) → Pay** → payment modal (`ReportsDebtPaymentDialog`) → `payCustomerDebt` with `debtId`
+- Supplier Debt Report row **Actions (`...`) → Pay** → same modal pattern → `paySupplierDebt` with `debtId`
 
 #### Stage 11 — Dashboard and Reports
 
@@ -4527,7 +4548,7 @@ The system is complete when:
 - products may link optional brand
 - products work
 - all stock operations work
-- stock list shows Stock In / Stock Out / Damage Stock with clickable history dialogs; Current Stock is a number only
+- stock list shows Stock In / Stock Out / Damage Stock with clickable history dialogs; Current Stock is a number only; Stock In / Damage history dialogs support toolbar Add
 - suppliers work
 - supplier debt works
 - POS name/barcode/scanner search works
@@ -4535,7 +4556,7 @@ The system is complete when:
 - POS sale is transactional
 - delivery notes track product delivery to customers from sales (no second stock-out)
 - customer debt works
-- customer/supplier debt payments work
+- customer/supplier debt payments work from Debt Report row **Pay** actions
 - all 5 reports work
 - dashboard has exactly 4 KPI cards in one desktop row (no Sales This Month KPI card)
 - dashboard has Income vs Expense line chart with auto-fit height on all devices

@@ -744,7 +744,17 @@
       "returnQtyRequired": "Enter a return quantity on at least one line.",
       "returnOverQty": "Return quantity cannot exceed returnable quantity.",
       "returnSaved": "Return recorded",
-      "returnFailed": "Could not record the return"
+      "returnFailed": "Could not record the return",
+      "pay": "Pay",
+      "payCustomerDebtTitle": "Pay customer debt",
+      "paySupplierDebtTitle": "Pay supplier debt",
+      "remainingAmount": "Remaining",
+      "paymentAmount": "Payment amount",
+      "paymentOverRemaining": "Amount cannot exceed the remaining balance.",
+      "paymentReferenceHint": "Optional receipt / transfer reference",
+      "confirmPayment": "Confirm payment",
+      "paymentSaved": "Payment recorded",
+      "paymentFailed": "Could not record the payment"
     },
     "stock": {
       "negativeHint": "Damage and expiry quantities are deducted from current stock.",
@@ -752,6 +762,8 @@
       "historyTitleStockOut": "Stock Out history",
       "historyTitleDamage": "Damage history",
       "noHistory": "No history",
+      "addStockIn": "Add Stock In",
+      "addDamage": "Add Damage",
       "costPriceHistory": "Cost Price history",
       "salePriceHistory": "Sale Price history",
       "costPrice": "Cost price",
