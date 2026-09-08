@@ -14,12 +14,8 @@ export type DeliveryNotePrintInput = {
   invoiceNo: string
   status: string
   customer: string
-  deliveryName: string
   deliveryPhone: string
-  deliveryAddress: string
-  scheduledLabel: string
-  driverName: string
-  vehicleNote: string
+  deliveryLocation: string
   note: string
   lines: DeliveryNotePrintLine[]
 }
@@ -27,6 +23,14 @@ export type DeliveryNotePrintInput = {
 function text(value: unknown, fallback = '—'): string {
   const next = String(value ?? '').trim()
   return next || fallback
+}
+
+/** Linked invoice nos of a note — many sales on one note (spec §2.1.9). */
+function invoiceNosOf(note: Record<string, unknown>): string[] {
+  const list = note.invoiceNos ?? note.invoiceNo
+  if (Array.isArray(list)) return list.map(no => String(no).trim()).filter(Boolean)
+  const joined = String(note.invoiceNo ?? note.saleNo ?? '').trim()
+  return joined ? joined.split(',').map(no => no.trim()).filter(Boolean) : []
 }
 
 export function deliveryNotePrintInputFromRecord(
@@ -38,15 +42,11 @@ export function deliveryNotePrintInputFromRecord(
     shopName,
     deliveryNo: text(note.deliveryNo, ''),
     dateLabel: String(note.createdAt || '').slice(0, 10),
-    invoiceNo: text(note.invoiceNo || note.saleNo),
+    invoiceNo: text(invoiceNosOf(note).join(', ')),
     status: text(note.status),
     customer: text(note.customer),
-    deliveryName: text(note.deliveryName),
     deliveryPhone: text(note.deliveryPhone),
-    deliveryAddress: text(note.deliveryAddress),
-    scheduledLabel: String(note.scheduledDate || '').slice(0, 10) || '—',
-    driverName: String(note.driverName || '').trim(),
-    vehicleNote: String(note.vehicleNote || '').trim(),
+    deliveryLocation: text(note.deliveryLocation ?? note.deliveryAddress),
     note: String(note.note || '').trim(),
     lines: items.map(line => ({
       product: text(line.product),
@@ -67,9 +67,6 @@ export function buildDeliveryNoteHtml(input: DeliveryNotePrintInput): string {
       <td class="num">${escapeHtml(line.qtyToDeliver)}</td>
     </tr>`).join('')
 
-  const driver = input.driverName
-    ? `<p>អ្នកដឹកជញ្ជូន / Driver: <strong>${escapeHtml(input.driverName)}${input.vehicleNote ? ` · ${escapeHtml(input.vehicleNote)}` : ''}</strong></p>`
-    : ''
   const note = input.note
     ? `<p class="note">កំណត់សម្គាល់ / Note: ${escapeHtml(input.note)}</p>`
     : ''
@@ -88,12 +85,9 @@ export function buildDeliveryNoteHtml(input: DeliveryNotePrintInput): string {
     <div class="right">
       <p>កាលបរិច្ឆេទ / Date: <strong>${escapeHtml(input.dateLabel)}</strong></p>
       <p>ស្ថានភាព / Status: <strong>${escapeHtml(input.status)}</strong></p>
-      <p>ទំនាក់ទំនង / Contact: <strong>${escapeHtml(input.deliveryName)}</strong></p>
-      <p>គ្រោងបញ្ជូន / Scheduled: <strong>${escapeHtml(input.scheduledLabel)}</strong></p>
+      <p>ទីតាំងបញ្ជូន / Location: <strong>${escapeHtml(input.deliveryLocation)}</strong></p>
     </div>
   </div>
-  <p>អាសយដ្ឋាន / Address: <strong>${escapeHtml(input.deliveryAddress)}</strong></p>
-  ${driver}
   <table>
     <thead>
       <tr>

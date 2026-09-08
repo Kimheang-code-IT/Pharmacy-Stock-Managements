@@ -64,27 +64,32 @@ export interface PosCompleteSaleInput {
   deposit?: number
 }
 
-/** One delivery note line: quantity to deliver from a sold (already stocked-out) sale line. */
+/** One delivery note line: quantity to deliver from a sold (already stocked-out) sale line
+ *  of a parent invoice. Lines of MULTIPLE invoices of the SAME customer may be combined
+ *  on one delivery note (spec §2.1.9). */
 export interface DeliveryNoteLineInput {
+  /** Parent sale id — required unless the request-level `saleId` applies to every line. */
+  saleId?: string
   saleItemId: string
   productId: string
   qtyToDeliver: number
 }
 
 /**
- * Create a delivery note from a confirmed sale. The backend must validate
- * `qty_to_deliver` against the remaining undelivered quantity per sale line
- * across non-cancelled delivery notes, allocate `DN-000001` under a lock,
- * write the audit entry and commit — without creating stock movements.
+ * Create a delivery note from one or many confirmed invoices of the SAME
+ * customer. The backend must validate `qty_to_deliver` against the remaining
+ * undelivered quantity per sale line across non-cancelled delivery notes,
+ * allocate `DN-000001` under a lock, write the audit entry and commit —
+ * without creating stock movements. Phone + location are the only
+ * delivery-destination fields (no driver/vehicle/schedule form, spec §5.13).
  */
 export interface DeliveryNoteCreateInput {
-  saleId: string
-  deliveryName?: string | null
+  /** POS auto-entry shortcut: applies to every line that omits its saleId. */
+  saleId?: string
+  /** Must match the invoices' customer when set (same-customer rule). */
+  customerId?: string | null
   deliveryPhone?: string | null
-  deliveryAddress?: string | null
-  scheduledDate?: string | null
-  driverName?: string | null
-  vehicleNote?: string | null
+  deliveryLocation?: string | null
   note?: string | null
   lines: DeliveryNoteLineInput[]
   /** Save directly as Confirmed instead of Draft. */
@@ -247,7 +252,10 @@ export interface PosCommandRepository {
  */
 export interface DeliveryCommandRepository {
   createDeliveryNote(input: DeliveryNoteCreateInput): Promise<AppRecord>
-  setDeliveryStatus(id: string, action: DeliveryStatusActionInput, reason?: string | null): Promise<AppRecord>
+  /** Update Status (spec §5.13): set a legal next status; cancel needs a reason. */
+  setDeliveryStatus(id: string, status: string, reason?: string | null): Promise<AppRecord>
+  /** Confirmed sales with remaining deliverable qty (create-page invoice picker). */
+  deliverableInvoices(search?: string | null): Promise<AppRecord[]>
 }
 
 /**

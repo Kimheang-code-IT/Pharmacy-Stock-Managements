@@ -49,6 +49,7 @@ export const ApiEndpoints = {
   DELIVERY_NOTES: '/api/v1/delivery-notes',
   DELIVERY_NOTE: (id: string) => `/api/v1/delivery-notes/${id}`,
   DELIVERY_NOTE_STATUS: (id: string) => `/api/v1/delivery-notes/${id}/status`,
+  DELIVERY_NOTE_DELIVERABLE_INVOICES: '/api/v1/delivery-notes/deliverable-invoices',
 
   /** Spec §7 Stock: one create path per operation — never a generic /stock/operations. */
   STOCK_IN: '/api/v1/stock/in',
