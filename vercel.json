@@ -1,7 +1,10 @@
 {
-  "framework": "nuxtjs",
-  "installCommand": "corepack enable && corepack prepare pnpm@10.30.3 --activate && pnpm install --frozen-lockfile",
-  "buildCommand": "pnpm build",
+  "version": 2,
+  "framework": null,
+  "installCommand": "corepack enable && corepack prepare pnpm@10.30.3 --activate && pnpm --dir frontend install --frozen-lockfile",
+  "buildCommand": "pnpm --dir frontend build",
+  "outputDirectory": "frontend/.output/public",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
   "env": {
     "NUXT_PUBLIC_USE_MOCK_DATA": "true",
     "NUXT_PUBLIC_API_BASE": "same-origin",
