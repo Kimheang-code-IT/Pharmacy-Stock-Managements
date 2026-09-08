@@ -173,15 +173,44 @@ export function createMockDeliveryRepository(): DeliveryCommandRepository {
     async deliverableInvoices(search?: string | null): Promise<AppRecord[]> {
       const db = useMockDb()
       const needle = String(search || '').trim().toLowerCase()
-      const rows = db.collections.sales.filter((sale) => {
-        if (!saleHasDeliverableLines(sale, db.collections.deliveryNotes)) return false
-        if (!needle) return true
-        return (
-          String(sale.invoiceNo || sale.saleNo || '').toLowerCase().includes(needle)
-          || String(sale.customer || '').toLowerCase().includes(needle)
-        )
-      })
-      return rows as AppRecord[]
+      // Normalized row shape — identical to the HTTP adapter output of
+      // GET /delivery-notes/deliverable-invoices (see DeliverableInvoice).
+      const rows: AppRecord[] = []
+      for (const sale of db.collections.sales) {
+        if (!saleHasDeliverableLines(sale, db.collections.deliveryNotes)) continue
+        if (needle
+          && !String(sale.invoiceNo || sale.saleNo || '').toLowerCase().includes(needle)
+          && !String(sale.customer || '').toLowerCase().includes(needle)) continue
+        const items = (Array.isArray(sale.items) ? sale.items : []) as AppRecord[]
+        rows.push({
+          id: String(sale.id),
+          saleId: String(sale.id),
+          invoiceNo: String(sale.invoiceNo || sale.saleNo || ''),
+          customerId: String(sale.customerId ?? ''),
+          customer: String(sale.customer ?? ''),
+          phone: '',
+          location: '',
+          saleStatus: String(sale.saleStatus || sale.status || ''),
+          qtyRemaining: items.reduce((sum, item) => {
+            const remaining = Number(item.quantity || 0)
+              - Number(item.returnedQuantity || 0)
+              - saleItemReservedQty(sale.id, item.id, db.collections.deliveryNotes)
+            return sum + Math.max(0, remaining)
+          }, 0),
+          items: items.map(item => ({
+            saleItemId: String(item.id ?? ''),
+            productId: String(item.productId ?? ''),
+            product: String(item.name ?? ''),
+            sku: '',
+            uomSymbol: String(item.uom ?? ''),
+            qtyOrdered: Number(item.quantity ?? 0),
+            qtyRemaining: Math.max(0, Number(item.quantity || 0)
+              - Number(item.returnedQuantity || 0)
+              - saleItemReservedQty(sale.id, item.id, db.collections.deliveryNotes)),
+          })).filter(item => item.qtyRemaining > 0),
+        } as AppRecord)
+      }
+      return rows
     },
   }
 }

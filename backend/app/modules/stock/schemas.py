@@ -112,20 +112,46 @@ class ProductOut(BaseModel):
 
 
 class StockInItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     product_id: UUID
     quantity: Decimal = Field(gt=0)
     unit_cost: Decimal = Field(ge=0)
     batch_no: str | None = Field(default=None, max_length=100)
     expiry_date: date | None = None
+    # Pricing Original UOM (spec §2.1.3): qty/cost are per the SELECTED UOM and
+    # are converted to the product base UOM before the stock mutation.
+    uom_id: UUID | None = Field(
+        default=None, validation_alias=AliasChoices("uom_id", "uomId")
+    )
+    # Line UOM symbol snapshot for lists/history/invoice display.
+    uom_symbol: str | None = Field(
+        default=None, max_length=20, validation_alias=AliasChoices("uom_symbol", "uomSymbol")
+    )
+    factor_to_base: Decimal | None = Field(
+        default=None, gt=0, validation_alias=AliasChoices("factor_to_base", "factorToBase")
+    )
 
 
 class StockInRequest(BaseModel):
-    supplier_id: UUID | None = None
+    """POST /stock/in — Stock In = purchase (spec 2.1.x).
+
+    payment_method is the canonical POS tender vocabulary (CASH | BANK_QR);
+    it labels the payment row recorded when paid_amount > 0."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    supplier_id: UUID | None = Field(
+        default=None, validation_alias=AliasChoices("supplier_id", "supplierId")
+    )
     transaction_date: datetime | None = None
     reference_no: str | None = Field(default=None, max_length=100)
     note: str | None = None
-    paid_amount: Decimal = Field(default=Decimal("0"), ge=0)
-    items: list[StockInItem] = Field(min_length=1)
+    paid_amount: Decimal = Field(
+        default=Decimal("0"), ge=0, validation_alias=AliasChoices("paid_amount", "paidAmount")
+    )
+    payment_method: str = Field(default="CASH", validation_alias=AliasChoices("payment_method", "paymentMethod"))
+    items: list[StockInItem] = Field(min_length=1, validation_alias=AliasChoices("items", "lines"))
 
 
 class AdjustmentItem(BaseModel):
@@ -175,12 +201,60 @@ class StockExpireRequest(BaseModel):
     items: list[ExpireItem] = Field(min_length=1)
 
 
+class PurchaseReturnItemRequest(BaseModel):
+    """One line of POST /stock/in/{id}/return (spec 2.1.x Return to supplier)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    stock_transaction_item_id: UUID = Field(
+        validation_alias=AliasChoices("stock_transaction_item_id", "stockTransactionItemId")
+    )
+    quantity: Decimal = Field(gt=0)
+
+
+class PurchaseReturnRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    reason: str = Field(min_length=1, max_length=1000)
+    lines: list[PurchaseReturnItemRequest] = Field(
+        min_length=1, validation_alias=AliasChoices("lines", "items")
+    )
+    return_date: datetime | None = None
+
+
+class PurchaseReturnItemOut(BaseModel):
+    id: UUID
+    stock_transaction_item_id: UUID
+    product_id: UUID
+    product_name: str | None = None
+    quantity: Decimal
+    unit_cost: Decimal
+    line_refund: Decimal
+
+
+class PurchaseReturnOut(BaseModel):
+    id: UUID
+    return_no: str
+    stock_transaction_id: UUID
+    document_no: str | None = None
+    supplier_id: UUID | None = None
+    return_date: datetime
+    refund_amount: Decimal
+    debt_reduction: Decimal = Decimal("0.00")
+    credit_amount: Decimal = Decimal("0.00")
+    reason: str
+    items: list[PurchaseReturnItemOut]
+
+
 class OperationItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    id: UUID
     product_id: UUID
     product_name: str | None = None
     sku: str | None = None
+    # Line UOM symbol snapshot (selected Pricing UOM for Stock In lines).
+    uom_symbol: str | None = None
     quantity: Decimal
     unit_cost: Decimal
     system_quantity: Decimal | None
@@ -255,6 +329,8 @@ class MovementOut(BaseModel):
     document_no: str | None
     batch_no: str | None
     expiry_date: date | None
+    # Line UOM symbol snapshot (display only).
+    uom_symbol: str | None = None
     note: str | None
     created_at: datetime
 

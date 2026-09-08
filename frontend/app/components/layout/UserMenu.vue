@@ -15,17 +15,21 @@ const menuContent = computed(() => props.placement === 'header'
   : {
       align: (props.collapsed ? 'end' : 'center') as 'end' | 'center',
       collisionPadding: 12,
+      // Prefer top so the menu stays on-screen above the footer on iPad slideover.
       side: (props.collapsed ? 'right' : 'top') as 'right' | 'top',
     })
 </script>
 
 <template>
-  <div :class="collapsed ? 'flex justify-center' : 'w-full'">
+  <div
+    class="min-w-0"
+    :class="collapsed ? 'flex justify-center' : 'w-full'"
+  >
     <UDropdownMenu
       :items="items"
       :content="menuContent"
       :ui="{
-        content: collapsed ? 'w-52 app-user-menu' : 'w-(--reka-dropdown-menu-trigger-width) app-user-menu',
+        content: collapsed ? 'w-52 max-w-[min(20rem,calc(100vw-1.5rem))] app-user-menu' : 'w-(--reka-dropdown-menu-trigger-width) max-w-[min(20rem,calc(100vw-1.5rem))] app-user-menu',
         label: 'app-sidebar-text font-semibold',
         item: 'app-sidebar-text',
         itemLabel: 'app-sidebar-text',

@@ -211,6 +211,12 @@ export interface PosCommandRepository {
     factorToBase?: number
     /** Unit cost per the selected UOM (Stock In). */
     unitCost?: number
+    /** Stock In = purchase: supplier for the purchase / debt (optional). */
+    supplierId?: string | null
+    /** Amount paid now (0…line total; unpaid balance becomes supplier debt). */
+    paidAmount?: number
+    /** Payment label for the recorded payment row (CASH | BANK_QR). */
+    paymentMethod?: string
   }): Promise<AppRecord>
   payCustomerDebt(input: {
     customerId: string

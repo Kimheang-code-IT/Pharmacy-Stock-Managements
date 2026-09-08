@@ -767,7 +767,9 @@ class POSService:
                     self.session,
                     product_id=sale_item.product_id,
                     movement_type="SALE_RETURN",
-                    quantity_delta=return_item.quantity,
+                    # Stock is always mutated in the base UOM: the sold line
+                    # quantity was in the selected Pricing UOM.
+                    quantity_delta=_q4(Decimal(return_item.quantity) * Decimal(sale_item.factor_to_base)),
                     unit_cost=sale_item.unit_cost,
                     reference_type="sale_return",
                     reference_id=sale_return.id,

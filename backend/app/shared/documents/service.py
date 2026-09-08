@@ -5,6 +5,7 @@ Never compute the next number from row counts.
 """
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as sqlalchemy_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictError, NotFoundError
@@ -12,7 +13,8 @@ from app.shared.documents.models import DocumentSequence
 
 DEFAULT_SEQUENCES: dict[str, str] = {
     "INVOICE": "INV",
-    "SALE_RETURN": "RET",
+    "SALE_RETURN": "SRT",
+    "PURCHASE_RETURN": "PRT",
     "STOCK_IN": "STI",
     "STOCK_ADJUSTMENT": "STA",
     "STOCK_DAMAGE": "DMG",
@@ -44,12 +46,38 @@ async def ensure_default_sequences(session: AsyncSession) -> None:
     await session.flush()
 
 
-async def allocate_document_number(session: AsyncSession, document_type: str) -> str:
-    """Allocate the next document number, locking the sequence row."""
+async def _get_sequence_for_update(session: AsyncSession, document_type: str) -> DocumentSequence | None:
     result = await session.execute(
         select(DocumentSequence).where(DocumentSequence.document_type == document_type).with_for_update()
     )
-    sequence = result.scalar_one_or_none()
+    return result.scalar_one_or_none()
+
+
+async def allocate_document_number(session: AsyncSession, document_type: str) -> str:
+    """Allocate the next document number, locking the sequence row.
+
+    Sequences added by later migrations (e.g. PURCHASE_RETURN) self-heal on
+    first use for databases seeded before they existed; the insert is
+    conflict-safe so concurrent first allocations stay collision-free."""
+    sequence = await _get_sequence_for_update(session, document_type)
+    if sequence is None:
+        prefix = DEFAULT_SEQUENCES.get(document_type)
+        if prefix is not None:
+            await session.execute(
+                sqlalchemy_insert(DocumentSequence.__table__)
+                .values(
+                    document_type=document_type,
+                    prefix=prefix,
+                    next_number=1,
+                    number_length=6,
+                    status="ACTIVE",
+                )
+                .on_conflict_do_nothing(index_elements=[DocumentSequence.__table__.c.document_type])
+            )
+            await session.flush()
+            sequence = await _get_sequence_for_update(session, document_type)
+    if sequence is None:
+        raise NotFoundError(f"Document sequence '{document_type}' is not configured")
     if sequence is None:
         raise NotFoundError(f"Document sequence '{document_type}' is not configured")
     if sequence.status != "ACTIVE":

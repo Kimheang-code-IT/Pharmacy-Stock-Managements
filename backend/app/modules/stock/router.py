@@ -16,6 +16,7 @@ from app.modules.stock.schemas import (
     MovementOut,
     ProductCreate,
     ProductUpdate,
+    PurchaseReturnRequest,
     QuickStockOperationRequest,
     SalePriceCreate,
     SalePriceUpdate,
@@ -321,6 +322,21 @@ async def stock_in(
     service = StockOperationService(db)
     result = await service.stock_in(payload, actor=actor)
     return envelope(result)
+
+
+@router.post("/in/{stock_transaction_id}/return", status_code=http_status.HTTP_201_CREATED)
+async def purchase_return(
+    stock_transaction_id: UUID,
+    payload: PurchaseReturnRequest,
+    db: AsyncSession = Depends(get_db_session),
+    actor: User = Depends(require_permission("stock.in")),
+) -> dict:
+    """Return to supplier against a confirmed Stock In (spec: Purchase Return
+    Transaction). Immutable PRT- document; PURCHASE_RETURN stock out; supplier
+    debt reduction / credit; no Stock In edit."""
+    service = StockOperationService(db)
+    result = await service.purchase_return(stock_transaction_id, payload, actor=actor)
+    return envelope(result.model_dump())
 
 
 @router.post("/adjust", status_code=http_status.HTTP_201_CREATED)

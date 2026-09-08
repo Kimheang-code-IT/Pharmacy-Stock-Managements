@@ -8,11 +8,14 @@ DELIVERY_STATUSES = ("DRAFT", "CONFIRMED", "OUT_FOR_DELIVERY", "DELIVERED", "CAN
 
 
 class DeliveryNoteLineCreate(BaseModel):
-    """One delivery line — parent sale + sale line + qty (spec §2.1.9)."""
+    """One delivery line — parent sale + sale line + qty (spec §2.1.9).
+
+    `sale_id` may be omitted when the note is created from ONE sale (the
+    header `sale_id` applies to every line)."""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    sale_id: UUID = Field(validation_alias=AliasChoices("sale_id", "saleId"))
+    sale_id: UUID | None = Field(default=None, validation_alias=AliasChoices("sale_id", "saleId"))
     sale_item_id: UUID = Field(validation_alias=AliasChoices("sale_item_id", "saleItemId"))
     qty_to_deliver: Decimal = Field(
         gt=0, validation_alias=AliasChoices("qty_to_deliver", "qtyToDeliver")
@@ -43,6 +46,28 @@ class DeliveryNoteCreate(BaseModel):
     confirm: bool = False
     lines: list[DeliveryNoteLineCreate] = Field(
         min_length=1, validation_alias=AliasChoices("items", "lines")
+    )
+
+
+class DeliveryNoteFromSaleCreate(BaseModel):
+    """POST /pos/sales/{sale_id}/delivery-notes (POS auto-entry).
+
+    Everything is optional: with no lines the note covers every sale line's
+    remaining undelivered qty; phone/location default from the customer."""
+
+    model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
+
+    delivery_phone: str | None = Field(
+        default=None, max_length=50, validation_alias=AliasChoices("delivery_phone", "deliveryPhone")
+    )
+    delivery_location: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("delivery_location", "deliveryLocation", "delivery_address", "deliveryAddress"),
+    )
+    note: str | None = None
+    confirm: bool = False
+    lines: list[DeliveryNoteLineCreate] | None = Field(
+        default=None, validation_alias=AliasChoices("items", "lines")
     )
 
 

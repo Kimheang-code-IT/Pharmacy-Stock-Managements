@@ -13,6 +13,8 @@ from app.modules.brands.repository import BrandRepository
 from app.modules.auth.models import User
 from app.modules.stock.models import (
     Product,
+    PurchaseReturn,
+    PurchaseReturnItem,
     StockBalance,
     StockMovement,
     StockTransaction,
@@ -25,6 +27,8 @@ from app.modules.stock.schemas import (
     ExpireItem,
     MovementOut,
     OperationItemOut,
+    PurchaseReturnItemOut,
+    PurchaseReturnOut,
     StockAdjustmentRequest,
     StockDamageRequest,
     StockExpireRequest,
@@ -32,6 +36,7 @@ from app.modules.stock.schemas import (
     StockInRequest,
     StockOperationOut,
 )
+from app.modules.suppliers.models import SupplierDebt
 from app.modules.uoms.repository import UOMRepository
 from app.shared.audit.service import record_audit
 from app.shared.documents import allocate_document_number
@@ -230,6 +235,7 @@ MOVEMENT_TYPES = {
     "STOCK_IN",
     "SALE",
     "SALE_RETURN",
+    "PURCHASE_RETURN",
     "ADJUSTMENT_IN",
     "ADJUSTMENT_OUT",
     "DAMAGE",
@@ -242,6 +248,10 @@ TWO = Decimal("0.01")
 
 def _q4(value) -> Decimal:
     return Decimal(value).quantize(FOUR)
+
+
+def _q2(value) -> Decimal:
+    return Decimal(value).quantize(TWO, rounding=ROUND_HALF_UP)
 
 
 async def _lock_balance(session: AsyncSession, product_id) -> StockBalance:
@@ -282,6 +292,7 @@ async def apply_stock_movement(
     expiry_date=None,
     note: str | None = None,
     allow_negative: bool | None = None,
+    uom_symbol: str | None = None,
 ) -> StockBalance:
     """Canonical stock mutation. Must run inside the caller's transaction."""
     if movement_type not in MOVEMENT_TYPES:
@@ -316,6 +327,7 @@ async def apply_stock_movement(
         document_no=document_no,
         batch_no=batch_no,
         expiry_date=expiry_date,
+        uom_symbol=uom_symbol,
         note=note,
         created_by=created_by,
     )
@@ -384,15 +396,66 @@ class StockOperationService:
         item_rows: list[StockTransactionItem] = []
         for item in payload.items:
             product = products[item.product_id]
+
+            # ---- line UOM resolution (stock is always mutated in base UOM) ----
+            # qty/unit_cost are per the SELECTED Pricing UOM; factor_to_base
+            # says how many Convert (base) UOM = 1 Original UOM.
+            factor = item.factor_to_base
+            if item.uom_id is not None:
+                if str(item.uom_id) == str(product.uom_id):
+                    factor = Decimal("1")
+                else:
+                    conversion = next(
+                        (
+                            row
+                            for row in (product.uom_conversions or [])
+                            if str(row.get("uom_id")) == str(item.uom_id)
+                        ),
+                        None,
+                    )
+                    if conversion is None:
+                        raise ValidationError(
+                            "The selected UOM is not a Pricing UOM of this product",
+                            field_errors={"items": "Invalid UOM"},
+                        )
+                    row_factor = Decimal(str(conversion.get("factor_to_base", 1)))
+                    if factor is not None and Decimal(str(factor)) != row_factor:
+                        raise ValidationError(
+                            "factor_to_base does not match the product's Pricing row",
+                            field_errors={"items": "Invalid factor"},
+                        )
+                    factor = row_factor
+            if factor is None:
+                factor = Decimal("1")
+            if factor <= 0:
+                raise ValidationError(
+                    "factor_to_base must be greater than zero",
+                    field_errors={"items": "Invalid factor"},
+                )
+            base_quantity = _q4(Decimal(item.quantity) * factor)
+            if base_quantity <= 0:
+                raise ValidationError(
+                    "Line quantity must be greater than zero",
+                    field_errors={"items": "Invalid quantity"},
+                )
+            # unit_cost is per selected UOM; the ledger keeps the base-unit cost.
+            base_unit_cost = (Decimal(item.unit_cost) / factor).quantize(TWO, rounding=ROUND_HALF_UP)
             line_total = (Decimal(item.quantity) * Decimal(item.unit_cost)).quantize(TWO, rounding=ROUND_HALF_UP)
+            # Line UOM symbol snapshot: the caller's value or the product's
+            # base UOM symbol (display only — quantities stay in base UOM).
+            line_uom_symbol = (
+                item.uom_symbol
+                or (product.uom_ref.symbol if item.uom_id is None and product.uom_ref else None)
+            )
             row = StockTransactionItem(
-                    stock_transaction_id=transaction.id,
-                    product_id=item.product_id,
+                stock_transaction_id=transaction.id,
+                product_id=item.product_id,
                 product_ref=product,
-                quantity=item.quantity,
-                unit_cost=item.unit_cost,
+                quantity=base_quantity,
+                unit_cost=base_unit_cost,
                 batch_no=item.batch_no,
                 expiry_date=item.expiry_date,
+                uom_symbol=line_uom_symbol,
                 line_total=line_total,
             )
             item_rows.append(row)
@@ -401,8 +464,8 @@ class StockOperationService:
                 self.session,
                 product_id=item.product_id,
                 movement_type="STOCK_IN",
-                quantity_delta=item.quantity,
-                unit_cost=item.unit_cost,
+                quantity_delta=base_quantity,
+                unit_cost=base_unit_cost,
                 reference_type="stock_transaction",
                 reference_id=transaction.id,
                 created_by=actor.id,
@@ -410,6 +473,7 @@ class StockOperationService:
                 batch_no=item.batch_no,
                 expiry_date=item.expiry_date,
                 allow_negative=negative_ok,
+                uom_symbol=line_uom_symbol,
             )
             total += line_total
         total = total.quantize(TWO, rounding=ROUND_HALF_UP)
@@ -435,6 +499,27 @@ class StockOperationService:
                 paid_amount=paid,
             )
 
+        # paid_amount > 0 → immutable payment record (spec 2.1.x Stock In).
+        # Attached to the created debt when partial, otherwise to the purchase.
+        if paid > 0:
+            from app.modules.pos.models import Payment
+
+            self.session.add(
+                Payment(
+                    payment_no=await allocate_document_number(self.session, "SUPPLIER_DEBT_PAYMENT"),
+                    sale_id=None,
+                    supplier_id=supplier_id,
+                    supplier_debt_id=debt.id if debt is not None else None,
+                    payment_type="SUPPLIER_DEBT_PAYMENT" if debt is not None else "STOCK_IN_PAYMENT",
+                    payment_method=payload.payment_method or "CASH",
+                    amount=paid,
+                    reference_no=payload.reference_no or document_no,
+                    note=payload.note,
+                    created_by=actor.id,
+                )
+            )
+            await self.session.flush()
+
         await record_audit(
             self.session,
             action="stock_in",
@@ -446,6 +531,168 @@ class StockOperationService:
         )
         await self.session.commit()
         return self._operation_out(transaction, items=item_rows, total_amount=total, paid_amount=paid, debt=debt)
+
+    async def purchase_return(self, stock_transaction_id: uuid.UUID, payload, *, actor: User):
+        """Return to supplier (spec: Purchase Return Transaction).
+
+        One transaction: lock the stock-in + its lines, validate returnable
+        qty (received − returned) and available stock, allocate the PRT-
+        sequence, create the immutable purchase_returns/items, stock OUT via
+        the canonical mutation (PURCHASE_RETURN), reduce the supplier debt
+        for that purchase (or record a supplier credit when fully paid),
+        audit, and commit — or roll everything back."""
+        from app.modules.pos.models import Payment
+
+        result = await self.session.execute(
+            select(StockTransaction)
+            .where(StockTransaction.id == stock_transaction_id)
+            .with_for_update()
+        )
+        transaction = result.scalar_one_or_none()
+        if transaction is None:
+            raise NotFoundError("Stock In document not found")
+        if transaction.transaction_type != "STOCK_IN" or transaction.status != "CONFIRMED":
+            raise ConflictError("Only confirmed Stock In documents can be returned")
+
+        items_by_id: dict[uuid.UUID, StockTransactionItem] = {
+            item.id: item for item in transaction.items
+        }
+        for line in payload.lines:
+            item = items_by_id.get(line.stock_transaction_item_id)
+            if item is None:
+                raise NotFoundError("Stock In line not found on this document")
+            returnable = Decimal(item.quantity) - Decimal(item.returned_quantity)
+            if Decimal(line.quantity) > returnable:
+                raise ValidationError(
+                    f"Cannot return more than the returnable quantity ({returnable})",
+                    field_errors={"lines": "Return quantity exceeds returnable"},
+                )
+
+        negative_ok = await allow_negative_stock(self.session)
+        return_no = await allocate_document_number(self.session, "PURCHASE_RETURN")
+        purchase_return = PurchaseReturn(
+            return_no=return_no,
+            stock_transaction_id=transaction.id,
+            supplier_id=transaction.supplier_id,
+            return_date=payload.return_date or datetime.now(timezone.utc),
+            refund_amount=Decimal("0.00"),
+            reason=payload.reason,
+            created_by=actor.id,
+        )
+        self.session.add(purchase_return)
+        await self.session.flush()
+
+        refund_total = Decimal("0.00")
+        out_rows: list[PurchaseReturnItem] = []
+        for line in payload.lines:
+            item = items_by_id[line.stock_transaction_item_id]
+            refund = (Decimal(line.quantity) * Decimal(item.unit_cost)).quantize(TWO, rounding=ROUND_HALF_UP)
+            row = PurchaseReturnItem(
+                purchase_return_id=purchase_return.id,
+                stock_transaction_item_id=item.id,
+                product_id=item.product_id,
+                quantity=_q4(line.quantity),
+                unit_cost=Decimal(item.unit_cost).quantize(TWO, rounding=ROUND_HALF_UP),
+                line_refund=refund,
+            )
+            out_rows.append(row)
+            self.session.add(row)
+            item.returned_quantity = _q4(Decimal(item.returned_quantity) + Decimal(line.quantity))
+            await apply_stock_movement(
+                self.session,
+                product_id=item.product_id,
+                movement_type="PURCHASE_RETURN",
+                quantity_delta=-Decimal(line.quantity),
+                unit_cost=item.unit_cost,
+                reference_type="purchase_return",
+                reference_id=purchase_return.id,
+                created_by=actor.id,
+                document_no=return_no,
+                note=payload.reason,
+                allow_negative=negative_ok,
+                uom_symbol=item.uom_symbol,
+            )
+            refund_total += refund
+        purchase_return.refund_amount = _q2(refund_total)
+
+        # Money: reduce the supplier debt for THIS purchase while it is open;
+        # any refund beyond the open debt (fully-paid purchase or overpaid
+        # debt) becomes a supplier credit recorded against the document.
+        debt_reduction = Decimal("0.00")
+        credit_amount = Decimal("0.00")
+        if transaction.supplier_id is not None and purchase_return.refund_amount > 0:
+            debt_result = await self.session.execute(
+                select(SupplierDebt)
+                .where(SupplierDebt.stock_transaction_id == transaction.id)
+                .with_for_update()
+            )
+            debt = debt_result.scalar_one_or_none()
+            if debt is not None and debt.remaining_amount > 0:
+                debt_reduction = min(purchase_return.refund_amount, debt.remaining_amount)
+                debt.remaining_amount = debt.remaining_amount - debt_reduction
+                debt.paid_amount = debt.original_amount - debt.remaining_amount
+                debt.status = "PAID" if debt.remaining_amount == 0 else "PARTIAL"
+            credit_amount = purchase_return.refund_amount - debt_reduction
+            if credit_amount > 0:
+                self.session.add(
+                    Payment(
+                        payment_no=await allocate_document_number(self.session, "SUPPLIER_DEBT_PAYMENT"),
+                        sale_id=None,
+                        supplier_id=transaction.supplier_id,
+                        supplier_debt_id=debt.id if debt is not None else None,
+                        payment_type="SUPPLIER_RETURN_CREDIT",
+                        payment_method="CREDIT",
+                        amount=credit_amount,
+                        reference_no=return_no,
+                        note=f"Purchase return credit for {transaction.document_no}",
+                        created_by=actor.id,
+                    )
+                )
+                await self.session.flush()
+        purchase_return.debt_reduction = _q2(debt_reduction)
+        purchase_return.credit_amount = _q2(credit_amount)
+
+        await record_audit(
+            self.session,
+            action="purchase_return",
+            module="stock",
+            user_id=actor.id,
+            entity_type="purchase_return",
+            entity_id=purchase_return.id,
+            new_values={
+                "return_no": return_no,
+                "document_no": transaction.document_no,
+                "refund_amount": str(purchase_return.refund_amount),
+                "debt_reduction": str(purchase_return.debt_reduction),
+                "credit_amount": str(purchase_return.credit_amount),
+            },
+        )
+        await self.session.commit()
+
+        return PurchaseReturnOut(
+            id=purchase_return.id,
+            return_no=purchase_return.return_no,
+            stock_transaction_id=transaction.id,
+            document_no=transaction.document_no,
+            supplier_id=transaction.supplier_id,
+            return_date=purchase_return.return_date,
+            refund_amount=purchase_return.refund_amount,
+            debt_reduction=purchase_return.debt_reduction,
+            credit_amount=purchase_return.credit_amount,
+            reason=purchase_return.reason,
+            items=[
+                PurchaseReturnItemOut(
+                    id=row.id,
+                    stock_transaction_item_id=row.stock_transaction_item_id,
+                    product_id=row.product_id,
+                    product_name=items_by_id[row.stock_transaction_item_id].product_ref.name,
+                    quantity=row.quantity,
+                    unit_cost=row.unit_cost,
+                    line_refund=row.line_refund,
+                )
+                for row in out_rows
+            ],
+        )
 
     async def adjust(self, payload, *, actor: User) -> StockOperationOut:
         return await self._apply_counted_operation(payload, actor=actor, kind="ADJUSTMENT")
@@ -632,6 +879,7 @@ class StockOperationService:
                         unit_cost=unit_cost,
                         batch_no=None,
                         expiry_date=None,
+                        uom_symbol=payload.uom_symbol,
                     )
                 ],
             )
@@ -761,6 +1009,7 @@ class StockOperationService:
                     "price": item.unit_cost,
                     "unit_cost": item.unit_cost,
                     "quantity": item.quantity,
+                    "uom_symbol": item.uom_symbol,
                     "batch_no": item.batch_no,
                     "expiry_date": item.expiry_date,
                     "line_total": item.line_total,
@@ -787,9 +1036,11 @@ class StockOperationService:
             debt_id=debt.id if debt is not None else None,
             items=[
                 OperationItemOut(
+                    id=item.id,
                     product_id=item.product_id,
                     product_name=item.product_ref.name if item.product_ref else None,
                     sku=item.product_ref.sku if item.product_ref else None,
+                    uom_symbol=item.uom_symbol,
                     quantity=item.quantity,
                     unit_cost=item.unit_cost,
                     system_quantity=item.system_quantity,
@@ -849,6 +1100,7 @@ def movement_to_out(movement: StockMovement) -> MovementOut:
         document_no=movement.document_no,
         batch_no=movement.batch_no,
         expiry_date=movement.expiry_date,
+        uom_symbol=movement.uom_symbol,
         note=movement.note,
         created_at=movement.created_at,
     )

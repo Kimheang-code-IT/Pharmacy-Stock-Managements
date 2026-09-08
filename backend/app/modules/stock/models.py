@@ -169,6 +169,69 @@ class StockTransaction(Base):
     )
 
 
+class PurchaseReturn(Base):
+    """Immutable supplier-return document against a confirmed Stock In
+    (spec 4.2 purchase_returns). Never a standalone page — created from the
+    Purchase Report / Stock In history via POST /stock/in/{id}/return."""
+
+    __tablename__ = "purchase_returns"
+    __table_args__ = (Index("ix_purchase_returns_stock_transaction_id", "stock_transaction_id"),
+                      Index("ix_purchase_returns_supplier_id", "supplier_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    return_no: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    stock_transaction_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_transactions.id", ondelete="RESTRICT"), nullable=False
+    )
+    supplier_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True
+    )
+    return_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    refund_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    debt_reduction: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False, default=Decimal("0.00")
+    )
+    credit_amount: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False, default=Decimal("0.00")
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    items: Mapped[list["PurchaseReturnItem"]] = relationship(
+        back_populates="return_ref", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class PurchaseReturnItem(Base):
+    """One returned stock-in line; quantities are in the product base UOM."""
+
+    __tablename__ = "purchase_return_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    purchase_return_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("purchase_returns.id", ondelete="CASCADE"), nullable=False
+    )
+    stock_transaction_item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stock_transaction_items.id", ondelete="RESTRICT"), nullable=False
+    )
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
+    )
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    line_refund: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    return_ref: Mapped[PurchaseReturn] = relationship(back_populates="items")
+
+
 class StockTransactionItem(Base):
     __tablename__ = "stock_transaction_items"
 
@@ -185,8 +248,12 @@ class StockTransactionItem(Base):
     actual_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     batch_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Line UOM symbol snapshot (the selected Pricing UOM for Stock In lines).
+    uom_symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     line_total: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    # Cumulative returned-to-supplier qty (base UOM) across purchase returns.
+    returned_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -216,6 +283,8 @@ class StockMovement(Base):
     document_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
     batch_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Line UOM symbol snapshot (display only; quantities stay in base UOM).
+    uom_symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False

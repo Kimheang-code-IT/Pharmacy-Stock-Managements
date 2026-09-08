@@ -217,6 +217,8 @@ async def test_dashboard_counts_pending_delivery_notes(client, dashboard_baselin
         "/api/v1/delivery-notes",
         json={
             "sale_id": cash_sale["id"],
+            "delivery_phone": "0123456789",
+            "delivery_location": "Street 1, Phnom Penh",
             "items": [{"sale_item_id": cash_sale["items"][0]["id"], "qty_to_deliver": "3"}],
         },
         headers=headers,

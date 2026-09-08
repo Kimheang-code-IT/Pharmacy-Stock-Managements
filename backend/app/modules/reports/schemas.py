@@ -10,12 +10,16 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, computed_field
 
 class SalesReportRow(BaseModel):
     sale_id: UUID
+    sale_item_id: UUID | None = None
+    product_id: UUID | None = None
     sale_date: datetime
     invoice_no: str
     customer_name: str | None
     product_name: str
     sku: str
     quantity: Decimal
+    returned_quantity: Decimal = Decimal("0")
+    returnable_quantity: Decimal = Decimal("0")
     selling_price: Decimal
     discount_amount: Decimal
     sales_amount: Decimal
@@ -23,18 +27,25 @@ class SalesReportRow(BaseModel):
     net_quantity: Decimal
     cost: Decimal
     gross_profit: Decimal
+    # Header debt of the parent sale (repeated per line for grouping).
+    debt_amount: Decimal = Decimal("0")
     cashier_name: str | None
     payment_method: str
 
 
 class PurchaseReportRow(BaseModel):
     transaction_id: UUID
+    stock_transaction_item_id: UUID | None = None
+    product_id: UUID | None = None
     document_no: str
     transaction_date: datetime
     supplier_name: str | None
     product_name: str
     sku: str
     quantity: Decimal
+    returned_quantity: Decimal = Decimal("0")
+    returnable_quantity: Decimal = Decimal("0")
+    return_amount: Decimal = Decimal("0")
     cost_price: Decimal
     total_cost: Decimal
     paid_amount: Decimal

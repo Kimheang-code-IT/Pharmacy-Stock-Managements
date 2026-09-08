@@ -36,8 +36,10 @@ class DeliveryNote(Base):
     customer_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("customers.id", ondelete="RESTRICT"), nullable=False
     )
-    delivery_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    delivery_location: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # NOT NULL (spec §2.1.9): the delivery destination is mandatory; the
+    # service falls back to the customer snapshot when the caller omits it.
+    delivery_phone: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    delivery_location: Mapped[str] = mapped_column(Text, nullable=False, default="")
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default=STATUS_DRAFT)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)

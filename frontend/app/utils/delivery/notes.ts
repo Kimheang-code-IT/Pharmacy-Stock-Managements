@@ -147,6 +147,61 @@ export function saleHasDeliverableLines(sale: AppRecord | null | undefined, note
   return deliverableLines(sale, notes).some(line => line.qtyRemaining > 0)
 }
 
+/**
+ * One confirmed invoice with remaining deliverable qty — the normalized row
+ * shape of `deliverableInvoices()` (both mock and HTTP adapters produce it).
+ * Mirrors GET /delivery-notes/deliverable-invoices (spec §2.1.9).
+ */
+export interface DeliverableInvoiceItem {
+  saleItemId: string
+  productId: string
+  product: string
+  sku: string
+  uomSymbol: string
+  qtyOrdered: number
+  qtyRemaining: number
+}
+
+export interface DeliverableInvoice {
+  saleId: string
+  invoiceNo: string
+  customerId: string
+  customer: string
+  phone: string
+  location: string
+  saleStatus: string
+  qtyRemaining: number
+  items: DeliverableInvoiceItem[]
+}
+
+function num4(value: unknown): number {
+  return Math.round((Number(value ?? 0) + Number.EPSILON) * 10000) / 10000
+}
+
+/** Normalize one deliverable-invoice row (backend snake_case or camelCase). */
+export function normalizeDeliverableInvoice(row: Record<string, unknown>): DeliverableInvoice {
+  const rawItems = Array.isArray(row.items) ? row.items as Record<string, unknown>[] : []
+  return {
+    saleId: String(row.saleId ?? row.sale_id ?? row.id ?? ''),
+    invoiceNo: String(row.invoiceNo ?? row.invoice_no ?? row.saleNo ?? ''),
+    customerId: String(row.customerId ?? row.customer_id ?? ''),
+    customer: String(row.customerName ?? row.customer_name ?? row.customer ?? ''),
+    phone: String(row.phone ?? ''),
+    location: String(row.location ?? row.address ?? ''),
+    saleStatus: String(row.saleStatus ?? row.sale_status ?? ''),
+    qtyRemaining: num4(row.qtyRemaining ?? row.qty_remaining),
+    items: rawItems.map(item => ({
+      saleItemId: String(item.saleItemId ?? item.sale_item_id ?? item.id ?? ''),
+      productId: String(item.productId ?? item.product_id ?? ''),
+      product: String(item.product ?? item.product_name ?? item.name ?? ''),
+      sku: String(item.sku ?? ''),
+      uomSymbol: String(item.uomSymbol ?? item.uom_symbol ?? item.uom ?? ''),
+      qtyOrdered: num4(item.qtyOrdered ?? item.qty_ordered ?? item.quantity),
+      qtyRemaining: num4(item.qtyRemaining ?? item.qty_remaining),
+    })).filter(item => item.qtyRemaining > 0 && item.saleItemId),
+  }
+}
+
 /** Total item count across a note's lines (for list columns). */
 export function deliveryItemCount(note: AppRecord): number {
   return deliveryLines(note).length

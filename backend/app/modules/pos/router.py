@@ -11,6 +11,7 @@ from app.api.deps import (
     require_permission,
 )
 from app.modules.auth.models import User
+from app.modules.delivery_notes.schemas import DeliveryNoteFromSaleCreate
 from app.modules.pos.schemas import (
     SaleCreateRequest,
     SaleReturnRequest,
@@ -103,6 +104,24 @@ async def return_sale(
 ) -> dict:
     service = POSService(db)
     return envelope(await service.return_sale(sale_id, payload, actor=actor))
+
+
+@router.post("/sales/{sale_id}/delivery-notes", status_code=http_status.HTTP_201_CREATED)
+async def create_delivery_note_from_sale(
+    sale_id: UUID,
+    payload: DeliveryNoteFromSaleCreate,
+    db: AsyncSession = Depends(get_db_session),
+    actor: User = Depends(require_permission("delivery.create")),
+) -> dict:
+    """POS auto-entry: prefill/create a delivery note from ONE sale (spec
+    §2.1.9). Default lines = every sale line's remaining undelivered qty;
+    phone/location default from the customer. Delegates to the canonical
+    delivery-note create transaction (no stock movement)."""
+    from app.modules.delivery_notes.service import DeliveryNoteService, note_to_out
+
+    service = DeliveryNoteService(db)
+    note = await service.create_from_sale(sale_id, payload, actor=actor)
+    return envelope(note_to_out(note, await service.customer_name(note)))
 
 
 @router.get("/sales/{sale_id}/receipt")

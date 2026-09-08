@@ -115,8 +115,9 @@ Do **not** send payment or invoice text (or PDFs) to Telegram.
 - Sales Report and Purchase Report: each row has an **Actions (`...`)** column. Sales → **Return** (customer return). Purchase → **Return** (return to supplier). No `/returns` page.
 - Finance Report: income/expense **table** (no chart); Add Expense modal with plus icon and full-width fields; filters on the table toolbar only; no `/expenses` page.
 - Customer / Supplier Debt Reports: **document-level** rows with Date and Invoice No. / Purchase No. Row **Actions (`...`) → Pay** opens a payment modal for that open/partial debt (not on Setup customer/supplier documents).
-- POS: full-width workspace; two-step sell → checkout; cart UOM select = every Pricing row for that product; selecting a UOM updates unit price / remaining stock from that row; default cart UOM = row with **Default sale**; stock out `qty × factor` in base (Convert) UOM; print-only invoice after submit.
+- POS: full-width workspace; two-step sell → checkout; cart UOM select = every Pricing row for that product; selecting a UOM updates unit price / remaining stock from that row; default cart UOM = row with **Default sale**; stock out `qty × factor` in base (Convert) UOM; print-only invoice after submit. Live API payment methods: map UI Cash/Card/Mobile/Credit ↔ `CASH`/`BANK_QR`/`CUSTOMER_DEBT` (IMPLEMENTATION_PLAN Phase 9).
 - Delivery Notes: list **Update Status** (allowed transitions); Add = multi-select invoices with search on `AppListTable` + phone/location; auto-open from POS with invoice preselected; no driver/vehicle form; no second stock-out.
+- **FE↔BE live alignment** is tracked in IMPLEMENTATION_PLAN **Phase 9** (sale return `items`|`lines`, report list adapters, Stock In purchase header, Delivery Notes create/status, Pricing out mapping).
 
 **Quality**
 
@@ -1072,6 +1073,8 @@ Logic:
    - update sale return totals / report `Return Amount`
    - audit log
 5. Reject over-return, concurrent over-return, and oversell of restock edge cases with rollback.
+
+**API contract:** `POST /api/v1/pos/sales/{id}/return` body must accept both `items` and `lines` arrays (same element shape: `sale_item_id`, `quantity`, `restock`). Reason required. See IMPLEMENTATION_PLAN Phase 9.
 
 ### Purchase Report
 

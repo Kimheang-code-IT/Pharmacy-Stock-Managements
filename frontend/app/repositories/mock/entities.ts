@@ -968,6 +968,7 @@ export function createMockPosRepository(): PosCommandRepository {
           )
         }
         returnItems.push({
+          id: createId('srit'),
           saleItemId: item.id,
           productId: item.productId,
           name: item.name,
@@ -1058,6 +1059,7 @@ export function createMockPosRepository(): PosCommandRepository {
           { uom: String(item.uom || ''), unitCost: unit },
         )
         returnItems.push({
+          id: createId('prit'),
           stockItemId: item.id,
           productId: item.productId,
           name: item.name,

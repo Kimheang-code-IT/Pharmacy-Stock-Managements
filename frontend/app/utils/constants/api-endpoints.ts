@@ -45,6 +45,12 @@ export const ApiEndpoints = {
   POS_RECEIPT: (id: string) => `/api/v1/pos/sales/${id}/receipt`,
   POS_PRODUCT_SEARCH: '/api/v1/pos/products/search',
   POS_PRODUCT_BARCODE: (barcode: string) => `/api/v1/pos/products/barcode/${encodeURIComponent(barcode)}`,
+  POS_PRODUCT_DELIVERY_NOTE: (saleId: string) => `/api/v1/pos/sales/${saleId}/delivery-notes`,
+
+  /** Spec §7 Reports: Sales/Purchase reports back the report pages AND the
+   *  Return dialogs (rows carry document ids + returnable quantities). */
+  REPORT_SALES: '/api/v1/reports/sales',
+  REPORT_PURCHASES: '/api/v1/reports/purchases',
 
   DELIVERY_NOTES: '/api/v1/delivery-notes',
   DELIVERY_NOTE: (id: string) => `/api/v1/delivery-notes/${id}`,
@@ -126,11 +132,11 @@ export const CollectionEndpoints = {
   products: ApiEndpoints.PRODUCTS,
   suppliers: ApiEndpoints.SUPPLIERS,
   customers: ApiEndpoints.CUSTOMERS,
-  sales: ApiEndpoints.SALES,
+  sales: ApiEndpoints.REPORT_SALES,
   deliveryNotes: ApiEndpoints.DELIVERY_NOTES,
   // Purchase Report reads the report path; creating stock-in goes through
   // ApiEndpoints.STOCK_IN (PosCommandRepository.createStockOperation).
-  stockIns: '/api/v1/reports/purchases',
+  stockIns: ApiEndpoints.REPORT_PURCHASES,
   stockMovements: ApiEndpoints.STOCK_MOVEMENTS,
   // Sale-price rows are product-scoped (PRODUCT_SALE_PRICES(productId)); this
   // collection key exists for mock compatibility only and is never flat CRUD

@@ -54,6 +54,10 @@ const stockOperationNote = ref('')
 const stockOperationBusy = ref(false)
 const stockOperationUomId = ref('')
 const stockOperationUnitCost = ref<number | undefined>()
+// Stock In = purchase: supplier + payment (unpaid balance → supplier debt).
+const stockOperationSupplier = ref('')
+const stockOperationPaidInput = ref<number | undefined>()
+const stockOperationPaymentMethod = ref<'Cash' | 'BANK_QR'>('Cash')
 const dateFrom = ref('')
 const dateTo = ref('')
 const returnOpen = ref(false)
@@ -99,13 +103,13 @@ const canOperate = computed(() => Boolean(
   && !current.value.readOnly
   && (auth.canAccessPage(`${permissionPrefix.value}.operate`) || auth.canAccessPage(`${permissionPrefix.value}.edit`)),
 ))
+// Backend returns require pos.access (PosService.return_sale) — the UI
+// check only hides the action.
 const canReturnSale = computed(() =>
-  auth.canAccessPage('pos.operate') || auth.canAccessPage('pos.create'),
+  auth.canAccessPage('pos.access'),
 )
 const canReturnPurchase = computed(() =>
-  auth.canAccessPage('products.edit')
-  || auth.canAccessPage('products.operate')
-  || auth.canAccessPage('products.create'),
+  auth.canAccessPage('stock.in'),
 )
 const canPayCustomerDebt = computed(() =>
   auth.canAccessPage('customers.edit')
@@ -759,6 +763,9 @@ function openStockOperation(type: StockOperationType, productId = '') {
   const product = store.list('products').find(row => String(row.id) === String(productId))
   stockOperationUomId.value = String(product?.uomId || '')
   stockOperationUnitCost.value = undefined
+  stockOperationSupplier.value = ''
+  stockOperationPaidInput.value = undefined
+  stockOperationPaymentMethod.value = 'Cash'
   stockOperationOpen.value = true
 }
 
@@ -817,6 +824,30 @@ watch(stockOperationUomId, (uomId) => {
   stockOperationUnitCost.value = suggested > 0 ? suggested : undefined
 })
 
+/** Supplier options for the Stock In purchase dialog. */
+const stockOperationSupplierOptions = computed(() =>
+  store.list('suppliers')
+    .filter(row => String(row.status || 'Active') !== 'Inactive')
+    .map(row => ({ label: String(row.name || ''), value: String(row.id) })))
+
+/** Stock In line total (received qty × unit cost per the selected UOM). */
+const stockOperationLineTotal = computed(() =>
+  Math.round((Number(stockOperationQuantity.value || 0) * Number(stockOperationUnitCost.value || 0)) * 100) / 100)
+
+/** Paid now defaults to the full line total (0…total; balance → supplier debt). */
+const stockOperationPaidAmount = computed(() =>
+  Math.min(Number(stockOperationPaidInput.value ?? stockOperationLineTotal.value), stockOperationLineTotal.value))
+
+const stockOperationOutstanding = computed(() =>
+  Math.round((stockOperationLineTotal.value - stockOperationPaidAmount.value) * 100) / 100)
+
+const stockOperationCanSubmit = computed(() => Boolean(
+  stockOperationProduct.value
+  && stockOperationQuantity.value
+  && (stockOperationType.value !== 'stock_in'
+    || stockOperationOutstanding.value <= 0
+    || stockOperationSupplier.value)))
+
 async function submitStockOperation() {
   if (!stockOperationProduct.value || !stockOperationQuantity.value) return
   stockOperationBusy.value = true
@@ -832,6 +863,9 @@ async function submitStockOperation() {
             uomSymbol: stockOperationUomSymbol.value || undefined,
             factorToBase: stockOperationFactor.value,
             ...(stockOperationUnitCost.value != null ? { unitCost: Number(stockOperationUnitCost.value) } : {}),
+            supplierId: stockOperationSupplier.value || null,
+            paidAmount: stockOperationPaidAmount.value,
+            paymentMethod: stockOperationPaymentMethod.value,
           }
         : {}),
     })
@@ -988,6 +1022,36 @@ function filterItems(filter: { options?: readonly ModuleSelectOption[] | ModuleS
           :help="t('app.stock.convCostHint')"
           class="w-full"
         />
+        <template v-if="stockOperationType === 'stock_in'">
+          <CommonAppSelectMenuField
+            v-model="stockOperationSupplier"
+            :items="stockOperationSupplierOptions"
+            :label="t('app.fields.supplier')"
+            :help="t('app.stock.supplierHint')"
+            class="w-full"
+          />
+          <CommonAppSelectMenuField
+            v-model="stockOperationPaymentMethod"
+            :items="[
+              { label: t('app.pos.paymentMethodCash'), value: 'Cash' },
+              { label: t('app.pos.paymentMethodBank'), value: 'BANK_QR' },
+            ]"
+            :label="t('app.reports.paymentMethod')"
+            class="w-full"
+          />
+          <CommonAppMoneyField
+            v-model="stockOperationPaidInput"
+            :label="t('app.pos.paidNow')"
+            :min="0"
+            :max="stockOperationLineTotal"
+            :step="0.01"
+            :help="t('app.stock.paidHint', { total: stockOperationLineTotal })"
+            class="w-full"
+          />
+          <p v-if="stockOperationOutstanding > 0 && !stockOperationSupplier" class="text-xs text-warning">
+            {{ t('app.stock.outstandingNeedsSupplier') }}
+          </p>
+        </template>
         <CommonAppTextareaField
           v-model="stockOperationNote"
           :label="t('app.fields.note')"
@@ -1011,7 +1075,7 @@ function filterItems(filter: { options?: readonly ModuleSelectOption[] | ModuleS
             :color="stockOperationMeta.color"
             :icon="stockOperationMeta.icon"
             :loading="stockOperationBusy"
-            :disabled="!stockOperationProduct || !stockOperationQuantity"
+            :disabled="!stockOperationCanSubmit"
             :label="stockOperationMeta.label"
             @click="submitStockOperation"
           />

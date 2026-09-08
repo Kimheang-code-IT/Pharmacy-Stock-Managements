@@ -3,9 +3,11 @@ import { useAppHeader } from '~/composables/layout/useAppHeader'
 import { useConfirm } from '~/composables/common/useConfirm'
 import { useDeliveryCommands, useSettingsRepositories } from '~/repositories/index'
 import {
-  canTransitionDelivery,
+  canTransitionAction,
   deliveryLines,
   deliveryStatusOf,
+  noteInvoiceNos,
+  noteSales,
   type DeliveryStatusAction,
 } from '~/utils/delivery/notes'
 import { printDeliveryNoteDocument } from '~/utils/print/delivery-note'
@@ -78,9 +80,12 @@ onMounted(async () => {
 })
 
 const relatedSale = computed(() => {
-  const saleId = String(note.value?.saleId ?? '')
+  // Multi-invoice notes (spec §2.1.9): link to the first invoice; the joined
+  // list is shown in the lines card.
+  const saleId = noteSales(note.value)[0]?.saleId || ''
   return saleId ? store.list('sales').find(row => String(row.id) === saleId) || null : null
 })
+const linkedInvoiceNos = computed(() => noteInvoiceNos(note.value))
 
 /* ------------------------------ permissions ------------------------------ */
 
@@ -88,7 +93,7 @@ const canDeliver = computed(() => auth.canAccessPage('delivery.deliver'))
 const canCancel = computed(() => auth.canAccessPage('delivery.cancel'))
 
 function allowed(action: DeliveryStatusAction): boolean {
-  return Boolean(note.value) && canTransitionDelivery(note.value as AppRecord, action)
+  return Boolean(note.value) && canTransitionAction(note.value as AppRecord, action)
 }
 
 /** Simplified actions (spec §5.13): Delivery OK when possible, else Cancel. */
@@ -218,8 +223,8 @@ function printNote() {
         </div>
       </UCard>
 
-      <p v-if="relatedSale" class="text-xs text-muted">
-        {{ t('app.delivery.linkedSale') }}: {{ relatedSale.saleNo || relatedSale.invoiceNo }}
+      <p v-if="linkedInvoiceNos.length" class="text-xs text-muted">
+        {{ t('app.delivery.linkedSale') }}: {{ linkedInvoiceNos.join(', ') }}
       </p>
     </template>
 

@@ -6,12 +6,15 @@ import type {
 import { ApiEndpoints } from '~/utils/constants/api-endpoints'
 import { unwrap } from './entities'
 
-/** Status verbs accepted by the legacy alias surface of /status. */
-const STATUS_TO_ACTION: Record<string, string> = {
-  Confirmed: 'confirm',
-  'Out for Delivery': 'out_for_delivery',
-  Delivered: 'deliver',
-  Cancelled: 'cancel',
+/** UI status label → canonical backend status (spec §5.13 Update Status).
+ *  POST /delivery-notes/{id}/status takes { status, cancel_reason }; the
+ *  verb aliases (confirm/deliver/…) are a legacy surface, not used here. */
+const STATUS_TO_API: Record<string, string> = {
+  Draft: 'DRAFT',
+  Confirmed: 'CONFIRMED',
+  'Out for Delivery': 'OUT_FOR_DELIVERY',
+  Delivered: 'DELIVERED',
+  Cancelled: 'CANCELLED',
 }
 
 /**
@@ -31,14 +34,13 @@ export function createHttpDeliveryRepository(): DeliveryCommandRepository {
     },
 
     async setDeliveryStatus(id: string, status: string, reason?: string | null): Promise<AppRecord> {
-      // The canonical body is {status, cancel_reason}; the verb aliases
-      // (confirm/deliver/cancel) hit the same transition service.
-      const action = STATUS_TO_ACTION[status]
+      const canonical = STATUS_TO_API[status] ?? String(status).toUpperCase()
       return unwrap<Record<string, unknown>>(await api.post<unknown>(
         ApiEndpoints.DELIVERY_NOTE_STATUS(id),
-        action
-          ? { action, reason: reason || null }
-          : { status, cancel_reason: reason || null },
+        {
+          status: canonical,
+          cancel_reason: canonical === 'CANCELLED' ? (reason || null) : null,
+        },
       )) as AppRecord
     },
 

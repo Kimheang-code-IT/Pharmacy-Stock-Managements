@@ -100,7 +100,11 @@ class SaleItemRequest(BaseModel):
 class SaleCreateRequest(BaseModel):
     """PosCompleteSaleInput — camelCase keys from the frontend, snake_case
     accepted too. `deposit` (selected open debts) is settled from the paid
-    amount via included_debt_ids; delivery_price is added to grand_total."""
+    amount via included_debt_ids; delivery_price is added to grand_total.
+
+    Canonical payment methods: CASH | BANK_QR | CUSTOMER_DEBT. The UI's
+    display labels map one-to-one: Cash→CASH, Card / Mobile Payment /
+    Bank Transfer→BANK_QR (cashless tender), Credit→CUSTOMER_DEBT."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -215,14 +219,23 @@ class PaymentOut(BaseModel):
 
 
 class SaleReturnItemRequest(BaseModel):
-    sale_item_id: UUID
+    """One return line; camelCase keys accepted (UI adapter contract)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    sale_item_id: UUID = Field(validation_alias=AliasChoices("sale_item_id", "saleItemId"))
     quantity: Decimal = Field(gt=0)
     restock: bool = True
 
 
 class SaleReturnRequest(BaseModel):
+    """POST /pos/sales/{id}/return body. `items` is canonical; `lines` is an
+    accepted alias so both API dialects work (spec 2.1.7)."""
+
     reason: str = Field(min_length=1, max_length=1000)
-    items: list[SaleReturnItemRequest] = Field(min_length=1)
+    items: list[SaleReturnItemRequest] = Field(
+        min_length=1, validation_alias=AliasChoices("items", "lines")
+    )
     return_date: datetime | None = None
 
 

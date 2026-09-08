@@ -86,7 +86,8 @@ class CustomerService:
             select(CustomerDebt, Sale.sale_date)
             .join(Sale, Sale.id == CustomerDebt.sale_id)
             .where(CustomerDebt.customer_id == customer.id)
-            .order_by(CustomerDebt.created_at.desc())
+            # Oldest first so the list agrees with pay_open_debts (oldest settled first).
+            .order_by(CustomerDebt.created_at.asc(), CustomerDebt.id.asc())
         )
         return [(debt, sale_date) for debt, sale_date in result.all()]
 

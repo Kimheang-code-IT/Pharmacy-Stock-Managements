@@ -29,8 +29,8 @@ Default shop name: **Yoeun Sokhon Pharmacy**. Logo: `frontend/app/assets/images/
 | Setup → Brands | `/setup/brands` | Brand list and add/edit/disable actions; optional on products |
 | Setup → Suppliers | `/setup/suppliers` | Supplier list/add/edit (name, phone, location). List Outstanding Debt is read-only from Stock In. Purchase/debt history is Reports-only |
 | Setup → Customers | `/setup/customers` | Customer list/add/edit (name, phone, location). List Outstanding Debt is read-only from POS. Sales/debt/delivery history is Reports / Delivery Notes |
-| Sales Report | `/reports/sales` | Sales reporting; row **Actions (`...`) → Return** (customer return modal) |
-| Purchase Report | `/reports/purchases` | Stock-in/purchase reporting; row **Actions (`...`) → Return** (return to supplier). New purchases via Stock In, not this page |
+| Sales Report | `/reports/sales` | Sales reporting; row **Actions (`...`) → Return**. Live API must use a **document-level** list (or FE adapter) with `id`/`sale_id` + nested/returnable lines — see IMPLEMENTATION_PLAN Phase 9. Prefer `GET /api/v1/reports/sales` with adapter, or `GET /api/v1/pos/sales` if that returns full sale docs with `items[]`. |
+| Purchase Report | `/reports/purchases` | Stock-in/purchase reporting; row **Actions (`...`) → Return**. Live path `GET /api/v1/reports/purchases` — map `document_no`/`transaction_id` to UI `purchaseNo`/`id` (Phase 9). New purchases via Stock In, not this page |
 | Customer Debt Report | `/reports/customer-debts` | Invoice-level debts with Date + Invoice No.; row **Actions (`...`) → Pay** (payment modal); payment history |
 | Supplier Debt Report | `/reports/supplier-debts` | Document-level debts with Date + Invoice/Purchase No.; row **Actions (`...`) → Pay** (payment modal); payment history |
 | Finance Report | `/reports/finance` | Income/expense table (no chart); Add Expense modal; filters on table toolbar only |
@@ -96,10 +96,10 @@ The new API base is `/api/v1`. Frontend Setup nesting does not change API owners
 | Products | `/products/*` |
 | Stock operations/history | `/stock/*` |
 | Suppliers and supplier debt | `/suppliers/*` |
-| POS, sales, returns, **JSON receipt for HTML print** | `/pos/*` |
+| POS, sales, returns, **JSON receipt for HTML print** | `/pos/*` — sale return accepts `items` **or** `lines`; payment methods map UI ↔ `CASH`/`BANK_QR`/`CUSTOMER_DEBT` (IMPLEMENTATION_PLAN Phase 9) |
 | Customers and customer debt | `/customers/*` |
-| Delivery notes | `/delivery-notes/*` |
-| Reports | `/reports/*` |
+| Delivery notes | `/delivery-notes/*` — multi-invoice; status uses enum (verbs as aliases) |
+| Reports | `/reports/*` — sales/purchases list shape + FE adapters (Phase 9) |
 | Users, roles, permissions, sequences, audit, settings | `/admin/*` |
 
 Detailed methods and paths are defined in specification section 7. Internal backend module names should follow business ownership even when a feature is nested under Setup in the frontend.

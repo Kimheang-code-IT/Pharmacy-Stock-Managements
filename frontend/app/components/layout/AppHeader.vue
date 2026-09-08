@@ -6,6 +6,10 @@ const { t } = useI18n()
 const { displayTitle, breadcrumbs, badges, hasBreadcrumbs, actions } = useAppHeader()
 const { isPosWorkspace, leavePos } = usePosChrome()
 
+/** Desktop sidebar rail starts at `lg`; below that (phone + iPad) user menu lives in the header too. */
+const isCompactChrome = useMediaQuery('(max-width: 1023px)')
+const showHeaderUserMenu = computed(() => isPosWorkspace.value || isCompactChrome.value)
+
 /** Spin on every click — page `refreshing` alone misses synchronous refreshes. */
 const refreshSpin = ref(false)
 let refreshSpinTimer: ReturnType<typeof setTimeout> | null = null
@@ -226,7 +230,7 @@ function onHeaderRefresh() {
         />
 
         <LayoutUserMenu
-          v-if="isPosWorkspace"
+          v-if="showHeaderUserMenu"
           collapsed
           placement="header"
         />

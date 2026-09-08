@@ -42,7 +42,7 @@ async def test_partial_return_restocks_and_records_movement(client):
     )
     assert response.status_code == 201, response.text
     sale_return = response.json()["data"]
-    assert sale_return["return_no"].startswith("RET-")
+    assert sale_return["return_no"].startswith("SRT-")
     assert Decimal(sale_return["refund_amount"]) == Decimal("10.00")
     assert sale_return["items"][0]["restock"] is True
 

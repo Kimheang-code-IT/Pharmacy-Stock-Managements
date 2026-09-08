@@ -633,7 +633,9 @@
       "printSizeTitle": "Print invoice — choose paper size",
       "paperA4": "A4",
       "paperA5": "A5",
-      "lastSale": "Last sale"
+      "lastSale": "Last sale",
+      "paymentMethodCash": "Cash",
+      "paymentMethodBank": "Card / Bank / Mobile"
     },
     "delivery": {
       "newTitle": "New Delivery Note",
@@ -668,7 +670,12 @@
       "print": "Print",
       "linkedSale": "Linked sale",
       "related": "Delivery notes",
-      "createDelivery": "Create delivery note"
+      "createDelivery": "Create delivery note",
+      "selectInvoices": "Invoices",
+      "selectInvoicesPlaceholder": "Select confirmed invoices to deliver",
+      "invoicesSelected": "{n} invoice(s) selected",
+      "mixedCustomer": "Invoices must belong to the same customer",
+      "sameCustomerHint": "One delivery note can cover many invoices of the SAME customer."
     },
     "dashboard": {
       "products": "Products",
@@ -802,7 +809,10 @@
       "expiryTrackingHint": "When enabled, stock-in lots can carry an expiry date.",
       "expiryDate": "Expire Date",
       "expiryDateHint": "Nearest lot expiry date from Stock In. Blank when not tracked or no expiry is set. Set on Stock In — not edited here.",
-      "uomConvertHint": "1 {from} = {n} {baseUom}"
+      "uomConvertHint": "1 {from} = {n} {baseUom}",
+      "supplierHint": "Optional — required when part of the purchase stays unpaid (recorded as supplier debt).",
+      "paidHint": "Paid now (0…{total}). The unpaid balance becomes supplier debt.",
+      "outstandingNeedsSupplier": "Select a supplier for the unpaid balance (supplier debt)."
     },
     "documentSequences": {
       "seedDefaults": "Load defaults",
@@ -995,7 +1005,8 @@
       "username": "Username",
       "userCount": "Users",
       "permissionCount": "Permissions",
-      "year": "Year"
+      "year": "Year",
+      "supplier": "Supplier"
     },
     "tables": {
       "feeLines": "Fee Lines"

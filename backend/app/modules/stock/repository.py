@@ -13,7 +13,7 @@ from app.modules.stock.models import Product, StockBalance, StockMovement
 # Movement-kind grouping for the stock read model (spec section 2.1.5):
 # Stock In (inbound), Stock Out (non-damage outbound), Damage (damage + expiry).
 STOCK_IN_TYPES = ("STOCK_IN", "SALE_RETURN", "ADJUSTMENT_IN")
-STOCK_OUT_TYPES = ("SALE", "ADJUSTMENT_OUT")
+STOCK_OUT_TYPES = ("SALE", "PURCHASE_RETURN", "ADJUSTMENT_OUT")
 DAMAGE_TYPES = ("DAMAGE", "EXPIRE")
 
 

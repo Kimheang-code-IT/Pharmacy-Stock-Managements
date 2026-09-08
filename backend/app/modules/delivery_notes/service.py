@@ -32,7 +32,9 @@ from app.modules.delivery_notes.schemas import (
     DeliverableInvoiceOut,
     DeliverableItemOut,
     DeliverableItemsOut,
+    DeliveryNoteCreate,
     DeliveryNoteItemOut,
+    DeliveryNoteLineCreate,
     DeliveryNoteOut,
     DeliveryNoteSaleOut,
 )
@@ -303,8 +305,11 @@ class DeliveryNoteService:
         note = DeliveryNote(
             delivery_no=delivery_no,
             customer_id=customer.id,
-            delivery_phone=payload.delivery_phone or customer.phone,
-            delivery_location=payload.delivery_location or customer.address,
+            # phone/location are NOT NULL (spec §2.1.9): caller value wins,
+            # then the customer snapshot, then an empty string so the draft
+            # can always be persisted and edited before Confirm.
+            delivery_phone=payload.delivery_phone or customer.phone or "",
+            delivery_location=payload.delivery_location or customer.address or "",
             status=DeliveryNote.STATUS_DRAFT,
             note=payload.note,
             created_by=actor.id,
@@ -349,6 +354,57 @@ class DeliveryNoteService:
         await self.session.refresh(note, attribute_names=["items", "sales"])
         return note
 
+    async def create_from_sale(self, sale_id: uuid.UUID, payload, *, actor: User) -> DeliveryNote:
+        """POS auto-entry (POST /pos/sales/{id}/delivery-notes): prefill one
+        delivery note from a single sale. Default lines = every sale line with
+        remaining undelivered qty; phone/location default from the customer.
+        Reuses the canonical create() so all same-customer / allocation rules
+        apply."""
+        await self._lock_sale(sale_id)
+        sale = await self._sale(sale_id)
+        if sale.sale_status not in DELIVERABLE_SALE_STATUSES:
+            raise ConflictError("Delivery notes can only be created from completed sales")
+
+        sale_items = await self._sale_items(sale_id)
+        allocated = await self.repo.allocated_by_sale_item(sale_id)
+
+        requested: dict[uuid.UUID, Decimal] = {}
+        override_lines = getattr(payload, "lines", None)
+        if override_lines:
+            for line in override_lines:
+                if line.sale_id is not None and str(line.sale_id) != str(sale_id):
+                    raise ValidationError(
+                        "Lines must belong to the selected sale",
+                        field_errors={"lines": "Sale mismatch"},
+                    )
+                if line.sale_item_id in requested:
+                    raise ValidationError(
+                        "Duplicate sale line in delivery note",
+                        field_errors={"lines": "Duplicate sale line"},
+                    )
+                requested[line.sale_item_id] = _q4(line.qty_to_deliver)
+        else:
+            for item in sale_items:
+                remaining = _q4(item.quantity - item.returned_quantity) - allocated.get(item.id, Decimal("0"))
+                if remaining > 0:
+                    requested[item.id] = remaining
+        if not requested:
+            raise ConflictError("This sale has no remaining quantity to deliver")
+
+        create_payload = DeliveryNoteCreate(
+            sale_id=sale_id,
+            customer_id=sale.customer_id,
+            delivery_phone=getattr(payload, "delivery_phone", None),
+            delivery_location=getattr(payload, "delivery_location", None),
+            note=getattr(payload, "note", None),
+            confirm=bool(getattr(payload, "confirm", False)),
+            lines=[
+                DeliveryNoteLineCreate(sale_id=sale_id, sale_item_id=item_id, qty_to_deliver=qty)
+                for item_id, qty in requested.items()
+            ],
+        )
+        return await self.create(create_payload, actor=actor)
+
     # ------------------------------------------------------------------ edit
 
     async def update_draft(self, delivery_note_id: uuid.UUID, payload) -> DeliveryNote:
@@ -359,6 +415,11 @@ class DeliveryNoteService:
         if payload.lines is not None:
             groups: dict[uuid.UUID, _SaleGroup] = {}
             for line in payload.lines:
+                if line.sale_id is None:
+                    raise ValidationError(
+                        "Every line needs its parent sale",
+                        field_errors={"lines": "sale_id is required"},
+                    )
                 group = groups.get(line.sale_id)
                 if group is None:
                     await self._lock_sale(line.sale_id)

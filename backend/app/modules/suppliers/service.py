@@ -83,7 +83,8 @@ class SupplierService:
             select(SupplierDebt, StockTransaction.transaction_date)
             .join(StockTransaction, StockTransaction.id == SupplierDebt.stock_transaction_id)
             .where(SupplierDebt.supplier_id == supplier.id)
-            .order_by(SupplierDebt.created_at.desc())
+            # Oldest first so the list agrees with pay_open_debts (oldest settled first).
+            .order_by(SupplierDebt.created_at.asc(), SupplierDebt.id.asc())
         )
         return [(debt, transaction_date) for debt, transaction_date in result.all()]
 

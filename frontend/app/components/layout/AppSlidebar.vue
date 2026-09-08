@@ -9,19 +9,24 @@ const collapsedModel = computed({
   set: (value: boolean) => setCollapsed(value),
 })
 
+/**
+ * Below `lg`, Nuxt UI hides the desktop rail and opens a slideover.
+ * Make that panel a full-height column so the user menu footer stays
+ * pinned on iPad/tablet (long nav must not push it off-screen).
+ */
 const sidebarUi = computed(() => ({
-  root: collapsedModel.value
-    ? 'app-sidebar bg-muted/50 border-e border-default'
-    : 'app-sidebar bg-muted/50 border-e border-default',
+  root: 'app-sidebar bg-muted/50 border-e border-default',
+  // Slideover panel (< lg / iPad): flex column + full height keeps footer visible.
+  content: 'lg:hidden flex h-full max-h-svh flex-col',
   header: collapsedModel.value
     ? 'h-auto flex-col items-center justify-center gap-2 px-0 pt-3 pb-2 shrink-0'
     : 'h-auto flex-col items-stretch gap-3 px-3 pt-3 pb-2 shrink-0',
   body: collapsedModel.value
-    ? 'flex flex-col items-center gap-1 overflow-y-auto px-0 py-1'
-    : 'flex flex-col gap-1 overflow-y-auto px-2 py-1',
+    ? 'flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto px-0 py-1'
+    : 'flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 py-1',
   footer: collapsedModel.value
-    ? 'shrink-0 flex items-center justify-center px-0 py-3 border-t border-default'
-    : 'shrink-0 flex items-center gap-1.5 px-3 py-2 lg:border-t lg:border-default',
+    ? 'shrink-0 flex items-center justify-center border-t border-default px-0 py-3'
+    : 'shrink-0 flex items-center gap-1.5 border-t border-default px-3 py-2',
 }))
 </script>
 

@@ -30,6 +30,7 @@ from app.shared.audit.service import record_audit
 from app.shared.pagination.params import parse_date_range
 
 Q2 = Decimal("0.01")
+Q4 = Decimal("0.0001")
 
 
 def _day_start(value: date) -> datetime:
@@ -67,6 +68,8 @@ class ReportsService:
                 Customer.name.label("customer_name"),
                 Product.name.label("product_name"),
                 Product.sku,
+                SaleItem.id.label("sale_item_id"),
+                SaleItem.product_id.label("product_id"),
                 SaleItem.quantity,
                 SaleItem.unit_price,
                 SaleItem.discount_amount,
@@ -95,12 +98,16 @@ class ReportsService:
         cost = (unit_cost * net_quantity).quantize(Q2)
         return {
             "sale_id": row.id,
+            "sale_item_id": row.sale_item_id,
+            "product_id": row.product_id,
             "sale_date": row.sale_date,
             "invoice_no": row.invoice_no,
             "customer_name": row.customer_name,
             "product_name": row.product_name,
             "sku": row.sku,
             "quantity": quantity,
+            "returned_quantity": returned,
+            "returnable_quantity": (quantity - returned).quantize(Q4),
             "selling_price": Decimal(row.unit_price),
             "discount_amount": Decimal(row.discount_amount),
             "sales_amount": line_total,
@@ -108,6 +115,7 @@ class ReportsService:
             "net_quantity": net_quantity,
             "cost": cost,
             "gross_profit": (net_sales - cost).quantize(Q2),
+            "debt_amount": Decimal(row.debt_amount or 0),
             "cashier_name": row.cashier_name,
             "payment_method": payment_method,
         }
@@ -212,7 +220,10 @@ class ReportsService:
                 Supplier.name.label("supplier_name"),
                 Product.name.label("product_name"),
                 Product.sku,
+                StockTransactionItem.id.label("stock_transaction_item_id"),
+                StockTransactionItem.product_id.label("product_id"),
                 StockTransactionItem.quantity,
+                StockTransactionItem.returned_quantity,
                 StockTransactionItem.unit_cost,
                 StockTransactionItem.line_total,
                 StockTransaction.status,
@@ -280,16 +291,24 @@ class ReportsService:
         for row in raw:
             debt = debts.get(row.id)
             remaining = Decimal(debt.remaining_amount) if debt else Decimal("0.00")
+            quantity = Decimal(row.quantity)
+            returned = Decimal(row.returned_quantity)
+            unit_cost = Decimal(row.unit_cost)
             data.append(
                 {
                     "transaction_id": row.id,
+                    "stock_transaction_item_id": row.stock_transaction_item_id,
+                    "product_id": row.product_id,
                     "document_no": row.document_no,
                     "transaction_date": row.transaction_date,
                     "supplier_name": row.supplier_name,
                     "product_name": row.product_name,
                     "sku": row.sku,
-                    "quantity": Decimal(row.quantity),
-                    "cost_price": Decimal(row.unit_cost),
+                    "quantity": quantity,
+                    "returned_quantity": returned,
+                    "returnable_quantity": (quantity - returned).quantize(Q4),
+                    "return_amount": (returned * unit_cost).quantize(Q2),
+                    "cost_price": unit_cost,
                     "total_cost": Decimal(row.line_total),
                     "paid_amount": Decimal(row.line_total) - remaining if debt else Decimal(row.line_total),
                     "remaining_debt": remaining,

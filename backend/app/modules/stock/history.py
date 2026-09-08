@@ -18,11 +18,12 @@ from app.shared.pagination.params import parse_date_range
 
 # kind -> movement types. Every canonical movement type maps to exactly one
 # dialog kind so the Stock list columns and the dialogs always agree:
-# Stock In = STOCK_IN + SALE_RETURN, Stock Out = SALE, Damage = DAMAGE only
-# (Expiry is a separate operation and is never folded into Damage).
+# Stock In = STOCK_IN + SALE_RETURN, Stock Out = SALE + PURCHASE_RETURN,
+# Damage = DAMAGE only (Expiry is a separate operation and is never folded
+# into Damage).
 MOVEMENT_KINDS: dict[str, tuple[str, ...]] = {
     "stock_in": ("STOCK_IN", "SALE_RETURN"),
-    "stock_out": ("SALE",),
+    "stock_out": ("SALE", "PURCHASE_RETURN"),
     "damage": ("DAMAGE",),
     "all": (),  # empty tuple = no type filter (full movement history)
 }
