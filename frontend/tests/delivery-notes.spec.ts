@@ -33,14 +33,18 @@ describe('delivery note status rules', () => {
   })
 
   it('allows only the Draft → Confirmed → Out for Delivery → Delivered / Cancelled flow', () => {
+    // Canonical transition table (spec §5.13; backend-enforced):
+    // Draft → Confirmed|Cancelled; Confirmed → Out for Delivery|Delivered|Cancelled;
+    // Out for Delivery → Delivered|Cancelled; Delivered/Cancelled are terminal.
     const note = { id: 'n1', status: 'Draft' }
     expect(canTransitionDelivery(note, 'confirm')).toBe(true)
     expect(canTransitionDelivery(note, 'out_for_delivery')).toBe(false)
-    expect(canTransitionDelivery(note, 'deliver')).toBe(true)
+    expect(canTransitionDelivery(note, 'deliver')).toBe(false)
     expect(canTransitionDelivery(note, 'cancel')).toBe(true)
 
     const confirmed = { id: 'n1', status: 'Confirmed' }
     expect(canTransitionDelivery(confirmed, 'out_for_delivery')).toBe(true)
+    expect(canTransitionDelivery(confirmed, 'deliver')).toBe(true)
     expect(canTransitionDelivery(confirmed, 'confirm')).toBe(false)
     expect(canTransitionDelivery(confirmed, 'cancel')).toBe(true)
 
@@ -48,7 +52,7 @@ describe('delivery note status rules', () => {
     expect(canTransitionDelivery(out, 'deliver')).toBe(true)
     expect(canTransitionDelivery(out, 'out_for_delivery')).toBe(false)
 
-    // Delivered and Cancelled are terminal.
+    // Delivered and Cancelled are terminal; verb aliases resolve like labels.
     for (const status of ['Delivered', 'Cancelled']) {
       const terminal = { id: 'n1', status }
       expect(canTransitionDelivery(terminal, 'confirm')).toBe(false)
@@ -58,7 +62,7 @@ describe('delivery note status rules', () => {
     }
   })
 
-  it('allows one-click Delivery OK from Draft (simplified §5.13 path)', async () => {
+  it('confirms before delivering (canonical §5.13 path)', async () => {
     const { sale, saleItem, productId } = await freshSale()
     const commands = createMockDeliveryRepository()
     const movementsBefore = mockRecords('stockMovements').length
@@ -69,6 +73,7 @@ describe('delivery note status rules', () => {
     })
     expect(note.status).toBe('Draft')
 
+    await commands.setDeliveryStatus(String(note.id), 'confirm')
     const delivered = await commands.setDeliveryStatus(String(note.id), 'deliver')
     expect(delivered.status).toBe('Delivered')
     expect(delivered.deliveredAt).toBeTruthy()
@@ -204,7 +209,7 @@ describe('mock delivery commands', () => {
     expect((delivered.items as Array<{ qtyDelivered: number }>)[0]!.qtyDelivered).toBe(2)
 
     // Delivered is terminal.
-    await expect(commands.setDeliveryStatus(id, 'cancel', 'late')).rejects.toThrow(/cannot cancel/i)
+    await expect(commands.setDeliveryStatus(id, 'cancel', 'late')).rejects.toThrow(/cannot move/i)
   })
 
   it('requires a reason to cancel', async () => {

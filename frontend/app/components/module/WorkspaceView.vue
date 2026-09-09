@@ -27,7 +27,7 @@ import { usePosCommands } from '~/repositories/index'
 import { productImageUrl } from '~/utils/pos/cart'
 import { STOCK_OPERATION_META, STOCK_OPERATION_TYPES, type StockHistoryKind, type StockOperationType } from '~/config/pos-options'
 import { documentHasReturnableLines, type ReturnDocumentKind } from '~/utils/reports/returns'
-import type { DebtPaymentKind } from '~/components/reports/DebtPaymentDialog'
+import type { DebtPaymentKind } from '~/components/reports/DebtPaymentDialog.vue'
 
 const { module, route } = useModuleRoute()
 const store = useAppDataStore()

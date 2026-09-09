@@ -96,50 +96,41 @@ Backend-first (Settings UI fields as needed). Spec section 3.6 is the source of 
 
 Phase 8 is done when the API process covers **password-reset send** and **expiry alerts**, Settings persist the two alert windows, and focused pytest passes. View-only inquiry may use the optional `telegram-bot` profile.
 
-## Phase 9: Frontend ↔ Backend contract alignment (must close)
+## Phase 9: Frontend ↔ Backend contract alignment
 
-Backend feature surface is largely present (`/api/v1` stock, pos, delivery-notes, reports). The app does **not** yet work end-to-end against a live API until these contract gaps are closed on **frontend HTTP adapters and/or backend aliases** (and Delivery Notes / Stock In UI where noted). Prefer fixing both sides to one canonical contract below.
+Most critical FE↔BE gaps are **closed**. Live mode (`NUXT_PUBLIC_USE_MOCK_DATA=false`) should work for Pricing, POS checkout (with payment map), Stock In purchase body, Sales/Purchase returns, and Delivery Notes status — after smoke-testing the gate below. Residuals remain for polish.
 
-### Critical (breaks live mode today)
+### Closed (verified in code)
 
-| # | Area | Frontend today | Backend today | Canonical fix |
-|---|---|---|---|---|
-| 1 | Sale return body | `POST .../return` with `{ reason, lines: [{ sale_item_id, quantity, restock }] }` | Requires `{ reason, items: [...] }` — **no `lines` alias** | Backend: `AliasChoices("items","lines")` on `SaleReturnRequest`. Frontend: also accept/send `items`. |
-| 2 | POS payment method | UI values `Cash` / `Card` / `Mobile Payment` / `Credit` | Enum `CASH` \| `BANK_QR` \| `CUSTOMER_DEBT` | Map in HTTP adapter: Cash→CASH, Card/Mobile→BANK_QR, Credit→CUSTOMER_DEBT. Align labels in UI or accept aliases on backend. |
-| 3 | Sales report list | Collection `sales` → `GET /api/v1/pos/sales`; expects **document** rows: `saleNo`, `items[]`, `paidAmount`, `remaining`, `status` | `GET /reports/sales` is **line-level** (`invoice_no`, `product_name`, `returnable_quantity`, …). `/pos/sales` list shape may differ | Pick one: (A) Sales Report uses `/reports/sales` + FE adapter to document/line UI + Return uses `sale_id`/`sale_item_id`, or (B) keep document list from `/pos/sales` but ensure list returns nested `items` with `returned_quantity` for Return modal. Document the choice in PAGE_ROUTE_MAP. |
-| 4 | Purchase report list | Collection `stockIns` → `GET /reports/purchases`; expects `purchaseNo`, `items[]`, `paidAmount`, `remaining`, `status` | Line-level: `document_no`, `transaction_id`, `stock_transaction_item_id`, `returnable_quantity`, `remaining_debt` | FE adapter: map `document_no`→`purchaseNo`, `transaction_id`→`id`, group by transaction **or** switch Return to use line `stock_transaction_item_id` from report row. Prefer document-level list for Return UX matching Sales. |
+| # | Area | Status |
+|---|---|---|
+| 1 | Sale return | FE sends `items`; BE accepts `items`\|`lines` |
+| 2 | POS payment method | FE maps Cash→CASH, Card/Mobile→BANK_QR, Credit→CUSTOMER_DEBT |
+| 3 | Sales report | FE `GET /reports/sales` + line→document group adapter |
+| 4 | Purchase report | FE `GET /reports/purchases` + group adapter |
+| 5 | Product Pricing out | FE maps `uom_conversions` → `uomConversions` (+ nested keys) |
+| 6 | Stock In purchase | FE posts `supplier_id`, `paid_amount`, `payment_method`, `items[]` |
+| 7 | Purchase return | FE `lines` + `stock_transaction_item_id` |
+| 8 | Delivery create/status | camelCase create + enum `status` body; BE aliases OK |
 
-### High (partial / incomplete UX)
+### Remaining residuals
 
 | # | Area | Gap | Fix |
 |---|---|---|---|
-| 5 | Product Pricing out | FE `adaptProductOut` does not map `uom_conversions` → `uomConversions` | Map nested array + row keys (`uom_id`↔`uomId`, `factor_to_base`↔`factorToBase`, `is_default_sale`↔`isDefaultSale`). Backend already accepts camelCase on write via aliases + `normalize_uom_conversions`. |
-| 6 | Stock In as purchase | FE `createStockOperation` posts single-product `{ product_id, quantity, uom_*, unit_cost }` | Backend `POST /stock/in` expects header `supplier_id`, `paid_amount`, `items[]`. Extend FE Stock In form to full purchase (supplier, paid amount, payment method) **or** keep simple path only if backend also accepts single-item shorthand (document which). Add `payment_method` + payment row when `paid_amount > 0` on backend. Persist line UOM symbol snapshot. |
-| 7 | Delivery Notes create UI | Spec/BE: multi-invoice + phone/location; BE accepts `deliveryAddress` alias | FE `new.vue` still single-sale + legacy `deliveryName`/`driverName`/`scheduledDate`. Align create to: multi-select invoices, `deliveryPhone`/`deliveryLocation`, lines with `saleId`+`saleItemId`+`qtyToDeliver`. Use `GET /delivery-notes/deliverable-invoices`. |
-| 8 | Delivery status dialects | FE/mock/tests mix display labels (`Delivered`), verbs (`deliver`), enums (`DELIVERED`) | Canonical: `POST .../status` body `{ status: "DRAFT\|CONFIRMED\|OUT_FOR_DELIVERY\|DELIVERED\|CANCELLED", cancel_reason? }`. Verbs remain aliases. Normalize HTTP + mock + UI to enums (or one adapter). |
-| 9 | Purchase return | FE `lines` OK (BE aliases `lines`\|`items`) | Ensure report row supplies `stockInId` / `transaction_id` and line ids Return modal needs. |
-| 10 | Sequences | PRT lazy-created | Seed `PURCHASE_RETURN` / `PRT` in Alembic like SRT/DN. |
+| R1 | Purchase report `supplier_id` | Service row omits `supplier_id` (only `supplier_name`) → FE `supplierId` null | Backend: include `StockTransaction.supplier_id` in purchase report dict |
+| R2 | Adjust / Damage / Expiry HTTP | FE still posts flat `{ product_id, quantity, note }` | BE expects `items: [...]` (adjustment needs `actual_quantity` + `reason`). Wrap FE bodies |
+| R3 | POS product search Pricing | `_product_out` may set only `uom_conversions` | Also set `uomConversions` (same list) |
+| R4 | PRT sequence | May be lazy-created | Seed `PURCHASE_RETURN`/`PRT` in Alembic if missing |
 
-### Already aligned (keep)
+### Verification gate (live API)
 
-- POS checkout path `POST /pos/sales` with `uom_id`, `factor_to_base`, `amount_received`←`paidAmount` aliases
-- Purchase return path `POST /stock/in/{id}/return`
-- Sale return path exists (fix body key only)
-- Delivery multi-invoice models + `/status` + deliverable-invoices on backend
-- Product Pricing write accepts `uomConversions`; stock mutation uses Pricing factors
-- Movement types `SALE_RETURN`, `PURCHASE_RETURN`
-
-### Verification gate for Phase 9
-
-Run against **live** API (`NUXT_PUBLIC_USE_MOCK_DATA=false`):
-
-1. Save product Pricing → reload shows same rows / Default sale
-2. POS sell with pack UOM → stock decreases by `qty × factor`
-3. Stock In with supplier + partial pay → stock up + supplier debt
-4. Sales Report `...` Return → restock + debt/refund
-5. Purchase Report `...` Return → stock out + debt reduce
-6. Delivery Note multi-invoice create + Update Status transitions
-7. Focused pytest + FE typecheck for adapters
+1. Pricing save/reload + Default sale  
+2. POS pack UOM → stock out `qty × factor`  
+3. Stock In partial pay → supplier debt  
+4. Sales / Purchase Report `...` Return  
+5. Delivery Note create + Update Status  
+6. Damage/Adjust (after R2)  
+7. Focused pytest + FE typecheck  
 
 ## Definition of a clean replacement
 

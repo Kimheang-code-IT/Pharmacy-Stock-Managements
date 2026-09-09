@@ -35,9 +35,49 @@ export function isDeliveryStatus(value: unknown): value is DeliveryStatus {
   return (DELIVERY_STATUSES as readonly string[]).includes(String(value))
 }
 
+/** Canonical backend status for a UI label or legacy verb alias (§5.13). */
+export const DELIVERY_STATUS_TO_API: Record<string, string> = {
+  Draft: 'DRAFT',
+  Confirmed: 'CONFIRMED',
+  'Out for Delivery': 'OUT_FOR_DELIVERY',
+  Delivered: 'DELIVERED',
+  Cancelled: 'CANCELLED',
+  // §5.13 verb aliases of the same transition service.
+  confirm: 'CONFIRMED',
+  out_for_delivery: 'OUT_FOR_DELIVERY',
+  deliver: 'DELIVERED',
+  cancel: 'CANCELLED',
+}
+
+/** Accepts a UI status label ('Out for Delivery') or a legacy verb alias
+ *  ('deliver'); returns the canonical backend status for POST /status. */
+export function deliveryApiStatus(value: unknown): string {
+  const raw = String(value ?? '').trim()
+  return DELIVERY_STATUS_TO_API[raw]
+    ?? DELIVERY_STATUS_TO_API[raw.toLowerCase().replaceAll(' ', '_')]
+    ?? raw.toUpperCase()
+}
+
+/** Normalize any status dialect (UI label, verb alias, backend enum) to the
+ *  UI label the mock DB and components use. */
+export function normalizeDeliveryStatusInput(value: unknown): DeliveryStatus {
+  const raw = String(value ?? '').trim()
+  if (isDeliveryStatus(raw)) return raw
+  const byVerb = ACTION_TO_STATUS[raw as DeliveryStatusAction]
+  if (byVerb) return byVerb
+  const byApi: Record<string, DeliveryStatus> = {
+    DRAFT: 'Draft',
+    CONFIRMED: 'Confirmed',
+    OUT_FOR_DELIVERY: 'Out for Delivery',
+    DELIVERED: 'Delivered',
+    CANCELLED: 'Cancelled',
+  }
+  return byApi[raw.toUpperCase()] ?? 'Draft'
+}
+
 export function deliveryStatusOf(note: AppRecord | null | undefined): DeliveryStatus {
   const value = String(note?.status || '')
-  return isDeliveryStatus(value) ? value : 'Draft'
+  return isDeliveryStatus(value) ? value : normalizeDeliveryStatusInput(value)
 }
 
 /** The statuses the list **Update Status** control may offer (spec §5.13). */
@@ -45,8 +85,9 @@ export function allowedNextStatuses(note: AppRecord | null | undefined): Deliver
   return DELIVERY_TRANSITIONS[deliveryStatusOf(note)]
 }
 
-export function canTransitionDelivery(note: AppRecord, target: DeliveryStatus): boolean {
-  return allowedNextStatuses(note).includes(target)
+/** Accepts a UI status label or a legacy verb alias as the target. */
+export function canTransitionDelivery(note: AppRecord, target: DeliveryStatus | DeliveryStatusAction): boolean {
+  return allowedNextStatuses(note).includes(normalizeDeliveryStatusInput(target))
 }
 
 export function canTransitionAction(note: AppRecord, action: DeliveryStatusAction): boolean {

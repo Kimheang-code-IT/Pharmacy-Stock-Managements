@@ -145,8 +145,10 @@ async def test_supplier_payment_history_lists_payments(client):
     )
     assert history.status_code == 200, history.text
     rows = history.json()["data"]
-    assert len(rows) == 2
-    assert Decimal(sum(Decimal(r["amount"]) for r in rows)) == Decimal("18.00")
+    # 3 rows: the 2.00 paid at Stock In time (recorded as a payment row) plus
+    # the two explicit debt payments of 8.00 and 10.00.
+    assert len(rows) == 3
+    assert Decimal(sum(Decimal(r["amount"]) for r in rows)) == Decimal("20.00")
     assert all(r["payment_type"] == "SUPPLIER_DEBT_PAYMENT" for r in rows)
 
 

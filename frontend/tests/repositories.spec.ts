@@ -47,7 +47,7 @@ describe('collection → endpoint mapping', () => {
     expect(CollectionEndpoints.products).toBe('/api/v1/products')
     expect(CollectionEndpoints.suppliers).toBe('/api/v1/suppliers')
     expect(CollectionEndpoints.customers).toBe('/api/v1/customers')
-    expect(CollectionEndpoints.sales).toBe('/api/v1/pos/sales')
+    expect(CollectionEndpoints.sales).toBe('/api/v1/reports/sales')
     expect(CollectionEndpoints.stockMovements).toBe('/api/v1/stock/movements')
     expect(CollectionEndpoints.users).toBe('/api/v1/admin/users')
     expect(CollectionEndpoints.roles).toBe('/api/v1/admin/roles')
@@ -155,7 +155,7 @@ describe('http POS/stock command endpoints (spec §7)', () => {
     expect(captured[0]?.url).toBe('/api/v1/pos/sales')
     expect(captured[0]?.body).toMatchObject({
       customer_id: 'cus-1',
-      payment_method: 'Cash',
+      payment_method: 'CASH',
       amount_received: 20,
       discount: 1,
       note: 'leave at desk',
@@ -176,7 +176,7 @@ describe('http POS/stock command endpoints (spec §7)', () => {
   it('posts each stock operation to its own /stock path', async () => {
     const captured = withFakeApi(() => ({ data: { id: 'op-1' } }))
     const commands = createHttpPosCommandRepository()
-    await commands.createStockOperation({ type: 'stock_in', productId: 'prd-1', quantity: 2, uomId: 'uom-2', uomSymbol: 'box', factorToBase: 12, unitCost: 6 })
+    await commands.createStockOperation({ type: 'stock_in', productId: 'prd-1', quantity: 2, uomId: 'uom-2', uomSymbol: 'box', factorToBase: 12, unitCost: 6, supplierId: 'sup-1', paidAmount: 12 })
     await commands.createStockOperation({ type: 'adjustment', productId: 'prd-1', quantity: 3 })
     await commands.createStockOperation({ type: 'damage', productId: 'prd-1', quantity: 1 })
     await commands.createStockOperation({ type: 'expiry', productId: 'prd-1', quantity: 2 })
@@ -186,13 +186,20 @@ describe('http POS/stock command endpoints (spec §7)', () => {
       '/api/v1/stock/damage',
       '/api/v1/stock/expire',
     ])
+    // Stock In = purchase: POST /stock/in takes a StockInRequest (items[],
+    // supplier, paid amount) with line UOM conversion metadata.
     expect(captured[0]?.body).toMatchObject({
-      product_id: 'prd-1',
-      quantity: 2,
-      uom_id: 'uom-2',
-      uom_symbol: 'box',
-      factor_to_base: 12,
-      unit_cost: 6,
+      supplier_id: 'sup-1',
+      paid_amount: 12,
+      payment_method: 'CASH',
+      items: [{
+        product_id: 'prd-1',
+        quantity: 2,
+        uom_id: 'uom-2',
+        uom_symbol: 'box',
+        factor_to_base: 12,
+        unit_cost: 6,
+      }],
     })
   })
 

@@ -7,7 +7,6 @@ import {
   deliveryLines,
   deliveryStatusOf,
   noteInvoiceNos,
-  noteSales,
   type DeliveryStatusAction,
 } from '~/utils/delivery/notes'
 import { printDeliveryNoteDocument } from '~/utils/print/delivery-note'
@@ -79,12 +78,8 @@ onMounted(async () => {
   }
 })
 
-const relatedSale = computed(() => {
-  // Multi-invoice notes (spec §2.1.9): link to the first invoice; the joined
-  // list is shown in the lines card.
-  const saleId = noteSales(note.value)[0]?.saleId || ''
-  return saleId ? store.list('sales').find(row => String(row.id) === saleId) || null : null
-})
+/** Multi-invoice notes (spec §2.1.9): the joined invoice list is shown in
+ *  the lines card; the first linked sale (if any) stays available for lookups. */
 const linkedInvoiceNos = computed(() => noteInvoiceNos(note.value))
 
 /* ------------------------------ permissions ------------------------------ */

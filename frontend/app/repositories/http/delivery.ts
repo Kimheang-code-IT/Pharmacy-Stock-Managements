@@ -4,18 +4,10 @@ import type {
   DeliveryNoteCreateInput,
 } from '~/repositories/contracts/entities'
 import { ApiEndpoints } from '~/utils/constants/api-endpoints'
+import { deliveryApiStatus } from '~/utils/delivery/notes'
 import { unwrap } from './entities'
 
-/** UI status label → canonical backend status (spec §5.13 Update Status).
- *  POST /delivery-notes/{id}/status takes { status, cancel_reason }; the
- *  verb aliases (confirm/deliver/…) are a legacy surface, not used here. */
-const STATUS_TO_API: Record<string, string> = {
-  Draft: 'DRAFT',
-  Confirmed: 'CONFIRMED',
-  'Out for Delivery': 'OUT_FOR_DELIVERY',
-  Delivered: 'DELIVERED',
-  Cancelled: 'CANCELLED',
-}
+/**
 
 /**
  * HTTP delivery-note commands against `/api/v1/delivery-notes`. The backend
@@ -34,7 +26,9 @@ export function createHttpDeliveryRepository(): DeliveryCommandRepository {
     },
 
     async setDeliveryStatus(id: string, status: string, reason?: string | null): Promise<AppRecord> {
-      const canonical = STATUS_TO_API[status] ?? String(status).toUpperCase()
+      // Canonical body {status, cancel_reason}; UI labels and legacy verb
+      // aliases both normalize through deliveryApiStatus (spec §5.13).
+      const canonical = deliveryApiStatus(status)
       return unwrap<Record<string, unknown>>(await api.post<unknown>(
         ApiEndpoints.DELIVERY_NOTE_STATUS(id),
         {

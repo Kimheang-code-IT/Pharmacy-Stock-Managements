@@ -5,7 +5,7 @@ import type {
 } from '~/repositories/contracts/entities'
 import { createId, mockLatency, nowIso } from '~/mocks/query'
 import { mockInsert, mockUpdate, useMockDb } from '~/mocks/db'
-import { saleItemReservedQty, saleHasDeliverableLines } from '~/utils/delivery/notes'
+import { normalizeDeliveryStatusInput, saleItemReservedQty, saleHasDeliverableLines } from '~/utils/delivery/notes'
 
 /**
  * In-memory delivery-note commands mirroring the backend contract (spec
@@ -110,6 +110,7 @@ export function createMockDeliveryRepository(): DeliveryCommandRepository {
       if (!lines.length) throw new Error('Select at least one line with a quantity to deliver')
 
       const deliveryNo = sequenceNext('DN', 6)
+      const joinedInvoiceNos = saleLinks.map(link => String(link.invoiceNo)).filter(Boolean)
       const note = mockInsert('deliveryNotes', {
         deliveryNo,
         customerId: customerId || null,
@@ -120,7 +121,13 @@ export function createMockDeliveryRepository(): DeliveryCommandRepository {
         status: input.confirm ? 'Confirmed' : 'Draft',
         note: input.note || null,
         cancelReason: null,
+        // Same normalized shape as the HTTP adapter of DeliveryNoteOut:
+        // linked invoices + joined display keys (multi-invoice, spec §2.1.9).
         sales: saleLinks,
+        invoiceNos: joinedInvoiceNos,
+        invoiceNo: joinedInvoiceNos.join(', '),
+        saleId: saleLinks.length === 1 ? String(saleLinks[0]!.saleId) : '',
+        createdAt: nowIso(),
         items: lines,
         itemCount: lines.length,
         createdBy: 'Sokha Chan',
@@ -134,6 +141,9 @@ export function createMockDeliveryRepository(): DeliveryCommandRepository {
       const note = db.collections.deliveryNotes.find(row => String(row.id) === String(id))
       if (!note) throw new Error(`Delivery note not found: ${id}`)
 
+      // Accepts UI labels ('Out for Delivery'), verb aliases ('deliver') and
+      // backend enums ('OUT_FOR_DELIVERY') — one transition service.
+      const target = normalizeDeliveryStatusInput(status)
       // Mirrors DELIVERY_TRANSITIONS (spec §2.1.9): Delivered/Cancelled are
       // terminal; a cancel reason is mandatory.
       const transitions: Record<string, string[]> = {
@@ -144,29 +154,29 @@ export function createMockDeliveryRepository(): DeliveryCommandRepository {
         Cancelled: [],
       }
       const current = String(note.status || 'Draft')
-      if (!transitions[current]?.includes(status)) {
-        throw new Error(`Cannot move a ${current} delivery note to ${status}`)
+      if (!transitions[current]?.includes(target)) {
+        throw new Error(`Cannot move a ${current} delivery note to ${target}`)
       }
-      if (status === 'Cancelled') {
+      if (target === 'Cancelled') {
         const reasonText = String(reason || '').trim()
         if (!reasonText) throw new Error('A reason is required to cancel a delivery note')
       }
 
-      const patch: Record<string, unknown> = { status }
-      if (status === 'Delivered') {
+      const patch: Record<string, unknown> = { status: target }
+      if (target === 'Delivered') {
         patch.deliveredAt = nowIso()
         patch.items = (Array.isArray(note.items) ? note.items as AppRecord[] : []).map(line => ({
           ...line,
           qtyDelivered: Number(line.qtyToDeliver ?? 0),
         }))
       }
-      else if (status === 'Cancelled') {
+      else if (target === 'Cancelled') {
         patch.cancelReason = String(reason || '').trim()
       }
 
       const updated = mockUpdate('deliveryNotes', String(note.id), patch)
       if (!updated) throw new Error(`Delivery note not found: ${id}`)
-      addAudit(status, String(note.deliveryNo), String(note.deliveryNo))
+      addAudit(target, String(note.deliveryNo), String(note.deliveryNo))
       return mockLatency(updated)
     },
 
