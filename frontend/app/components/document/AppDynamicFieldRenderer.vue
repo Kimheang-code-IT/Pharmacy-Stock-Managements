@@ -12,6 +12,7 @@ import { useReferenceOptions } from '~/composables/common/useReferenceOptions'
 import type { ModuleRelated, ModuleTable } from '~/config/modules'
 import type { AppRecord } from '~/config/admin-seed'
 import { asNumber } from '~/composables/module/useModule'
+import { useCurrencyRateDialog } from '~/composables/common/useCurrencyRateDialog'
 import { useAppLocalization } from '~/composables/settings/useAppLocalization'
 import {
   moduleDocumentLineActionKey,
@@ -242,8 +243,50 @@ const relatedGroups = computed(() =>
 )
 const showPricingTotals = computed(() => Boolean(props.field.meta?.showPricingTotals))
 const includeTaxTotal = computed(() => Boolean(props.field.meta?.includeTax))
+/** Show Paid now / Outstanding rows under the totals (purchase-style footers). */
+const showPaidRemaining = computed(() => Boolean(props.field.meta?.showPaidRemaining))
+/** Editable Discount / Tax / Paid-now inputs inline in the totals footer. */
+const editableTotals = computed(() =>
+  Boolean(props.field.meta?.editableTotals) && !props.disabled && !props.field.readOnly)
+
+function setMoney(key: string, value: number | null | undefined) {
+  recordAccess?.set?.(key, value ?? 0)
+}
 const lineCompact = computed(() => Boolean(props.field.meta?.compact))
 const lineViewOnly = computed(() => Boolean(props.field.meta?.viewOnly || props.field.readOnly))
+
+/** Document currency for line tables that opt in (`meta.currencyToggle`).
+ *  The USD/KHR toggle beside the table title edits the record's `currency`,
+ *  which every money amount on the document is entered in. Switching to KHR
+ *  opens the shared exchange-rate dialog; cancelling keeps the previous
+ *  currency, confirming records the rate on the document (`exchangeRate`). */
+const docCurrency = computed<'USD' | 'KHR' | undefined>(() => {
+  const raw = recordAccess?.get('currency')
+  return raw === 'KHR' ? 'KHR' : raw === 'USD' ? 'USD' : undefined
+})
+
+const docCurrencyState = computed<'USD' | 'KHR'>({
+  get: () => (docCurrency.value === 'KHR' ? 'KHR' : 'USD'),
+  set: value => recordAccess?.set?.('currency', value),
+})
+
+const docRateState = computed<number | undefined>({
+  get: () => {
+    const rate = Number(recordAccess?.get('exchangeRate'))
+    return Number.isFinite(rate) && rate > 0 ? rate : undefined
+  },
+  set: value => recordAccess?.set?.('exchangeRate', value),
+})
+
+const {
+  dialogOpen: currencyRateDialogOpen,
+  toggle: toggleDocCurrency,
+  confirm: confirmDocCurrency,
+} = useCurrencyRateDialog({ currency: docCurrencyState, rate: docRateState })
+
+function setDocCurrency(value: 'USD' | 'KHR') {
+  toggleDocCurrency(value)
+}
 
 const { formatMoney } = useAppLocalization()
 
@@ -307,8 +350,15 @@ watch(() => props.field.key, () => {
       :disabled="disabled || lineViewOnly"
       :compact="lineCompact"
       :view-only-actions="lineViewOnly"
+      :currency="field.meta?.currencyToggle ? docCurrency : undefined"
       @update:model-value="lineRows = $event"
+      @update:currency="setDocCurrency"
       @row-action="(action, row) => lineAction?.(action, row)"
+    />
+    <CommonAppExchangeRateDialog
+      v-if="field.meta?.currencyToggle"
+      v-model:open="currencyRateDialogOpen"
+      @confirm="confirmDocCurrency"
     />
     <div
       v-if="showPricingTotals"
@@ -320,19 +370,78 @@ watch(() => props.field.key, () => {
       </div>
       <div class="flex items-center justify-between gap-4">
         <span class="text-muted">{{ $t('app.fields.discount') }}</span>
-        <span class="font-medium text-highlighted">− {{ moneyLabel(moneyAmount('discount')) }}</span>
+        <UInputNumber
+          v-if="editableTotals"
+          :model-value="moneyAmount('discount')"
+          :min="0"
+          :step="0.01"
+          :increment="false"
+          :decrement="false"
+          size="xs"
+          class="w-24"
+          :ui="{ base: 'text-right tabular-nums' }"
+          :aria-label="$t('app.fields.discount')"
+          @update:model-value="setMoney('discount', $event)"
+        />
+        <span
+          v-else
+          class="font-medium text-highlighted"
+        >− {{ moneyLabel(moneyAmount('discount')) }}</span>
       </div>
       <div
         v-if="includeTaxTotal"
         class="flex items-center justify-between gap-4"
       >
         <span class="text-muted">{{ $t('app.fields.tax') }}</span>
-        <span class="font-medium text-highlighted">{{ moneyLabel(moneyAmount('tax')) }}</span>
+        <UInputNumber
+          v-if="editableTotals"
+          :model-value="moneyAmount('tax')"
+          :min="0"
+          :step="0.01"
+          :increment="false"
+          :decrement="false"
+          size="xs"
+          class="w-24"
+          :ui="{ base: 'text-right tabular-nums' }"
+          :aria-label="$t('app.fields.tax')"
+          @update:model-value="setMoney('tax', $event)"
+        />
+        <span
+          v-else
+          class="font-medium text-highlighted"
+        >{{ moneyLabel(moneyAmount('tax')) }}</span>
       </div>
       <div class="mt-1 flex items-center justify-between gap-4 border-t border-default pt-2 text-base">
         <span class="font-semibold text-highlighted">{{ $t('app.fields.total') }}</span>
         <span class="font-bold text-primary">{{ moneyLabel(moneyAmount('total')) }}</span>
       </div>
+      <template v-if="showPaidRemaining">
+        <div class="flex items-center justify-between gap-4">
+          <span class="text-muted">{{ $t('app.pos.paidNow') }}</span>
+          <UInputNumber
+            v-if="editableTotals"
+            :model-value="moneyAmount('paidNow')"
+            :min="0"
+            :max="moneyAmount('total')"
+            :step="0.01"
+            :increment="false"
+            :decrement="false"
+            size="xs"
+            class="w-24"
+            :ui="{ base: 'text-right tabular-nums' }"
+            :aria-label="$t('app.pos.paidNow')"
+            @update:model-value="setMoney('paidNow', $event)"
+          />
+          <span
+            v-else
+            class="font-medium text-highlighted"
+          >{{ moneyLabel(moneyAmount('paidNow')) }}</span>
+        </div>
+        <div class="flex items-center justify-between gap-4">
+          <span class="text-muted">{{ $t('app.pos.outstandingAmount') }}</span>
+          <span class="font-medium text-highlighted">{{ moneyLabel(moneyAmount('remaining')) }}</span>
+        </div>
+      </template>
     </div>
   </div>
 

@@ -4,6 +4,7 @@ import {
   checkoutDepositTotal,
   checkoutDue,
   checkoutOutstanding,
+  checkoutPaidNow,
   checkoutSaleNet,
 } from '../app/utils/pos/checkout'
 
@@ -24,5 +25,19 @@ describe('POS checkout totals', () => {
     expect(checkoutDeliveryFee(false, 12)).toBe(0)
     expect(checkoutDeliveryFee(true, 12)).toBe(12)
     expect(checkoutSaleNet(100, 10, checkoutDeliveryFee(false, 12))).toBe(90)
+  })
+
+  it('pays the amount due in full when Paid now is untouched (walk-in cash sale)', () => {
+    expect(checkoutPaidNow(undefined, 135, false)).toBe(135)
+    expect(checkoutOutstanding(135, checkoutPaidNow(undefined, 135, false))).toBe(0)
+    expect(checkoutPaidNow(undefined, 0, false)).toBe(0)
+    expect(checkoutPaidNow(Number.NaN, 9840, false)).toBe(9840)
+  })
+
+  it('caps a typed Paid now at the amount due and credits nothing', () => {
+    expect(checkoutPaidNow(80, 135, false)).toBe(80)
+    expect(checkoutPaidNow(200, 135, false)).toBe(135)
+    expect(checkoutPaidNow(undefined, 135, true)).toBe(0)
+    expect(checkoutPaidNow(50, 135, true)).toBe(0)
   })
 })

@@ -5,6 +5,7 @@ import { h } from 'vue'
 import { TableAppTableCellImage, UBadge, ULink } from '#components'
 import { useAppHeader } from '~/composables/layout/useAppHeader'
 import { useConfirm } from '~/composables/common/useConfirm'
+import { useCurrencyRateDialog } from '~/composables/common/useCurrencyRateDialog'
 import { usePageSeo } from '~/composables/usePageSeo'
 import {
   formatModuleCell,
@@ -17,6 +18,7 @@ import type { AppRecord } from '~/config/admin-seed'
 import { appModules, type ModuleSelectOption } from '~/config/modules'
 import { isMoneyKey, isNumericKey } from '~/utils/module/field-keys'
 import { limitFilterSelects, parseFilterQuery } from '~/utils/filter/values'
+import { documentDetailKindFor, documentLinkTargetFor } from '~/utils/module/document-links'
 import { isFilterValueActive } from '~/utils/filter/select-ui'
 import { listTableRowMetaColumn, listTableSelectColumn } from '~/utils/table/list-columns'
 import { listTablePageSummary, listTableSelectedIds } from '~/utils/table/list-table'
@@ -52,18 +54,15 @@ const stockOperationProduct = ref('')
 const stockOperationQuantity = ref<number | undefined>()
 const stockOperationNote = ref('')
 const stockOperationBusy = ref(false)
-const stockOperationUomId = ref('')
-const stockOperationUnitCost = ref<number | undefined>()
-// Stock In = purchase: supplier + payment (unpaid balance → supplier debt).
-const stockOperationSupplier = ref('')
-const stockOperationPaidInput = ref<number | undefined>()
-const stockOperationPaymentMethod = ref<'Cash' | 'BANK_QR'>('Cash')
 const dateFrom = ref('')
 const dateTo = ref('')
 const returnOpen = ref(false)
 const returnKind = ref<ReturnDocumentKind>('sale')
 const returnDocument = ref<AppRecord | null>(null)
 const returnBusy = ref(false)
+const documentDetailOpen = ref(false)
+const documentDetailKind = ref<'sale' | 'purchase'>('sale')
+const documentDetailRecord = ref<AppRecord | null>(null)
 const debtPayOpen = ref(false)
 const debtPayKind = ref<DebtPaymentKind>('customer')
 const debtPayRow = ref<AppRecord | null>(null)
@@ -85,8 +84,9 @@ const showRowActions = computed(() => {
 const permissionPrefix = computed(() => current.value?.permission.replace(/\.view$/, '') || '')
 const canCreate = computed(() => Boolean(
   current.value?.canCreate
-  && !current.value.readOnly
-  && auth.canAccessPage(`${permissionPrefix.value}.create`),
+  // createPermission lets report modules route Create to a /new flow with
+  // the operation's own permission (Purchase Report → stock.in).
+  && auth.canAccessPage(current.value.createPermission || `${permissionPrefix.value}.create`),
 ))
 const canEdit = computed(() => Boolean(
   current.value
@@ -222,14 +222,6 @@ const STOCK_QTY_KIND: Record<string, StockHistoryKind> = {
   damageQty: 'damage',
 }
 
-/** Price column → price dialog (spec: Cost Price / Sale Price cells). */
-const STOCK_PRICE_KIND = {
-  costPrice: 'cost',
-  salePrice: 'sale',
-} as const
-
-type StockPriceKind = (typeof STOCK_PRICE_KIND)[keyof typeof STOCK_PRICE_KIND]
-
 const stockHistoryOpen = ref(false)
 const stockHistoryProduct = ref<AppRecord | null>(null)
 const stockHistoryKind = ref<StockHistoryKind>('stock_in')
@@ -247,15 +239,6 @@ function onStockHistorySaved() {
   stockHistoryReloadKey.value += 1
 }
 
-const costPriceOpen = ref(false)
-const salePriceOpen = ref(false)
-const priceProduct = ref<AppRecord | null>(null)
-
-function openPriceDialog(row: Record<string, unknown>, kind: StockPriceKind) {
-  priceProduct.value = row as AppRecord
-  if (kind === 'cost') costPriceOpen.value = true
-  else salePriceOpen.value = true
-}
 const selectedIds = computed(() => listTableSelectedIds(rowSelection.value))
 
 const hasActiveFilters = computed(() => Boolean(
@@ -275,6 +258,10 @@ watch(current, (value) => {
   setTitle(moduleTitle(value))
   setBreadcrumbs([{ label: moduleTitle(value) }])
   rowSelection.value = {}
+  // Cross-document links land here with ?q=<document no> so the linked
+  // document is pre-filtered in the list (e.g. Customer Debt → Sales Report).
+  const searchQuery = route.query.q
+  q.value = typeof searchQuery === 'string' ? searchQuery : ''
   for (const key of Object.keys(filters)) Reflect.deleteProperty(filters, key)
   for (const filter of value.filters || []) {
     filters[filter.key] = parseFilterQuery(route.query[filter.key])
@@ -420,6 +407,8 @@ function rowMenuItems(row: Record<string, unknown>): DropdownMenuItem[][] {
   }
   if (collection === 'products' && canOperate.value) {
     for (const type of STOCK_OPERATION_TYPES) {
+      // Stock Adjustment is not offered as a row action on the Stock table.
+      if (type === 'adjustment') continue
       const meta = STOCK_OPERATION_META[type]
       items.push({
         label: meta.label,
@@ -496,20 +485,32 @@ const columns = computed<TableColumn<Record<string, unknown>>[]>(() => {
           class: 'font-medium text-highlighted hover:text-primary hover:underline',
         }, () => text)
       }
+      // Document numbers owned by this page (Sales/Purchase Report) open the
+      // document detail dialog.
+      const detailKind = documentDetailKindFor(current.value!.collection, column.key)
+      if (detailKind) {
+        return h('button', {
+          type: 'button',
+          class: 'font-medium text-highlighted hover:text-primary hover:underline',
+          onClick: () => openDocumentDetail(row.original as AppRecord, detailKind),
+        }, text)
+      }
+      // Related document numbers (debt invoice, return sale/purchase, delivery
+      // invoice, movement reference) jump to the owning report page with the
+      // number prefilled as search.
+      const linkTarget = documentLinkTargetFor(current.value!.collection, column.key, row.original)
+      if (linkTarget) {
+        return h(ULink, {
+          to: `${linkTarget.path}?q=${encodeURIComponent(linkTarget.search)}`,
+          class: 'font-medium text-highlighted hover:text-primary hover:underline',
+        }, () => text)
+      }
       const qtyKind = current.value!.collection === 'products' ? STOCK_QTY_KIND[column.key] : undefined
       if (qtyKind) {
         return h('button', {
           type: 'button',
           class: 'font-medium tabular-nums text-primary hover:underline',
           onClick: () => openStockHistory(row.original, qtyKind),
-        }, text)
-      }
-      const priceKind = current.value!.collection === 'products' ? STOCK_PRICE_KIND[column.key as keyof typeof STOCK_PRICE_KIND] : undefined
-      if (priceKind) {
-        return h('button', {
-          type: 'button',
-          class: 'font-medium tabular-nums text-primary hover:underline',
-          onClick: () => openPriceDialog(row.original, priceKind),
         }, text)
       }
       if (isTitle && !isTableOnly.value) {
@@ -560,6 +561,12 @@ function openDebtPayment(kind: DebtPaymentKind, row: AppRecord) {
   debtPayKind.value = kind
   debtPayRow.value = row
   debtPayOpen.value = true
+}
+
+function openDocumentDetail(row: AppRecord, kind: 'sale' | 'purchase') {
+  documentDetailKind.value = kind
+  documentDetailRecord.value = row
+  documentDetailOpen.value = true
 }
 
 async function submitReturn(payload: {
@@ -756,97 +763,24 @@ const productOptions = computed(() => store.list('products').map(product => ({
 })))
 
 function openStockOperation(type: StockOperationType, productId = '') {
+  // Stock In = the complete Purchase dialog: many product lines, supplier and
+  // payment stored on ONE stock-in document (POST /stock/in, items[]).
+  if (type === 'stock_in') {
+    openPurchase(productId)
+    return
+  }
   stockOperationType.value = type
   stockOperationProduct.value = productId
   stockOperationQuantity.value = undefined
   stockOperationNote.value = ''
-  const product = store.list('products').find(row => String(row.id) === String(productId))
-  stockOperationUomId.value = String(product?.uomId || '')
-  stockOperationUnitCost.value = undefined
-  stockOperationSupplier.value = ''
-  stockOperationPaidInput.value = undefined
-  stockOperationPaymentMethod.value = 'Cash'
   stockOperationOpen.value = true
 }
 
 const stockOperationMeta = computed(() => STOCK_OPERATION_META[stockOperationType.value])
 
-/** Product record for the selected operation product. */
-const stockOperationProductRecord = computed(() =>
-  store.list('products').find(row => String(row.id) === String(stockOperationProduct.value)) || null)
-
-/** Stock In line UOM options: every Pricing row's Original UOM (spec §2.1.3); legacy products without Pricing rows fall back to their base UOM. */
-const stockOperationUomOptions = computed(() => {
-  const product = stockOperationProductRecord.value
-  if (!product) return []
-  const conversions = Array.isArray(product.uomConversions) ? product.uomConversions as Array<Record<string, unknown>> : []
-  if (conversions.length) {
-    return conversions
-      .filter(row => row.uomId)
-      .map(row => ({ label: String(row.uomSymbol || row.uomId || ''), value: String(row.uomId) }))
-  }
-  return [{ label: String(product.uomSymbol || product.uom || ''), value: String(product.uomId || '') }]
-})
-
-const stockOperationConversion = computed(() =>
-  conversionForUom(stockOperationProductRecord.value, stockOperationUomId.value))
-
-const stockOperationFactor = computed(() =>
-  stockOperationType.value === 'stock_in' ? (stockOperationConversion.value?.factorToBase ?? 1) : 1)
-
-const stockOperationUomSymbol = computed(() =>
-  stockOperationConversion.value?.uomSymbol
-  || String(stockOperationProductRecord.value?.uomSymbol || stockOperationProductRecord.value?.uom || ''))
-
-const baseUomSymbol = computed(() =>
-  String(stockOperationProductRecord.value?.uomSymbol || stockOperationProductRecord.value?.uom || ''))
-
-/** `2 box = 24 pcs` helper: received qty converted to the base UOM. */
-const stockOperationConvertedHint = computed(() => {
-  if (stockOperationType.value !== 'stock_in' || !stockOperationQuantity.value) return ''
-  const baseQty = convertToBase(stockOperationQuantity.value, stockOperationFactor.value)
-  return t('app.stock.uomConvertHint', {
-    qty: stockOperationQuantity.value,
-    from: stockOperationUomSymbol.value,
-    base: baseQty,
-    baseUom: baseUomSymbol.value,
-  })
-})
-
-/** Prefill the editable unit cost from the conversion row (or base × factor). */
-watch(stockOperationUomId, (uomId) => {
-  const product = stockOperationProductRecord.value
-  if (!product || stockOperationType.value !== 'stock_in') return
-  const conversion = conversionForUom(product, uomId)
-  const suggested = conversion?.costPrice != null
-    ? conversion.costPrice
-    : multiplyDecimalSafe(Number(product.costPrice || 0), conversion?.factorToBase ?? 1)
-  stockOperationUnitCost.value = suggested > 0 ? suggested : undefined
-})
-
-/** Supplier options for the Stock In purchase dialog. */
-const stockOperationSupplierOptions = computed(() =>
-  store.list('suppliers')
-    .filter(row => String(row.status || 'Active') !== 'Inactive')
-    .map(row => ({ label: String(row.name || ''), value: String(row.id) })))
-
-/** Stock In line total (received qty × unit cost per the selected UOM). */
-const stockOperationLineTotal = computed(() =>
-  Math.round((Number(stockOperationQuantity.value || 0) * Number(stockOperationUnitCost.value || 0)) * 100) / 100)
-
-/** Paid now defaults to the full line total (0…total; balance → supplier debt). */
-const stockOperationPaidAmount = computed(() =>
-  Math.min(Number(stockOperationPaidInput.value ?? stockOperationLineTotal.value), stockOperationLineTotal.value))
-
-const stockOperationOutstanding = computed(() =>
-  Math.round((stockOperationLineTotal.value - stockOperationPaidAmount.value) * 100) / 100)
-
 const stockOperationCanSubmit = computed(() => Boolean(
   stockOperationProduct.value
-  && stockOperationQuantity.value
-  && (stockOperationType.value !== 'stock_in'
-    || stockOperationOutstanding.value <= 0
-    || stockOperationSupplier.value)))
+  && stockOperationQuantity.value))
 
 async function submitStockOperation() {
   if (!stockOperationProduct.value || !stockOperationQuantity.value) return
@@ -857,17 +791,6 @@ async function submitStockOperation() {
       productId: stockOperationProduct.value,
       quantity: Number(stockOperationQuantity.value),
       note: stockOperationNote.value || null,
-      ...(stockOperationType.value === 'stock_in'
-        ? {
-            uomId: stockOperationUomId.value || undefined,
-            uomSymbol: stockOperationUomSymbol.value || undefined,
-            factorToBase: stockOperationFactor.value,
-            ...(stockOperationUnitCost.value != null ? { unitCost: Number(stockOperationUnitCost.value) } : {}),
-            supplierId: stockOperationSupplier.value || null,
-            paidAmount: stockOperationPaidAmount.value,
-            paymentMethod: stockOperationPaymentMethod.value,
-          }
-        : {}),
     })
     stockOperationOpen.value = false
     void store.fetchList('products')
@@ -875,7 +798,7 @@ async function submitStockOperation() {
     if (stockHistoryOpen.value) stockHistoryReloadKey.value += 1
     toast.add({
       title: `${stockOperationMeta.value.label}: ${record.reference}`,
-      description: `${record.product} · Qty ${record.quantity}`,
+      description: `${record.product} \u00b7 Qty ${record.quantity}`,
       color: 'success',
     })
   }
@@ -888,6 +811,201 @@ async function submitStockOperation() {
   }
   finally {
     stockOperationBusy.value = false
+  }
+}
+
+/* ------------------ Purchase dialog (Stock In, multi-line) ------------------ */
+/* Stock In = the purchase flow: every product bought is added as a line, then
+   ONE submit stores the complete purchase document (items[], supplier, payment,
+   unpaid balance as supplier debt) via POST /stock/in. */
+
+interface PurchaseLine { productId: string, uomId: string, quantity?: number, unitCost?: number }
+
+const purchaseOpen = ref(false)
+const purchaseBusy = ref(false)
+const purchaseLines = ref<PurchaseLine[]>([])
+const purchaseSupplier = ref('')
+const purchasePaymentMethod = ref<'Cash' | 'BANK_QR'>('Cash')
+const purchasePaidInput = ref<number | undefined>()
+const purchaseNote = ref('')
+/** Document currency: every amount on the purchase is entered in THIS currency
+ *  (USD | KHR), toggled at the end of each price field; the shared dialog asks
+ *  for the rate when switching to KHR. */
+const purchaseCurrency = ref<'USD' | 'KHR'>('USD')
+const purchaseExchangeRate = ref<number | undefined>()
+const {
+  dialogOpen: purchaseRateDialogOpen,
+  toggle: onPurchaseCurrencyChange,
+  confirm: confirmPurchaseExchangeRate,
+} = useCurrencyRateDialog({
+  currency: purchaseCurrency,
+  rate: purchaseExchangeRate,
+})
+
+/** Supplier options for the purchase (required when part stays unpaid). */
+const stockOperationSupplierOptions = computed(() =>
+  store.list('suppliers')
+    .filter(row => String(row.status || 'Active') !== 'Inactive')
+    .map(row => ({ label: String(row.name || ''), value: String(row.id) })))
+
+function emptyPurchaseLine(productId = ''): PurchaseLine {
+  const product = store.list('products').find(row => String(row.id) === String(productId))
+  return { productId, uomId: String(product?.uomId || ''), quantity: undefined, unitCost: undefined }
+}
+
+function openPurchase(productId = '') {
+  purchaseLines.value = [emptyPurchaseLine(productId)]
+  purchaseSupplier.value = ''
+  purchasePaymentMethod.value = 'Cash'
+  purchasePaidInput.value = undefined
+  purchaseNote.value = ''
+  purchaseCurrency.value = 'USD'
+  purchaseExchangeRate.value = undefined
+  purchaseOpen.value = true
+}
+
+function addPurchaseLine() {
+  purchaseLines.value.push(emptyPurchaseLine())
+}
+
+function removePurchaseLine(index: number) {
+  purchaseLines.value.splice(index, 1)
+}
+
+function purchaseProductRecord(productId: string) {
+  return store.list('products').find(row => String(row.id) === String(productId)) || null
+}
+
+/** Line UOM options: every Pricing row's Original UOM; products without Pricing rows fall back to their base UOM. */
+function purchaseUomOptionsFor(productId: string) {
+  const product = purchaseProductRecord(productId)
+  if (!product) return []
+  const conversions = Array.isArray(product.uomConversions) ? product.uomConversions as Array<Record<string, unknown>> : []
+  if (conversions.length) {
+    return conversions
+      .filter(row => row.uomId)
+      .map(row => ({ label: String(row.uomSymbol || row.uomId || ''), value: String(row.uomId) }))
+  }
+  return [{ label: String(product.uomSymbol || product.uom || ''), value: String(product.uomId || '') }]
+}
+
+function purchaseConversionFor(line: PurchaseLine) {
+  return conversionForUom(purchaseProductRecord(line.productId), line.uomId)
+}
+
+function purchaseFactorFor(line: PurchaseLine): number {
+  return purchaseConversionFor(line)?.factorToBase ?? 1
+}
+
+function purchaseUomSymbolFor(line: PurchaseLine): string {
+  return purchaseConversionFor(line)?.uomSymbol
+    || String(purchaseProductRecord(line.productId)?.uomSymbol || purchaseProductRecord(line.productId)?.uom || '')
+}
+
+/** Base-UOM equivalent of the received quantity, e.g. `2 box = 24 pcs`. */
+function purchaseConvertedHint(line: PurchaseLine): string {
+  if (!Number(line.quantity)) return ''
+  return t('app.stock.uomConvertHint', {
+    qty: line.quantity,
+    from: purchaseUomSymbolFor(line),
+    base: convertToBase(line.quantity, purchaseFactorFor(line)),
+    baseUom: String(purchaseProductRecord(line.productId)?.uomSymbol || purchaseProductRecord(line.productId)?.uom || ''),
+  })
+}
+
+/** Product / UOM change prefills the editable unit cost (per selected UOM). */
+function onPurchaseLineProduct(line: PurchaseLine) {
+  const product = purchaseProductRecord(line.productId)
+  line.uomId = String(product?.uomId || '')
+  onPurchaseLineUom(line)
+}
+
+function onPurchaseLineUom(line: PurchaseLine) {
+  const product = purchaseProductRecord(line.productId)
+  if (!product) return
+  const conversion = conversionForUom(product, line.uomId)
+  const suggested = conversion?.costPrice != null
+    ? conversion.costPrice
+    : multiplyDecimalSafe(Number(product.costPrice || 0), conversion?.factorToBase ?? 1)
+  line.unitCost = suggested > 0 ? suggested : undefined
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
+function purchaseLineTotal(line: PurchaseLine): number {
+  return roundMoney(Number(line.quantity || 0) * Number(line.unitCost || 0))
+}
+
+const purchaseGrandTotal = computed(() =>
+  roundMoney(purchaseLines.value.reduce((sum, line) => sum + purchaseLineTotal(line), 0)))
+
+/** Paid now defaults to the full purchase total (0..total; balance goes to supplier debt). */
+const purchasePaidAmount = computed(() =>
+  Math.min(Number(purchasePaidInput.value ?? purchaseGrandTotal.value), purchaseGrandTotal.value))
+
+const purchaseOutstanding = computed(() =>
+  roundMoney(purchaseGrandTotal.value - purchasePaidAmount.value))
+
+/** Lines that will actually be submitted (product + quantity set). */
+const purchaseCompleteLines = computed(() =>
+  purchaseLines.value.filter(line => line.productId && Number(line.quantity) > 0))
+
+const purchaseHasIncompleteLine = computed(() =>
+  purchaseLines.value.some(line => line.productId && !(Number(line.quantity) > 0)))
+
+const purchaseCanSubmit = computed(() => Boolean(
+  purchaseCompleteLines.value.length
+  && !purchaseHasIncompleteLine.value
+  && (purchaseOutstanding.value <= 0 || purchaseSupplier.value)
+  && (purchaseCurrency.value !== 'KHR' || Number(purchaseExchangeRate.value || 0) > 0)))
+
+async function submitPurchase() {
+  if (!purchaseCanSubmit.value) return
+  purchaseBusy.value = true
+  try {
+    const record = await posCommands.createPurchase({
+      lines: purchaseCompleteLines.value.map(line => ({
+        productId: line.productId,
+        quantity: Number(line.quantity),
+        uomId: line.uomId || undefined,
+        uomSymbol: purchaseUomSymbolFor(line) || undefined,
+        factorToBase: purchaseFactorFor(line),
+        ...(line.unitCost != null ? { unitCost: Number(line.unitCost) } : {}),
+      })),
+      supplierId: purchaseSupplier.value || null,
+      paidAmount: purchasePaidAmount.value,
+      paymentMethod: purchasePaymentMethod.value,
+      currency: purchaseCurrency.value,
+      exchangeRate: purchaseCurrency.value === 'KHR' ? Number(purchaseExchangeRate.value || 1) : 1,
+      note: purchaseNote.value || null,
+    })
+    purchaseOpen.value = false
+    void store.fetchList('products')
+    void store.fetchList('stockMovements')
+    void store.fetchList('stockIns')
+    if (stockHistoryOpen.value) stockHistoryReloadKey.value += 1
+    toast.add({
+      title: t('app.stock.purchaseSaved', {
+        ref: String(record.document_no ?? record.documentNo ?? record.reference ?? ''),
+      }),
+      description: t('app.stock.purchaseSavedHint', {
+        count: purchaseCompleteLines.value.length,
+        total: purchaseGrandTotal.value,
+      }),
+      color: 'success',
+    })
+  }
+  catch (error: unknown) {
+    toast.add({
+      title: t('app.ui.operationFailed'),
+      description: error instanceof Error ? error.message : String(error),
+      color: 'error',
+    })
+  }
+  finally {
+    purchaseBusy.value = false
   }
 }
 
@@ -992,66 +1110,14 @@ function filterItems(filter: { options?: readonly ModuleSelectOption[] | ModuleS
           :required="true"
           class="w-full"
         />
-        <CommonAppSelectMenuField
-          v-if="stockOperationType === 'stock_in'"
-          v-model="stockOperationUomId"
-          :items="stockOperationUomOptions"
-          :label="t('app.pos.uom')"
-          class="w-full"
-        />
         <CommonAppNumberField
           v-model="stockOperationQuantity"
-          :label="stockOperationType === 'stock_in' ? t('app.fields.quantity') : `${t('app.fields.quantity')} (${stockOperationType === 'adjustment' ? '+/−' : '−'})`"
+          :label="`${t('app.fields.quantity')} (${stockOperationType === 'adjustment' ? '+/−' : '−'})`"
           :required="true"
           :min="stockOperationType === 'adjustment' ? undefined : 0"
           :step="1"
           class="w-full"
         />
-        <p
-          v-if="stockOperationType === 'stock_in' && stockOperationConvertedHint"
-          class="text-xs text-muted"
-        >
-          {{ stockOperationConvertedHint }}
-        </p>
-        <CommonAppMoneyField
-          v-if="stockOperationType === 'stock_in'"
-          v-model="stockOperationUnitCost"
-          :label="t('app.stock.convCost')"
-          :min="0"
-          :step="0.01"
-          :help="t('app.stock.convCostHint')"
-          class="w-full"
-        />
-        <template v-if="stockOperationType === 'stock_in'">
-          <CommonAppSelectMenuField
-            v-model="stockOperationSupplier"
-            :items="stockOperationSupplierOptions"
-            :label="t('app.fields.supplier')"
-            :help="t('app.stock.supplierHint')"
-            class="w-full"
-          />
-          <CommonAppSelectMenuField
-            v-model="stockOperationPaymentMethod"
-            :items="[
-              { label: t('app.pos.paymentMethodCash'), value: 'Cash' },
-              { label: t('app.pos.paymentMethodBank'), value: 'BANK_QR' },
-            ]"
-            :label="t('app.reports.paymentMethod')"
-            class="w-full"
-          />
-          <CommonAppMoneyField
-            v-model="stockOperationPaidInput"
-            :label="t('app.pos.paidNow')"
-            :min="0"
-            :max="stockOperationLineTotal"
-            :step="0.01"
-            :help="t('app.stock.paidHint', { total: stockOperationLineTotal })"
-            class="w-full"
-          />
-          <p v-if="stockOperationOutstanding > 0 && !stockOperationSupplier" class="text-xs text-warning">
-            {{ t('app.stock.outstandingNeedsSupplier') }}
-          </p>
-        </template>
         <CommonAppTextareaField
           v-model="stockOperationNote"
           :label="t('app.fields.note')"
@@ -1083,6 +1149,194 @@ function filterItems(filter: { options?: readonly ModuleSelectOption[] | ModuleS
       </template>
     </CommonAppDialog>
 
+    <!-- Purchase (Stock In): multi-line basket; ONE submit = one complete
+         purchase document (items, supplier, payment, supplier debt). -->
+    <CommonAppDialog
+      v-model:open="purchaseOpen"
+      :title="t('app.stock.purchaseTitle')"
+      icon="i-lucide-package-plus"
+      color="success"
+      size="md"
+      :loading="purchaseBusy"
+    >
+      <div class="w-full space-y-3">
+        <p class="text-xs text-muted">
+          {{ t('app.stock.purchaseHint') }}
+        </p>
+
+        <div
+          v-for="(line, index) in purchaseLines"
+          :key="index"
+          class="rounded-lg border border-default p-3"
+        >
+          <div class="mb-2 flex items-center justify-between gap-2">
+            <span class="text-xs font-medium text-muted">{{ index + 1 }}</span>
+            <UButton
+              color="error"
+              variant="ghost"
+              size="xs"
+              icon="i-lucide-x"
+              :label="t('app.stock.removeLine')"
+              @click="removePurchaseLine(index)"
+            />
+          </div>
+          <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <CommonAppSelectMenuField
+              v-model="line.productId"
+              :items="productOptions"
+              :label="t('app.pos.product')"
+              :required="true"
+              class="w-full"
+              @update:model-value="onPurchaseLineProduct(line)"
+            />
+            <CommonAppSelectMenuField
+              v-model="line.uomId"
+              :items="purchaseUomOptionsFor(line.productId)"
+              :label="t('app.pos.uom')"
+              :disabled="!line.productId"
+              class="w-full"
+              @update:model-value="onPurchaseLineUom(line)"
+            />
+            <CommonAppNumberField
+              v-model="line.quantity"
+              :label="t('app.fields.quantity')"
+              :required="true"
+              :min="0"
+              :step="1"
+              class="w-full"
+            />
+            <CommonAppMoneyField
+              v-model="line.unitCost"
+              :currency="purchaseCurrency"
+              :label="t('app.stock.convCost')"
+              :min="0"
+              :step="0.01"
+              :help="t('app.stock.convCostHint')"
+              class="w-full"
+              @update:currency="onPurchaseCurrencyChange"
+            />
+          </div>
+          <div class="mt-2 flex items-center justify-between gap-3">
+            <p
+              v-if="purchaseConvertedHint(line)"
+              class="text-xs text-muted"
+            >
+              {{ purchaseConvertedHint(line) }}
+            </p>
+            <p class="ml-auto text-sm font-medium">
+              {{ t('app.stock.lineTotal') }}: {{ purchaseLineTotal(line) }}
+            </p>
+          </div>
+        </div>
+
+        <UButton
+          color="neutral"
+          variant="soft"
+          size="sm"
+          icon="i-lucide-plus"
+          :label="t('app.stock.addProduct')"
+          @click="addPurchaseLine"
+        />
+
+        <CommonAppSelectMenuField
+          v-model="purchaseSupplier"
+          :items="stockOperationSupplierOptions"
+          :label="t('app.fields.supplier')"
+          :help="t('app.stock.supplierHint')"
+          class="w-full"
+        />
+        <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <CommonAppSelectMenuField
+            v-model="purchasePaymentMethod"
+            :items="[
+              { label: t('app.pos.paymentMethodCash'), value: 'Cash' },
+              { label: t('app.pos.paymentMethodBank'), value: 'BANK_QR' },
+            ]"
+            :label="t('app.fields.paymentMethod')"
+            class="w-full"
+          />
+          <CommonAppMoneyField
+            v-model="purchasePaidInput"
+            :currency="purchaseCurrency"
+            :label="t('app.pos.paidNow')"
+            :min="0"
+            :max="purchaseGrandTotal"
+            :step="0.01"
+            :help="t('app.stock.paidHint', { total: purchaseGrandTotal })"
+            class="w-full"
+            @update:currency="onPurchaseCurrencyChange"
+          />
+          <CommonAppMoneyField
+            v-if="purchaseCurrency === 'KHR'"
+            v-model="purchaseExchangeRate"
+            :label="t('app.pos.exchangeRate')"
+            :min="1"
+            :step="1"
+            :placeholder="t('app.pos.exchangeRatePlaceholder')"
+            class="w-full"
+          />
+        </div>
+        <div class="rounded-lg bg-elevated p-3 text-sm">
+          <div class="flex items-center justify-between">
+            <span class="text-muted">{{ t('app.stock.purchaseTotal') }}</span>
+            <span class="font-semibold">{{ purchaseGrandTotal }}</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-muted">{{ t('app.pos.paidNow') }}</span>
+            <span>{{ purchasePaidAmount }}</span>
+          </div>
+          <div
+            v-if="purchaseOutstanding > 0"
+            class="mt-1 flex items-center justify-between text-warning"
+          >
+            <span>{{ t('app.fields.outstanding') }}</span>
+            <span class="font-semibold">{{ purchaseOutstanding }}</span>
+          </div>
+          <p
+            v-if="purchaseOutstanding > 0 && !purchaseSupplier"
+            class="mt-1 text-xs text-warning"
+          >
+            {{ t('app.stock.outstandingNeedsSupplier') }}
+          </p>
+        </div>
+        <CommonAppTextareaField
+          v-model="purchaseNote"
+          :label="t('app.fields.note')"
+          :rows="2"
+          class="w-full"
+        />
+      </div>
+
+      <template #footer>
+        <div class="flex w-full items-center justify-between gap-2">
+          <UButton
+            color="neutral"
+            variant="soft"
+            size="sm"
+            icon="i-lucide-plus"
+            :label="t('app.stock.addProduct')"
+            @click="addPurchaseLine"
+          />
+          <div class="flex justify-end gap-2">
+            <UButton
+              color="neutral"
+              variant="ghost"
+              :label="t('common.cancel')"
+              @click="purchaseOpen = false"
+            />
+            <UButton
+              color="success"
+              icon="i-lucide-package-plus"
+              :loading="purchaseBusy"
+              :disabled="!purchaseCanSubmit"
+              :label="t('app.stock.purchaseSubmit')"
+              @click="submitPurchase"
+            />
+          </div>
+        </div>
+      </template>
+    </CommonAppDialog>
+
     <StockQtyHistoryDialog
       v-model:open="stockHistoryOpen"
       :product="stockHistoryProduct"
@@ -1090,16 +1344,6 @@ function filterItems(filter: { options?: readonly ModuleSelectOption[] | ModuleS
       :can-add="canOperate"
       :reload-key="stockHistoryReloadKey"
       @saved="onStockHistorySaved"
-    />
-
-    <StockCostHistoryDialog
-      v-model:open="costPriceOpen"
-      :product="priceProduct"
-    />
-
-    <StockSalePriceDialog
-      v-model:open="salePriceOpen"
-      :product="priceProduct"
     />
 
     <ReportsDocumentReturnDialog
@@ -1116,6 +1360,20 @@ function filterItems(filter: { options?: readonly ModuleSelectOption[] | ModuleS
       :debt="debtPayRow"
       :currency="preferences.currency"
       @submit="submitDebtPayment"
+    />
+
+    <!-- Read-only document detail: opened by clicking a Sale/Purchase No. -->
+    <ReportsDocumentDetailDialog
+      v-model:open="documentDetailOpen"
+      :kind="documentDetailKind"
+      :document="documentDetailRecord"
+      :currency="preferences.currency"
+    />
+
+    <!-- Shared KHR exchange-rate dialog: opened by the purchase currency toggle. -->
+    <CommonAppExchangeRateDialog
+      v-model:open="purchaseRateDialogOpen"
+      @confirm="confirmPurchaseExchangeRate"
     />
   </div>
   <div v-else class="grid h-full min-h-0 flex-1 place-items-center p-8">

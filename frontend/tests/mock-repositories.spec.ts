@@ -638,6 +638,31 @@ describe('sale price versions (spec: product_sale_prices)', () => {
     expect(oneDay.items.every(row => row.date === day)).toBe(true)
   })
 
+  it('resolves the POS invoice behind a SALE stock-out row (click-through)', async () => {
+    const queries = createMockStockQueryRepository()
+    const product = mockRecords('products').find(row =>
+      mockRecords('stockMovements').some(mv => String(mv.productId) === String(row.id)
+        && String(mv.type) === 'Sale'))!
+
+    const sales = await queries.listProductHistory(String(product.id), { type: 'stock_out', limit: 500 })
+    const saleRow = sales.items[0]!
+    expect(saleRow.referenceType).toBe('sale')
+    expect(saleRow.referenceId).toBeTruthy()
+    expect(saleRow.reference).toBeTruthy()
+
+    const invoice = await queries.getMovementInvoice(saleRow.id)
+    expect(invoice).not.toBeNull()
+    expect(invoice!.invoiceNo).toBe(saleRow.reference)
+    expect(invoice!.items.length).toBeGreaterThan(0)
+    expect(invoice!.items.every(item => item.total >= 0)).toBe(true)
+
+    // Non-sale movements (stock in) have no invoice detail.
+    const stockIn = await queries.listProductHistory(String(product.id), { type: 'stock_in', limit: 500 })
+    const inRow = stockIn.items[0]!
+    expect(await queries.getMovementInvoice(inRow.id)).toBeNull()
+    expect(await queries.getMovementInvoice('missing-movement')).toBeNull()
+  })
+
   it('versions cost history oldest → newest and amounts are decimal-safe', async () => {
     const queries = createMockStockQueryRepository()
     // Pick a product purchased in multiple stock-in lots.
@@ -750,5 +775,70 @@ describe('UOM Pricing rows (spec §2.1.3: Convert UOM, stock always in base UOM)
       paymentMethod: 'Cash',
       paidAmount: 0,
     })).rejects.toThrow(/insufficient stock/i)
+  })
+})
+
+describe('mock complete purchase (Stock In) command', () => {
+  it('stores every purchased product on ONE document: quantities, movements and supplier debt', async () => {
+    const commands = createMockPosRepository()
+    const products = mockRecords('products')
+    const first = products[0]!
+    const second = products[1]!
+    const qtyFirst = Number(first.quantity)
+    const qtySecond = Number(second.quantity)
+    const movementCountBefore = mockRecords('stockMovements').length
+    const debtRowsBefore = mockRecords('supplierDebts').length
+    const supplierDebtBefore = Number(mockRecords('suppliers').find(row => row.id === 'sup2')!.totalDebt || 0)
+
+    // 100 paid of a 12*3 + 5*2 = 46 total? keep it simple: partial payment.
+    const record = await commands.createPurchase({
+      lines: [
+        { productId: String(first.id), quantity: 3, unitCost: 12, uomSymbol: 'pcs' },
+        { productId: String(second.id), quantity: 5, unitCost: 2 },
+      ],
+      supplierId: 'sup2',
+      paidAmount: 30,
+      note: 'weekly restock',
+    })
+
+    // Quantities updated for BOTH products (complete purchase, not one line).
+    expect(Number(first.quantity)).toBe(qtyFirst + 3)
+    expect(Number(second.quantity)).toBe(qtySecond + 5)
+    // One movement per purchased line, sharing the same document reference.
+    const movements = mockRecords('stockMovements').slice(0, 2)
+    expect(mockRecords('stockMovements')).toHaveLength(movementCountBefore + 2)
+    expect(movements.every(row => row.type === 'Stock In')).toBe(true)
+    expect(movements[0]!.reference).toBe(movements[1]!.reference)
+    // Totals + unpaid balance recorded (46 - 30 = 16 supplier debt).
+    expect(Number(record.total)).toBe(46)
+    expect(Number(record.outstanding)).toBe(16)
+    expect(mockRecords('supplierDebts')).toHaveLength(debtRowsBefore + 1)
+    expect(Number(mockRecords('suppliers').find(row => row.id === 'sup2')!.totalDebt))
+      .toBe(supplierDebtBefore + 16)
+  })
+
+  it('applies document-level discount and tax to the purchase total', async () => {
+    const commands = createMockPosRepository()
+    const products = mockRecords('products')
+    const first = products[0]!
+    const supplierDebtBefore = Number(mockRecords('suppliers').find(row => row.id === 'sup2')!.totalDebt || 0)
+
+    // Subtotal 10 × 2 = 20 → − 5 discount + 4 tax = 19 total; 9 paid leaves 10 debt.
+    const record = await commands.createPurchase({
+      lines: [{ productId: String(first.id), quantity: 10, unitCost: 2 }],
+      supplierId: 'sup2',
+      paidAmount: 9,
+      discountAmount: 5,
+      taxAmount: 4,
+    })
+    expect(Number(record.total)).toBe(19)
+    expect(Number(record.outstanding)).toBe(10)
+    expect(Number(mockRecords('suppliers').find(row => row.id === 'sup2')!.totalDebt))
+      .toBe(supplierDebtBefore + 10)
+  })
+
+  it('rejects an empty basket', async () => {
+    const commands = createMockPosRepository()
+    await expect(commands.createPurchase({ lines: [] })).rejects.toThrow(/line/i)
   })
 })

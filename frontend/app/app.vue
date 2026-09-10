@@ -102,11 +102,9 @@ useSeoMeta({
 
 <template>
   <UApp class="h-full min-h-0" :locale="currentLocale">
-    <NuxtLoadingIndicator
-      color="var(--ui-primary, #e8472a)"
-      error-color="#ef4444"
-      :height="3"
-    />
+    <!-- No global NuxtLoadingIndicator: this SPA renders pages instantly and
+         every page owns its loading state — the top progress bar only flashed
+         on each POS checkout/return navigation and distracted cashiers. -->
     <NuxtLayout />
     <CommonAppAccessAlertHost />
     <CommonAppConfirmHost />

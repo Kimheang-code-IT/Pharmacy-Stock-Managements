@@ -39,15 +39,15 @@ export const PAPER_STYLES: Record<PrintPaperSize, {
   /** Typical line-row height on paper (mm) — used for layout estimates. */
   rowMm: number
 }> = {
-  A4: { page: 'A4', marginMm: 8, scalePx: 1, printableMm: 281, rowMm: 6 },
-  A5: { page: 'A5', marginMm: 6, scalePx: 0.8, printableMm: 198, rowMm: 4.8 },
+  A4: { page: 'A4', marginMm: 8, scalePx: 1, printableMm: 281, rowMm: 6.5 },
+  A5: { page: 'A5', marginMm: 6, scalePx: 0.8, printableMm: 198, rowMm: 5.2 },
 }
 
 /** Base (A4-scale) invoice px metrics used by printPageCss. */
 const BASE_PX = {
-  font: 10,
-  title: 16,
-  meta: 13,
+  font: 13,
+  title: 20,
+  meta: 16,
   padX: 3,
   padY: 2,
   signsTop: 24,
@@ -56,8 +56,9 @@ const BASE_PX = {
 
 /**
  * Page CSS for a paper size. Shop-form invoice: underlined title, larger
- * meta, gray header, empty filler rows (~70% printable height), totals
- * aligned to Price+Discount | Amount (no top border on summary cells).
+ * meta, gray header, empty filler rows sized to the page-1 budget left after
+ * the fixed blocks, totals aligned to Price+Discount | Amount (no top border
+ * on summary cells).
  */
 export function printPageCss(size: PrintPaperSize): string {
   const style = PAPER_STYLES[size]

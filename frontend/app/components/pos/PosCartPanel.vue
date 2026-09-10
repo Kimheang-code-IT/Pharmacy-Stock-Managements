@@ -3,23 +3,54 @@ import { formatMoney } from '~/composables/module/useModule'
 import type { PosCartLine } from '~/utils/pos/cart'
 import { lineNet } from '~/utils/pos/cart'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   cart: PosCartLine[]
   currency: string
   disabled?: boolean
-}>()
+  /** Document currency of THIS sale (USD | KHR) — toggled from the price fields. */
+  saleCurrency?: 'USD' | 'KHR'
+  /** USD → document-currency multiplier (1 for USD sales). */
+  saleRate?: number
+}>(), {
+  disabled: false,
+  saleCurrency: 'USD',
+  saleRate: 1,
+})
 
 const emit = defineEmits<{
   changeQty: [productId: string, delta: number]
   changeUom: [productId: string, uomId: string]
   updatePrice: [productId: string, unitPrice: number]
   updateDiscount: [productId: string, discountPercent: number]
+  updateSaleCurrency: [value: 'USD' | 'KHR']
   remove: [productId: string]
   clear: []
 }>()
 
 const { t } = useI18n()
-const money = (value: unknown) => formatMoney(value, props.currency)
+
+const currencyOptions = [
+  { value: 'USD' as const, symbol: '$', labelKey: 'app.pos.currencyUsd' },
+  { value: 'KHR' as const, symbol: '៛', labelKey: 'app.pos.currencyKhr' },
+]
+
+/** Display currency: the document currency for KHR sales, else the shop default. */
+const displayCurrency = computed(() => props.saleCurrency === 'KHR' ? 'KHR' : props.currency)
+const money = (value: unknown) => formatMoney(Number(value || 0) * props.saleRate, displayCurrency.value)
+
+/** KHR unit prices are read/edited at the sale rate (falls back to USD
+ *  display until the exchange rate is entered). */
+const converting = computed(() => props.saleCurrency === 'KHR' && props.saleRate > 0)
+
+function priceInputValue(line: PosCartLine) {
+  return converting.value ? line.unitPrice * props.saleRate : line.unitPrice
+}
+
+function onPriceInput(line: PosCartLine, value: unknown) {
+  const amount = Number(value ?? 0)
+  const unitPrice = converting.value ? amount / props.saleRate : amount
+  emit('updatePrice', line.productId, Number.isFinite(unitPrice) ? Math.max(0, unitPrice) : 0)
+}
 
 function padQty(qty: number) {
   return String(qty).padStart(2, '0')
@@ -130,18 +161,32 @@ class="size-5 opacity-40" />
                 :label="t('app.pos.unitPrice')"
                 size="xs"
               >
-                <UInputNumber
-                  :model-value="line.unitPrice"
-                  :min="0"
-                  :step="0.01"
-                  :increment="false"
-                  :decrement="false"
-                  size="md"
-                  class="w-full"
-                  :ui="{ base: 'text-base tabular-nums' }"
-                  :disabled="disabled"
-                  @update:model-value="emit('updatePrice', line.productId, Number($event ?? 0))"
-                />
+                <UFieldGroup class="w-full">
+                  <UInputNumber
+                    :model-value="priceInputValue(line)"
+                    :min="0"
+                    :step="0.01"
+                    :increment="false"
+                    :decrement="false"
+                    size="md"
+                    class="w-full"
+                    :ui="{ base: 'text-base tabular-nums' }"
+                    :disabled="disabled"
+                    @update:model-value="onPriceInput(line, $event)"
+                  />
+                  <UButton
+                    v-for="option in currencyOptions"
+                    :key="option.value"
+                    :label="option.symbol"
+                    :color="saleCurrency === option.value ? 'primary' : 'neutral'"
+                    :variant="saleCurrency === option.value ? 'soft' : 'outline'"
+                    :disabled="disabled"
+                    :title="t(option.labelKey)"
+                    :aria-label="t(option.labelKey)"
+                    :aria-pressed="saleCurrency === option.value"
+                    @click="emit('updateSaleCurrency', option.value)"
+                  />
+                </UFieldGroup>
               </UFormField>
               <UFormField
                 :label="t('app.pos.lineDiscount')"

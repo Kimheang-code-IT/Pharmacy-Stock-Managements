@@ -49,7 +49,7 @@ const { t } = useI18n()
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto rounded-sm bg-muted/40 p-2">
-      <div class="grid grid-cols-2 gap-1.5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+      <div class="grid grid-cols-3 gap-1.5 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 2xl:grid-cols-7">
         <PosProductCard
           v-for="row in products"
           :key="String(row.id)"

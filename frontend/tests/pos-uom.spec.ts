@@ -131,6 +131,16 @@ describe('per-product UOM lookup (POS cart price/stock helpers)', () => {
     const other = productWith([])
     expect(salePriceForUom(other, 'uom2')).toBeNull()
   })
+
+  it('resolves the base UOM to the POS-active mirror sale price (stale base row)', () => {
+    // Activating a sale-price version copies onto products.salePrice; a stored
+    // base Pricing row may hold an older snapshot — the mirror must win.
+    const product = productWith([baseRow, packRow])
+    const activated = { ...product, salePrice: 0.95 }
+    expect(salePriceForUom(activated, BASE_UOM)).toBe(0.95)
+    // Pack rows still follow their own Pricing row.
+    expect(salePriceForUom(activated, 'uom2')).toBe(9.6)
+  })
 })
 
 describe('POS cart UOM select (spec §2.1.3 / §5.11)', () => {

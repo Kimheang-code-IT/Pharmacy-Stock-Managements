@@ -1,4 +1,13 @@
 import { escapeHtml, printHtmlDocument } from '~/utils/print/html'
+import {
+  printDocColgroup,
+  printDocHeadRow,
+  printDocMeta,
+  printDocNote,
+  printDocSignatures,
+  printDocTitle,
+  type PrintMetaPair,
+} from '~/utils/print/document'
 
 export type DeliveryNotePrintLine = {
   product: string
@@ -67,44 +76,36 @@ export function buildDeliveryNoteHtml(input: DeliveryNotePrintInput): string {
       <td class="num">${escapeHtml(line.qtyToDeliver)}</td>
     </tr>`).join('')
 
-  const note = input.note
-    ? `<p class="note">កំណត់សម្គាល់ / Note: ${escapeHtml(input.note)}</p>`
-    : ''
+  const left: PrintMetaPair[] = [
+    { label: 'លេខប័ណ្ណ / No', value: input.deliveryNo },
+    { label: 'លេខវិក្កយបត្រ / Invoice No', value: input.invoiceNo },
+    { label: 'អតិថិជន / Customer', value: input.customer },
+    { label: 'ទូរស័ព្ទ / Phone', value: input.deliveryPhone },
+  ]
+  const right: PrintMetaPair[] = [
+    { label: 'កាលបរិច្ឆេទ / Date', value: input.dateLabel },
+    { label: 'ស្ថានភាព / Status', value: input.status },
+    { label: 'ទីតាំងបញ្ជូន / Location', value: input.deliveryLocation },
+  ]
 
   return `
 <article class="doc">
-  <p class="title">ប័ណ្ណដឹកជញ្ជូន / DELIVERY NOTE</p>
+  ${printDocTitle('ប័ណ្ណដឹកជញ្ជូន / DELIVERY NOTE')}
   <p class="shop">${escapeHtml(input.shopName)}</p>
-  <div class="meta">
-    <div>
-      <p>លេខប័ណ្ណ / No: <strong>${escapeHtml(input.deliveryNo)}</strong></p>
-      <p>លេខវិក្កយបត្រ / Invoice No: <strong>${escapeHtml(input.invoiceNo)}</strong></p>
-      <p>អតិថិជន / Customer: <strong>${escapeHtml(input.customer)}</strong></p>
-      <p>ទូរស័ព្ទ / Phone: <strong>${escapeHtml(input.deliveryPhone)}</strong></p>
-    </div>
-    <div class="right">
-      <p>កាលបរិច្ឆេទ / Date: <strong>${escapeHtml(input.dateLabel)}</strong></p>
-      <p>ស្ថានភាព / Status: <strong>${escapeHtml(input.status)}</strong></p>
-      <p>ទីតាំងបញ្ជូន / Location: <strong>${escapeHtml(input.deliveryLocation)}</strong></p>
-    </div>
-  </div>
+  ${printDocMeta(left, right)}
   <table>
-    <thead>
-      <tr>
-        <th>ល.រ<span>N°</span></th>
-        <th>មុខទំនិញ<span>Product</span></th>
-        <th>ឯកតា<span>Unit</span></th>
-        <th class="num">បញ្ជាក់<span>Ordered</span></th>
-        <th class="num">បញ្ជូន<span>To Deliver</span></th>
-      </tr>
-    </thead>
+    ${printDocColgroup(['5%', '33%', '14%', '24%', '24%'])}
+    <thead>${printDocHeadRow([
+      { label: 'ល.រ', sub: 'N°' },
+      { label: 'មុខទំនិញ', sub: 'Product' },
+      { label: 'ឯកតា', sub: 'Unit' },
+      { label: 'បញ្ជាក់', sub: 'Ordered', align: 'num' },
+      { label: 'បញ្ជូន', sub: 'To Deliver', align: 'num' },
+    ])}</thead>
     <tbody>${rows}</tbody>
   </table>
-  ${note}
-  <div class="signs">
-    <p>អ្នកទទួល / Receiver</p>
-    <p>អ្នកដឹកជញ្ជូន / Delivery staff</p>
-  </div>
+  ${printDocNote('កំណត់សម្គាល់ / Note', input.note)}
+  ${printDocSignatures(['អ្នកទទួល / Receiver', 'អ្នកដឹកជញ្ជូន / Delivery staff'])}
 </article>`
 }
 

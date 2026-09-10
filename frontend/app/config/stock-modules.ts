@@ -31,7 +31,9 @@ function createModule(partial: Omit<ModuleConfig, 'canCreate' | 'titleKm' | 'sin
 }): ModuleConfig {
   return {
     ...partial,
-    canCreate: partial.readOnly ? false : partial.canCreate !== false,
+    // An explicit canCreate wins (e.g. Purchase Report is a read-only list
+    // whose Create routes to the full-page /reports/purchases/new document).
+    canCreate: partial.canCreate ?? (partial.readOnly ? false : true),
     kind: partial.kind || 'standard',
     titleKm: partial.titleKm || partial.title,
     singularKm: partial.singularKm || partial.singular,
@@ -166,10 +168,8 @@ export const stockModules: ModuleConfig[] = [
       f('barcode', 'Barcode', 'General Information', 'text'),
       f('uomId', 'Unit of Measure', 'General Information', 'select', undefined, { required: true, optionsCollection: 'uoms' }),
       f('supplierId', 'Supplier', 'General Information', 'select', undefined, { optionsCollection: 'suppliers' }),
-      // Spec §5.9 General tab: identity + cost price + read-only current
-      // stock. Sale price lives on the Pricing tab, expiry on the Expire tab.
-      f('costPrice', 'Cost Price', 'General Information', 'number', undefined, { required: true }),
-      f('quantity', 'Current Stock', 'General Information', 'number', undefined, { computed: true, help: 'Current stock. Change it through stock operations.' }),
+      // Spec §5.9 General tab: identity only. Sale price lives on the Pricing
+      // tab, expiry on the Expire tab (cost price / current stock hidden by request).
       f('status', 'Status', 'Status', 'select', ['Active', 'Inactive', 'Low Stock'], { computed: true }),
     ],
     filters: [
@@ -288,6 +288,10 @@ export const stockModules: ModuleConfig[] = [
     kind: 'reports',
     readOnly: true,
     tableOnly: true,
+    // Create routes to the full-page purchase form (/reports/purchases/new);
+    // creating a purchase is a Stock In, so the backend permission applies.
+    canCreate: true,
+    createPermission: 'stock.in',
     columns: [
       col('purchaseNo', 'Purchase No'),
       col('date', 'Date'),
@@ -381,6 +385,80 @@ export const stockModules: ModuleConfig[] = [
     filters: [
       f('supplier', 'Supplier', '', 'select'),
       f('status', 'Status', '', 'select', DEBT_STATUS),
+    ],
+  }),
+
+  // Return-history reports (explicit user approval 2025): read-only tracking
+  // lists over the immutable sale_returns / purchase_returns documents.
+  // The return actions themselves stay on Sales / Purchase Report rows.
+  createModule({
+    path: '/reports/customer-returns',
+    title: 'Customer Returns',
+    singular: 'Customer Return',
+    description: 'History of products returned by customers. Restocked quantities are added back to stock automatically.',
+    icon: 'i-lucide-undo-2',
+    group: 'reports',
+    permission: 'reports.view',
+    collection: 'saleReturns',
+    titleField: 'returnNo',
+    kind: 'reports',
+    readOnly: true,
+    tableOnly: true,
+    columns: [
+      col('date', 'Date', { type: 'date' }),
+      col('returnNo', 'Return No.'),
+      col('saleNo', 'Sale No.'),
+      col('customer', 'Customer'),
+      col('itemCount', 'Items'),
+      col('restockedQuantity', 'Restocked Qty'),
+      col('refundAmount', 'Refund Amount'),
+      col('reason', 'Reason'),
+      col('user', 'User'),
+    ],
+    fields: [
+      f('date', 'Date', 'Return', 'date'),
+      f('returnNo', 'Return No.', 'Return', 'text', undefined, { computed: true }),
+      f('saleNo', 'Sale No.', 'Return', 'text', undefined, { computed: true }),
+      f('customer', 'Customer', 'Return', 'text', undefined, { computed: true }),
+      f('refundAmount', 'Refund Amount', 'Return', 'number', undefined, { computed: true }),
+    ],
+    filters: [
+      f('customer', 'Customer', '', 'select'),
+    ],
+  }),
+  createModule({
+    path: '/reports/supplier-returns',
+    title: 'Supplier Returns',
+    singular: 'Supplier Return',
+    description: 'History of products returned to suppliers. Returned quantities are deducted from stock automatically.',
+    icon: 'i-lucide-undo-2',
+    group: 'reports',
+    permission: 'reports.view',
+    collection: 'purchaseReturns',
+    titleField: 'returnNo',
+    kind: 'reports',
+    readOnly: true,
+    tableOnly: true,
+    columns: [
+      col('date', 'Date', { type: 'date' }),
+      col('returnNo', 'Return No.'),
+      col('purchaseNo', 'Purchase No.'),
+      col('supplier', 'Supplier'),
+      col('itemCount', 'Items'),
+      col('refundAmount', 'Refund Amount'),
+      col('debtReduction', 'Debt Reduction'),
+      col('reason', 'Reason'),
+      col('user', 'User'),
+    ],
+    fields: [
+      f('date', 'Date', 'Return', 'date'),
+      f('returnNo', 'Return No.', 'Return', 'text', undefined, { computed: true }),
+      f('purchaseNo', 'Purchase No.', 'Return', 'text', undefined, { computed: true }),
+      f('supplier', 'Supplier', 'Return', 'text', undefined, { computed: true }),
+      f('refundAmount', 'Refund Amount', 'Return', 'number', undefined, { computed: true }),
+    ],
+    filters: [
+      f('supplier', 'Supplier', '', 'select'),
     ],
   }),
 

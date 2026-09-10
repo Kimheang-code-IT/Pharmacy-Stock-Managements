@@ -10,6 +10,8 @@ import {
   expenses,
   productSalePrices,
   products,
+  purchaseReturns,
+  saleReturns,
   sales,
   stockIns,
   stockMovements,
@@ -34,8 +36,10 @@ export interface MockCollections {
   suppliers: AppRecord[]
   customers: AppRecord[]
   sales: AppRecord[]
+  saleReturns: AppRecord[]
   deliveryNotes: AppRecord[]
   stockIns: AppRecord[]
+  purchaseReturns: AppRecord[]
   stockMovements: AppRecord[]
   customerDebtPayments: AppRecord[]
   customerDebts: AppRecord[]
@@ -67,8 +71,10 @@ export function useMockDb(): MockDb {
         suppliers: structuredClone(suppliers),
         customers: structuredClone(customers),
         sales: structuredClone(sales),
+        saleReturns: structuredClone(saleReturns),
         deliveryNotes: structuredClone(deliveryNotes),
         stockIns: structuredClone(stockIns),
+        purchaseReturns: structuredClone(purchaseReturns),
         stockMovements: structuredClone(stockMovements),
         customerDebtPayments: structuredClone(customerDebtPayments),
         customerDebts: structuredClone(customerDebts),

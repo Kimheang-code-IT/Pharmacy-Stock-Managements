@@ -45,6 +45,7 @@ export const deliveryModules: ModuleConfig[] = [
       col('invoiceNo', 'Invoice / Sale No'),
       col('customer', 'Customer'),
       col('deliveryPhone', 'Phone'),
+      col('deliveryLocation', 'Location'),
       col('createdAt', 'Date', { type: 'date' }),
       col('status', 'Status'),
       col('itemCount', 'Items', { type: 'number' }),

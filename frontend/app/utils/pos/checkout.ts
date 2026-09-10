@@ -30,3 +30,18 @@ export function checkoutDue(saleNet: number, depositTotal: number) {
 export function checkoutOutstanding(due: number, paidNow: number) {
   return roundMoney(Math.max(0, due - (Number(paidNow) || 0)))
 }
+
+/**
+ * Paid-now amount used for the sale. An **untouched** input (undefined) pays
+ * the amount due in full, so a walk-in cash sale submits without typing the
+ * tender (spec §5.11: walk-in customers cannot leave an outstanding balance).
+ * Credit tenders nothing (the balance becomes customer debt); a typed amount
+ * is capped at the amount due.
+ */
+export function checkoutPaidNow(paidInput: number | undefined, due: number, isCredit: boolean): number {
+  if (isCredit) return 0
+  if (paidInput == null) return roundMoney(Math.max(0, Number(due) || 0))
+  const typed = Number(paidInput)
+  if (!Number.isFinite(typed)) return roundMoney(Math.max(0, Number(due) || 0))
+  return roundMoney(Math.min(Math.max(0, typed), Math.max(0, Number(due) || 0)))
+}

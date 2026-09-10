@@ -155,6 +155,8 @@ export const products: AppRecord[] = productSeeds.map((seed, i) => {
     // their base UOM (the UI materializes a base=base row on save).
     uomConversions: UOM_CONVERSIONS_BY_PRODUCT[id] ?? [],
     expiryTracking: Boolean(seed.expiryDate),
+    // FIFO costing option (off by default — weighted average cost).
+    fifo: false,
     // Nearest lot expiry for the Stock list column (blank when not tracked).
     expiryDate: seed.expiryDate ?? null,
     // Most products have an image; leave a few null so the placeholder path stays verifiable.
@@ -263,6 +265,26 @@ function buildSales(): AppRecord[] {
 
 export const sales: AppRecord[] = buildSales()
 
+/** Customer-return history rows (sale_returns documents, spec SRT-…). */
+export const saleReturns: AppRecord[] = sales.slice(0, 4).map((sale, i) => {
+  const items = (sale.items as AppRecord[]).slice(0, 1)
+  const refund = Math.round(items.reduce((sum, item) => sum + Number(item.total), 0) * 0.5 * 100) / 100
+  return {
+    id: `srt${i + 1}`,
+    returnNo: `SRT-${String(13 - i).padStart(6, '0')}`,
+    saleId: String(sale.id),
+    saleNo: String(sale.saleNo),
+    createdAt: daysAgo(i * 4 + 1),
+    date: dateOnly(i * 4 + 1),
+    customer: String(sale.customer || ''),
+    itemCount: items.length,
+    refundAmount: refund,
+    restockedQuantity: i % 2 === 0 ? 1 : 0,
+    reason: pick(['Wrong item ordered', 'Damaged on delivery', 'Customer changed mind', 'Expired product'], i),
+    user: String(sale.cashier || '—'),
+  }
+})
+
 export const stockIns: AppRecord[] = Array.from({ length: 14 }, (_, i) => {
   const supplier = suppliers[i % 3]!
   const items: AppRecord[] = saleItems(i * 5 + 2, ((i % 2) + 1) + 1).map(item => ({
@@ -289,6 +311,27 @@ export const stockIns: AppRecord[] = Array.from({ length: 14 }, (_, i) => {
   }
 })
 
+/** Supplier-return history rows (purchase_returns documents, spec PRT-…). */
+export const purchaseReturns: AppRecord[] = stockIns.slice(0, 3).map((purchase, i) => {
+  const items = (purchase.items as AppRecord[]).slice(0, 1)
+  const refund = Math.round(items.reduce((sum, item) => sum + Number(item.price) * 1, 0) * 100) / 100
+  return {
+    id: `prt${i + 1}`,
+    returnNo: `PRT-${String(16 - i).padStart(6, '0')}`,
+    stockInId: String(purchase.id),
+    purchaseNo: String(purchase.purchaseNo),
+    createdAt: daysAgo(i * 5 + 2),
+    date: dateOnly(i * 5 + 2),
+    supplier: String(purchase.supplier || ''),
+    itemCount: items.length,
+    refundAmount: refund,
+    debtReduction: Number(purchase.remaining) > 0 ? refund : 0,
+    creditAmount: Number(purchase.remaining) > 0 ? 0 : refund,
+    reason: pick(['Damaged in transit', 'Wrong specification', 'Near expiry stock'], i),
+    user: String(purchase.user || '—'),
+  }
+})
+
 export const stockMovements: AppRecord[] = [
   ...sales.flatMap(sale => (sale.items as AppRecord[]).map((item, i) => ({
     id: createId('mv'),
@@ -298,6 +341,8 @@ export const stockMovements: AppRecord[] = [
     product: item.name,
     type: 'Sale',
     quantity: -Number(item.quantity),
+    unitPrice: Number(item.price ?? 0),
+    unit: String(productById(String(item.productId))?.uomSymbol || ''),
     reference: String(sale.saleNo),
     user: String(sale.cashier || '—'),
     note: i === 0 ? 'POS sale' : '',
@@ -310,6 +355,8 @@ export const stockMovements: AppRecord[] = [
     product: item.name,
     type: 'Stock In',
     quantity: Number(item.quantity),
+    unitPrice: Number(item.price ?? 0),
+    unit: String(productById(String(item.productId))?.uomSymbol || ''),
     reference: String(purchase.purchaseNo),
     user: String(purchase.user || '—'),
     note: '',

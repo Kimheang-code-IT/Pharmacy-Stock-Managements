@@ -4,8 +4,9 @@ import type { PaginationState } from '@tanstack/vue-table'
 import { h } from 'vue'
 import type { AppRecord } from '~/config/admin-seed'
 import { STOCK_OPERATION_META } from '~/config/pos-options'
-import type { ProductHistoryRow, StockHistoryKind } from '~/repositories/contracts/entities'
+import type { ProductHistoryRow, SaleReceipt, StockHistoryKind } from '~/repositories/contracts/entities'
 import { usePosCommands, useStockQueries } from '~/repositories/index'
+import { formatMoney } from '~/utils/format/format-service'
 import { conversionForUom, convertToBase, multiplyDecimalSafe } from '~/utils/stock/uom-conversions'
 
 /**
@@ -161,6 +162,14 @@ watch(() => props.reloadKey, (value, previous) => {
 
 function openAdd() {
   if (!canShowAdd.value || !productRecord.value || !addKind.value) return
+  // Stock In = purchase (spec §2.1.x): route to the full-page purchase form
+  // with this product preselected instead of the nested single-line dialog.
+  if (addKind.value === 'stock_in') {
+    const productId = String(productRecord.value.id || '')
+    open.value = false
+    void navigateTo({ path: '/reports/purchases/new', query: productId ? { productId } : {} })
+    return
+  }
   addQuantity.value = undefined
   addNote.value = ''
   addUomId.value = String(productRecord.value.uomId || '')
@@ -220,6 +229,8 @@ async function submitAdd() {
 /** Table row type: keeps AppListTable's `Record<string, unknown>` constraint. */
 type HistoryRow = ProductHistoryRow & Record<string, unknown>
 
+type HistoryCell = NonNullable<TableColumn<HistoryRow>['cell']>
+
 const rows = computed<HistoryRow[]>(() => {
   if (!props.product) return []
   const filtered = (!dateStart.value && !dateEnd.value)
@@ -232,50 +243,196 @@ const rows = computed<HistoryRow[]>(() => {
   return filtered.map(row => ({ ...row, quantity: Number(row.quantity || 0) }))
 })
 
-const columns = computed<TableColumn<HistoryRow>[]>(() => [
-  {
+/* ---------------------------------------------------------------- */
+/* Invoice detail (Stock Out rows from a POS sale — click Invoice No) */
+/* ---------------------------------------------------------------- */
+
+const invoiceOpen = ref(false)
+const invoiceLoading = ref(false)
+const invoiceError = ref<string | null>(null)
+const invoice = ref<SaleReceipt | null>(null)
+
+const canOpenInvoice = (row: HistoryRow) =>
+  props.kind === 'stock_out' && row.referenceType === 'sale' && Boolean(row.referenceId)
+
+async function openInvoice(row: HistoryRow) {
+  if (!canOpenInvoice(row)) return
+  invoiceOpen.value = true
+  invoiceLoading.value = true
+  invoiceError.value = null
+  invoice.value = null
+  try {
+    invoice.value = await stockQueries.getMovementInvoice(row.id)
+    if (!invoice.value) invoiceError.value = t('app.stock.invoiceNotFound')
+  }
+  catch (error: unknown) {
+    invoiceError.value = error instanceof Error ? error.message : String(error)
+  }
+  finally {
+    invoiceLoading.value = false
+  }
+}
+
+const invoiceItems = computed(() =>
+  (invoice.value?.items ?? []).map((item, index) => ({
+    __no: index + 1,
+    ...item,
+  })))
+
+const noCell: HistoryCell = ({ row }) =>
+  h('span', { class: 'text-muted tabular-nums' }, String(row.index + 1))
+
+const dateCell: HistoryCell = ({ row }) =>
+  h('span', { class: 'whitespace-nowrap text-muted' }, String(row.original.date ?? ''))
+
+const productCell: HistoryCell = ({ row }) =>
+  h('span', { class: 'block max-w-48 truncate font-medium', title: String(row.original.product ?? '') },
+    String(row.original.product || '—'))
+
+const unitCell: HistoryCell = ({ row }) =>
+  h('span', { class: 'whitespace-nowrap text-muted' }, String(row.original.unit || '—'))
+
+const unitPriceCell: HistoryCell = ({ row }) =>
+  h('span', { class: 'text-end tabular-nums whitespace-nowrap' }, formatMoney(row.original.unitPrice))
+
+const amountCell: HistoryCell = ({ row }) =>
+  h('span', { class: 'text-end tabular-nums whitespace-nowrap' },
+    formatMoney(multiplyDecimalSafe(Number(row.original.unitPrice || 0), Math.abs(Number(row.original.quantity || 0)))))
+
+const noteCell: HistoryCell = ({ row }) => {
+  const note = String(row.original.note || '')
+  return h('span', { class: 'block max-w-48 truncate text-muted', title: note }, note || '—')
+}
+
+/**
+ * Kind-specific column sets (spec §2.1.5 Stock dialogs):
+ * - Stock In: No, Date, Product, Unit, Unit price, Qty, Amount, Note.
+ * - Stock Out: No, Date, Invoice No, Product, Unit, Unit price, Amount, Note.
+ * - Damage keeps the original compact movement layout.
+ */
+const columns = computed<TableColumn<HistoryRow>[]>(() => {
+  const no: TableColumn<HistoryRow> = {
+    accessorKey: '__no',
+    header: t('app.stock.pricingNo'),
+    enableSorting: false,
+    meta: { class: { td: 'w-10', th: 'w-10' } },
+    cell: noCell,
+  }
+  const date: TableColumn<HistoryRow> = {
     accessorKey: 'date',
     header: t('app.fields.date'),
     enableSorting: false,
     meta: { class: { td: 'whitespace-nowrap text-muted', th: '' } },
-  },
-  {
-    accessorKey: 'type',
-    header: t('app.fields.type'),
+    cell: dateCell,
+  }
+  const product: TableColumn<HistoryRow> = {
+    accessorKey: 'product',
+    header: t('app.pos.product'),
     enableSorting: false,
-  },
-  {
-    accessorKey: 'quantity',
-    header: t('app.fields.quantity'),
+    cell: productCell,
+  }
+  const unit: TableColumn<HistoryRow> = {
+    accessorKey: 'unit',
+    header: t('app.pos.uom'),
+    enableSorting: false,
+    cell: unitCell,
+  }
+  const unitPrice: TableColumn<HistoryRow> = {
+    accessorKey: 'unitPrice',
+    header: t('app.fields.unitPrice'),
     enableSorting: false,
     meta: { class: { td: 'text-end tabular-nums whitespace-nowrap', th: 'text-end' } },
-    cell: ({ row }) => {
-      const qty = row.original.quantity
-      return h('span', { class: `font-medium ${qty < 0 ? 'text-error' : 'text-success'}` }, String(qty))
-    },
-  },
-  {
-    accessorKey: 'reference',
-    header: t('app.debt.reference'),
+    cell: unitPriceCell,
+  }
+  const amount: TableColumn<HistoryRow> = {
+    accessorKey: '__amount',
+    header: t('app.fields.amount'),
     enableSorting: false,
-    cell: ({ row }) => h('span', { class: 'font-medium' }, String(row.original.reference ?? '')),
-  },
-  {
-    accessorKey: 'user',
-    header: t('app.fields.user'),
-    enableSorting: false,
-    cell: ({ row }) => h('span', { class: 'whitespace-nowrap text-muted' }, String(row.original.user ?? '')),
-  },
-  {
+    meta: { class: { td: 'text-end tabular-nums whitespace-nowrap', th: 'text-end' } },
+    cell: amountCell,
+  }
+  const note: TableColumn<HistoryRow> = {
     accessorKey: 'note',
     header: t('app.fields.note'),
     enableSorting: false,
-    cell: ({ row }) => {
-      const note = String(row.original.note || '')
-      return h('span', { class: 'block max-w-48 truncate text-muted', title: note }, note || '—')
+    cell: noteCell,
+  }
+
+  if (props.kind === 'stock_in') {
+    return [
+      no,
+      date,
+      product,
+      unit,
+      unitPrice,
+      {
+        accessorKey: 'quantity',
+        header: t('app.fields.quantity'),
+        enableSorting: false,
+        meta: { class: { td: 'text-end tabular-nums whitespace-nowrap', th: 'text-end' } },
+        cell: ({ row }) => h('span', { class: 'font-medium text-success tabular-nums' }, String(row.original.quantity)),
+      },
+      amount,
+      note,
+    ]
+  }
+
+  if (props.kind === 'stock_out') {
+    return [
+      no,
+      date,
+      {
+        accessorKey: 'reference',
+        header: t('app.fields.invoiceNo'),
+        enableSorting: false,
+        cell: ({ row }) => canOpenInvoice(row.original)
+          ? h('button', {
+              type: 'button',
+              class: 'font-medium tabular-nums text-primary hover:underline whitespace-nowrap',
+              onClick: () => openInvoice(row.original),
+            }, String(row.original.reference ?? ''))
+          : h('span', { class: 'font-medium whitespace-nowrap' }, String(row.original.reference ?? '')),
+      },
+      product,
+      unit,
+      unitPrice,
+      amount,
+      note,
+    ]
+  }
+
+  return [
+    date,
+    {
+      accessorKey: 'type',
+      header: t('app.fields.type'),
+      enableSorting: false,
     },
-  },
-])
+    {
+      accessorKey: 'quantity',
+      header: t('app.fields.quantity'),
+      enableSorting: false,
+      meta: { class: { td: 'text-end tabular-nums whitespace-nowrap', th: 'text-end' } },
+      cell: ({ row }) => {
+        const qty = row.original.quantity
+        return h('span', { class: `font-medium ${qty < 0 ? 'text-error' : 'text-success'}` }, String(qty))
+      },
+    },
+    {
+      accessorKey: 'reference',
+      header: t('app.debt.reference'),
+      enableSorting: false,
+      cell: ({ row }) => h('span', { class: 'font-medium' }, String(row.original.reference ?? '')),
+    },
+    {
+      accessorKey: 'user',
+      header: t('app.fields.user'),
+      enableSorting: false,
+      cell: ({ row }) => h('span', { class: 'whitespace-nowrap text-muted' }, String(row.original.user ?? '')),
+    },
+    note,
+  ]
+})
 
 const title = computed(() => {
   const label = t(KIND_TITLE_KEYS[props.kind])
@@ -339,6 +496,121 @@ const nestedDialogUi = {
           variant="ghost"
           :label="t('actions.close')"
           @click="open = false"
+        />
+      </div>
+    </template>
+  </CommonAppDialog>
+
+  <!-- Invoice detail: opened by clicking an Invoice No on a SALE stock-out row. -->
+  <CommonAppDialog
+    v-model:open="invoiceOpen"
+    :title="invoice?.invoiceNo ? `${t('app.stock.invoiceDetail')} · ${invoice.invoiceNo}` : t('app.stock.invoiceDetail')"
+    icon="i-lucide-receipt-text"
+    wide
+    :loading="invoiceLoading"
+    :ui="nestedDialogUi"
+  >
+    <div class="w-full space-y-3">
+      <p
+        v-if="invoiceError"
+        class="text-sm text-error"
+      >{{ invoiceError }}</p>
+      <template v-if="invoice">
+        <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm sm:grid-cols-3">
+          <div>
+            <p class="text-[11px] text-muted">{{ t('app.fields.invoiceNo') }}</p>
+            <p class="font-medium">{{ invoice.invoiceNo }}</p>
+          </div>
+          <div>
+            <p class="text-[11px] text-muted">{{ t('app.fields.date') }}</p>
+            <p class="font-medium">{{ invoice.date }}</p>
+          </div>
+          <div>
+            <p class="text-[11px] text-muted">{{ t('app.pos.customer') }}</p>
+            <p class="font-medium">{{ invoice.customer || '—' }}</p>
+          </div>
+          <div>
+            <p class="text-[11px] text-muted">{{ t('app.fields.paymentMethod') }}</p>
+            <p class="font-medium">{{ invoice.paymentMethod || '—' }}</p>
+          </div>
+          <div>
+            <p class="text-[11px] text-muted">{{ t('app.fields.user') }}</p>
+            <p class="font-medium">{{ invoice.cashier || '—' }}</p>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto rounded-lg border border-default">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-default bg-elevated text-start text-xs text-muted">
+                <th class="w-10 px-2 py-1.5 text-start font-medium">{{ t('app.stock.pricingNo') }}</th>
+                <th class="px-2 py-1.5 text-start font-medium">{{ t('app.pos.product') }}</th>
+                <th class="px-2 py-1.5 text-start font-medium">{{ t('app.pos.uom') }}</th>
+                <th class="px-2 py-1.5 text-end font-medium">{{ t('app.fields.unitPrice') }}</th>
+                <th class="px-2 py-1.5 text-end font-medium">{{ t('app.fields.quantity') }}</th>
+                <th class="px-2 py-1.5 text-end font-medium">{{ t('app.fields.discount') }}</th>
+                <th class="px-2 py-1.5 text-end font-medium">{{ t('app.fields.amount') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="item in invoiceItems"
+                :key="item.__no"
+                class="border-b border-default last:border-b-0"
+              >
+                <td class="px-2 py-1.5 text-muted tabular-nums">{{ item.__no }}</td>
+                <td class="max-w-48 truncate px-2 py-1.5 font-medium" :title="item.name">{{ item.name }}</td>
+                <td class="px-2 py-1.5 text-muted">{{ item.uom || '—' }}</td>
+                <td class="px-2 py-1.5 text-end tabular-nums">{{ formatMoney(item.unitPrice) }}</td>
+                <td class="px-2 py-1.5 text-end tabular-nums">{{ item.quantity }}</td>
+                <td class="px-2 py-1.5 text-end tabular-nums">{{ item.discount ? formatMoney(item.discount) : '—' }}</td>
+                <td class="px-2 py-1.5 text-end font-medium tabular-nums">{{ formatMoney(item.total) }}</td>
+              </tr>
+              <tr v-if="!invoiceItems.length">
+                <td
+                  colspan="7"
+                  class="px-2 py-4 text-center text-muted"
+                >—</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="ms-auto grid w-full max-w-64 gap-1 text-sm">
+          <div class="flex justify-between">
+            <span class="text-muted">{{ t('app.fields.subtotal') }}</span>
+            <span class="tabular-nums">{{ formatMoney(invoice.subtotal) }}</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-muted">{{ t('app.fields.discount') }}</span>
+            <span class="tabular-nums">{{ formatMoney(invoice.discount) }}</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-muted">{{ t('app.fields.paidAmount') }}</span>
+            <span class="tabular-nums">{{ formatMoney(invoice.paidAmount) }}</span>
+          </div>
+          <div class="flex justify-between border-t border-default pt-1 font-medium">
+            <span>{{ t('app.fields.total') }}</span>
+            <span class="tabular-nums">{{ formatMoney(invoice.total) }}</span>
+          </div>
+          <div
+            v-if="invoice.remaining > 0"
+            class="flex justify-between text-error"
+          >
+            <span>{{ t('app.fields.remaining') }}</span>
+            <span class="tabular-nums">{{ formatMoney(invoice.remaining) }}</span>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <template #footer>
+      <div class="flex w-full justify-end">
+        <UButton
+          color="neutral"
+          variant="ghost"
+          :label="t('actions.close')"
+          @click="invoiceOpen = false"
         />
       </div>
     </template>

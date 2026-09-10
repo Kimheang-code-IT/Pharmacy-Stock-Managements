@@ -4,6 +4,7 @@ import type { PaginationState } from '@tanstack/vue-table'
 import { UBadge } from '#components'
 import { h } from 'vue'
 import { useAppHeader } from '~/composables/layout/useAppHeader'
+import { useCurrencyRateDialog } from '~/composables/common/useCurrencyRateDialog'
 import { usePageSeo } from '~/composables/usePageSeo'
 import { formatMoney } from '~/composables/module/useModule'
 import { PAYMENT_METHODS } from '~/config/pos-options'
@@ -86,8 +87,13 @@ const totals = computed(() => {
   let income = 0
   let expense = 0
   for (const row of entries.value) {
-    if (row.type === 'income') income += Number(row.amount || 0)
-    else expense += Number(row.amount || 0)
+    // Rows keep their document currency; summarize normalized to USD.
+    const rate = Number(row.exchangeRate || 1) || 1
+    const amount = String(row.currency || 'USD') === 'KHR'
+      ? Number(row.amount || 0) / rate
+      : Number(row.amount || 0)
+    if (row.type === 'income') income += amount
+    else expense += amount
   }
   return { income, expense, net: income - expense }
 })
@@ -176,7 +182,7 @@ const columns = computed<TableColumn<FinanceRow>[]>(() => [
     header: t('app.fields.amount'),
     enableSorting: false,
     meta: { class: { td: 'text-end tabular-nums whitespace-nowrap', th: 'text-end' } },
-    cell: ({ row }) => h('span', { class: 'font-medium' }, money(row.original.amount)),
+    cell: ({ row }) => h('span', { class: 'font-medium' }, formatMoney(row.original.amount, row.original.currency)),
   },
   {
     accessorKey: 'paymentMethod',
@@ -207,14 +213,34 @@ const expenseForm = reactive({
   amount: undefined as number | undefined,
   paymentMethod: '',
   reference: '',
+  currency: 'USD' as 'USD' | 'KHR',
+  exchangeRate: undefined as number | undefined,
 })
 
 const canSubmitExpense = computed(() => Boolean(
   expenseForm.date
   && expenseForm.category
   && Number(expenseForm.amount || 0) > 0
-  && expenseForm.paymentMethod,
+  && expenseForm.paymentMethod
+  && (expenseForm.currency !== 'KHR' || Number(expenseForm.exchangeRate || 0) > 0),
 ))
+
+/** Shared toggle logic: switching the expense to KHR asks for the exchange
+ *  rate through the shared dialog; cancelling keeps USD. */
+const {
+  dialogOpen: expenseRateDialogOpen,
+  toggle: toggleExpenseCurrency,
+  confirm: confirmExpenseExchangeRate,
+} = useCurrencyRateDialog({
+  currency: computed({
+    get: () => expenseForm.currency,
+    set: value => { expenseForm.currency = value },
+  }),
+  rate: computed({
+    get: () => expenseForm.exchangeRate,
+    set: value => { expenseForm.exchangeRate = value },
+  }),
+})
 
 function openAddExpense() {
   expenseForm.date = new Date().toISOString().slice(0, 10)
@@ -223,6 +249,8 @@ function openAddExpense() {
   expenseForm.amount = undefined
   expenseForm.paymentMethod = ''
   expenseForm.reference = ''
+  expenseForm.currency = 'USD'
+  expenseForm.exchangeRate = undefined
   addExpenseOpen.value = true
 }
 
@@ -237,6 +265,8 @@ async function submitExpense() {
       amount: Number(expenseForm.amount),
       paymentMethod: expenseForm.paymentMethod,
       reference: expenseForm.reference || null,
+      currency: expenseForm.currency,
+      exchangeRate: expenseForm.currency === 'KHR' ? Number(expenseForm.exchangeRate || 0) : 1,
     })
     addExpenseOpen.value = false
     await load()
@@ -336,12 +366,14 @@ async function submitExpense() {
         />
         <CommonAppMoneyField
           v-model="expenseForm.amount"
+          :currency="expenseForm.currency"
           :label="t('app.fields.amount')"
           :required="true"
           :min="0"
           :step="0.01"
           :help="Number(expenseForm.amount || 0) <= 0 ? t('app.finance.amountPositive') : ''"
           class="w-full"
+          @update:currency="toggleExpenseCurrency"
         />
         <CommonAppSelectMenuField
           v-model="expenseForm.paymentMethod"
@@ -349,6 +381,15 @@ async function submitExpense() {
           :label="t('app.fields.paymentMethod')"
           :placeholder="t('app.finance.paymentMethodPlaceholder')"
           :required="true"
+          class="w-full"
+        />
+        <CommonAppMoneyField
+          v-if="expenseForm.currency === 'KHR'"
+          v-model="expenseForm.exchangeRate"
+          :label="t('app.pos.exchangeRate')"
+          :min="1"
+          :step="1"
+          :placeholder="t('app.pos.exchangeRatePlaceholder')"
           class="w-full"
         />
         <CommonAppTextField
@@ -376,5 +417,11 @@ async function submitExpense() {
         </div>
       </template>
     </CommonAppDialog>
+
+    <!-- Shared KHR exchange-rate dialog: opened by the amount currency toggle. -->
+    <CommonAppExchangeRateDialog
+      v-model:open="expenseRateDialogOpen"
+      @confirm="confirmExpenseExchangeRate"
+    />
   </div>
 </template>

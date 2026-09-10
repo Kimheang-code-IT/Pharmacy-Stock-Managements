@@ -100,6 +100,8 @@ export function useMenu() {
       group('reports', t('app.nav.reports'), 'i-lucide-bar-chart-3', [
         pageLink(t('app.pages.salesReport'), '/reports/sales'),
         pageLink(t('app.pages.purchaseReport'), '/reports/purchases'),
+        pageLink(t('app.pages.customerReturns'), '/reports/customer-returns'),
+        pageLink(t('app.pages.supplierReturns'), '/reports/supplier-returns'),
         pageLink(t('app.pages.customerDebtReport'), '/reports/customer-debts'),
         pageLink(t('app.pages.supplierDebtReport'), '/reports/supplier-debts'),
         pageLink(t('app.pages.financeReport'), '/reports/finance'),

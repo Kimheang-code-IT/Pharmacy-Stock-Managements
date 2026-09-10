@@ -62,6 +62,10 @@ export interface PosCompleteSaleInput {
   deliveryPrice?: number
   /** Extra amount due on this invoice (selected debts and/or typed deposit). */
   deposit?: number
+  /** Document currency: every amount sent is in THIS currency (USD | KHR). */
+  currency?: 'USD' | 'KHR'
+  /** Exchange rate applied (KHR per 1 USD) — 1 for USD documents. */
+  exchangeRate?: number
 }
 
 /** One delivery note line: quantity to deliver from a sold (already stocked-out) sale line
@@ -109,7 +113,16 @@ export interface ProductHistoryRow {
   type: string
   /** Signed base-UOM quantity (negative = stock out). */
   quantity: number
+  /** Product name snapshot for the Stock In / Stock Out dialogs. */
+  product: string
+  /** Line-unit symbol snapshot (display only). */
+  unit: string
+  /** Per-unit price (base-unit cost for stock in; sale price for stock out). */
+  unitPrice: number
   reference: string
+  /** Movement linkage: 'sale' rows can open their POS invoice detail. */
+  referenceType: string
+  referenceId: string
   user: string
   note: string
   kind: StockHistoryKind
@@ -158,6 +171,8 @@ export interface StockQueryRepository {
   listProductCostHistory(productId: string, query?: ProductScopedQuery): Promise<EntityListResult<ProductCostHistoryRow>>
   /** Sale-price versions of one product (newest first). */
   listSalePrices(productId: string, query?: ProductScopedQuery): Promise<EntityListResult<ProductSalePriceRow>>
+  /** Invoice detail behind one SALE movement (Stock Out dialog click-through); null when not a sale. */
+  getMovementInvoice(movementId: string): Promise<SaleReceipt | null>
   /** Add a new POS-active version (version = MAX+1; copies onto products.salePrice). */
   addSalePrice(productId: string, input: { date: string, salePrice: number }): Promise<ProductSalePriceRow>
   /** Activate one version — exactly one stays active; copies onto products.salePrice. */
@@ -191,6 +206,20 @@ export interface SaleReceipt {
   remaining: number
 }
 
+/** One product line of a complete Purchase (Stock In) basket. */
+export interface PurchaseLineInput {
+  productId: string
+  quantity: number
+  /** Line UOM (base or a product Pricing row). */
+  uomId?: string
+  /** Selected UOM symbol snapshot for history display. */
+  uomSymbol?: string
+  /** base qty = quantity × factorToBase (default 1, base UOM). */
+  factorToBase?: number
+  /** Unit cost per the selected UOM. */
+  unitCost?: number
+}
+
 /**
  * Operational commands for POS checkout. Implementations must treat the whole
  * checkout as one transaction on the backend side (sale + items + payment or
@@ -198,6 +227,28 @@ export interface SaleReceipt {
  */
 export interface PosCommandRepository {
   completeSale(input: PosCompleteSaleInput): Promise<AppRecord>
+  /**
+   * Complete purchase via Stock In: every product line is stored on ONE
+   * stock-in document (items[], supplier, paid amount → supplier debt for the
+   * unpaid balance, payment row, stock movements, audit) in one transaction.
+   */
+  createPurchase(input: {
+    lines: PurchaseLineInput[]
+    supplierId?: string | null
+    /** Amount paid now (0…grand total; unpaid balance becomes supplier debt). */
+    paidAmount?: number
+    /** Payment label for the recorded payment row (CASH | BANK_QR). */
+    paymentMethod?: string
+    /** Document-level discount subtracted from the line subtotal. */
+    discountAmount?: number
+    /** Document-level tax added after the discount. */
+    taxAmount?: number
+    /** Document currency: every amount is in THIS currency (USD | KHR). */
+    currency?: 'USD' | 'KHR'
+    /** Exchange rate applied (KHR per 1 USD) — 1 for USD documents. */
+    exchangeRate?: number
+    note?: string | null
+  }): Promise<AppRecord>
   createStockOperation(input: {
     type: 'stock_in' | 'adjustment' | 'damage' | 'expiry'
     productId: string
@@ -323,6 +374,10 @@ export interface FinanceEntry {
   description: string
   amount: number
   paymentMethod: string
+  /** Document currency of the row (USD | KHR). */
+  currency: string
+  /** Exchange rate applied (KHR per 1 USD) — used for USD normalization. */
+  exchangeRate: number
   user: string
 }
 
@@ -334,6 +389,10 @@ export interface FinanceExpenseInput {
   amount: number
   paymentMethod: string
   reference?: string | null
+  /** Document currency: amount is in THIS currency (USD | KHR). */
+  currency?: 'USD' | 'KHR'
+  /** Exchange rate applied (KHR per 1 USD) — 1 for USD documents. */
+  exchangeRate?: number
   user?: string
 }
 

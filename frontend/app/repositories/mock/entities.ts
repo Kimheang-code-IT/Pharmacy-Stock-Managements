@@ -133,6 +133,39 @@ function paginateScopedRows<T extends { date: string }>(
  * so the dialogs never need to download unrelated collections.
  */
 export function createMockStockQueryRepository(): StockQueryRepository {
+  /** Receipt payload for one sale (POS print + Stock Out invoice detail dialog). */
+  function saleReceipt(saleId: string): SaleReceipt {
+    const db = useMockDb()
+    const sale = db.collections.sales.find(row => String(row.id) === String(saleId))
+    if (!sale) throw new Error(`Sale ${saleId} not found`)
+    const items = (Array.isArray(sale.items) ? sale.items : []) as AppRecord[]
+    return {
+      saleId: String(sale.id),
+      saleNo: String(sale.saleNo ?? ''),
+      invoiceNo: String(sale.invoiceNo || sale.saleNo || ''),
+      date: String(sale.date || sale.createdAt || '').slice(0, 10),
+      customer: String(sale.customer || 'Walk-in customer'),
+      cashier: String(sale.cashier || '—'),
+      paymentMethod: String(sale.paymentMethod || ''),
+      note: String(sale.note ?? ''),
+      items: items.map(item => ({
+        name: String(item.name ?? ''),
+        quantity: Number(item.quantity ?? 0),
+        uom: String(item.uom ?? ''),
+        unitPrice: Number(item.price ?? 0),
+        discount: Number(item.discount ?? 0),
+        total: Number(item.total ?? 0),
+      })),
+      subtotal: Number(sale.subtotal ?? 0),
+      discount: Number(sale.discount ?? 0),
+      deliveryPrice: Number(sale.deliveryPrice ?? 0),
+      deposit: Number(sale.deposit ?? 0),
+      total: Number(sale.total ?? 0),
+      paidAmount: Number(sale.paidAmount ?? 0),
+      remaining: Number(sale.remaining ?? 0),
+    }
+  }
+
   function productSalePriceRows(productId: string): ProductSalePriceRow[] {
     return mockRecords('productSalePrices')
       .filter(row => String(row.productId ?? '') === String(productId))
@@ -162,16 +195,33 @@ export function createMockStockQueryRepository(): StockQueryRepository {
           if (!kind) return true
           return historyKindOf(String(row.type ?? '')) === kind
         })
-        .map(row => ({
-          id: String(row.id),
-          date: dayKey(String(row.date || row.createdAt || '')),
-          type: String(row.type ?? ''),
-          quantity: Number(row.quantity ?? 0),
-          reference: String(row.reference ?? ''),
-          user: String(row.user ?? ''),
-          note: String(row.note ?? ''),
-          kind: historyKindOf(String(row.type ?? '')) ?? 'stock_in',
-        }))
+        .map((row) => {
+          const signedQty = Number(row.quantity ?? 0)
+          const unitPrice = Number(row.unitPrice ?? 0)
+          const type = String(row.type ?? '')
+          // Sale rows link to their POS invoice (Stock Out click-through).
+          const isSale = type === 'Sale'
+          const sale = isSale
+            ? mockRecords('sales').find(saleRow =>
+                String(saleRow.saleNo ?? '') === String(row.reference ?? '')
+                || String(saleRow.invoiceNo ?? '') === String(row.reference ?? ''))
+            : undefined
+          return {
+            id: String(row.id),
+            date: dayKey(String(row.date || row.createdAt || '')),
+            type,
+            quantity: signedQty,
+            product: String(row.product ?? ''),
+            unit: String(row.unit ?? row.uomSymbol ?? ''),
+            unitPrice,
+            reference: String(row.reference ?? ''),
+            referenceType: isSale ? 'sale' : 'stock_transaction',
+            referenceId: isSale ? String(sale?.id ?? row.referenceId ?? '') : String(row.referenceId ?? row.id ?? ''),
+            user: String(row.user ?? ''),
+            note: String(row.note ?? ''),
+            kind: historyKindOf(type) ?? 'stock_in',
+          }
+        })
         .sort((a, b) => b.date.localeCompare(a.date))
       return mockLatency(paginateScopedRows(rows, query, ['type', 'reference', 'user', 'note']))
     },
@@ -208,6 +258,16 @@ export function createMockStockQueryRepository(): StockQueryRepository {
         query,
         ['product'],
       ))
+    },
+
+    async getMovementInvoice(movementId): Promise<SaleReceipt | null> {
+      const movement = mockRecords('stockMovements').find(row => String(row.id) === String(movementId))
+      if (!movement || String(movement.type ?? '') !== 'Sale') return null
+      const reference = String(movement.reference ?? '')
+      const sale = mockRecords('sales').find(row =>
+        String(row.saleNo ?? '') === reference || String(row.invoiceNo ?? '') === reference)
+      if (!sale) return null
+      return mockLatency(saleReceipt(String(sale.id)))
     },
 
     async addSalePrice(productId, input): Promise<ProductSalePriceRow> {
@@ -276,11 +336,15 @@ function lastNDays(n: number): string[] {
   return days
 }
 
-function sumBetween(rows: AppRecord[], amountKey: string, start: string, end: string): number {
+/** Currency-aware sum: KHR rows normalize to USD via the document exchange rate. */
+function sumUsdBetween(rows: AppRecord[], amountKey: string, start: string, end: string): number {
   return rows.reduce((sum, row) => {
     const day = dayKey(String(row.date || row.createdAt || ''))
-    if (day >= start && day <= end) return sum + Number(row[amountKey] || 0)
-    return sum
+    if (day < start || day > end) return sum
+    const rate = Number(row.exchangeRate ?? 1) || 1
+    const amount = Number(row[amountKey] || 0)
+    const usd = String(row.currency || 'USD') === 'KHR' ? divideDecimalSafe(amount, rate) : amount
+    return sum + usd
   }, 0)
 }
 
@@ -295,10 +359,11 @@ export function createMockFinanceRepository(): FinanceRepository {
   } {
     const db = useMockDb()
     const sales = db.collections.sales.filter(sale => ['Paid', 'Partial'].includes(String(sale.status)))
-    const income = sumBetween(sales, 'paidAmount', start, end)
+    // USD-normalized sums (KHR documents divide by their exchange rate).
+    const income = sumUsdBetween(sales, 'paidAmount', start, end)
     // Expense = operating expenses only (spec: Finance Report expenses are
     // user-recorded rows; stock-in purchase amounts are not operating costs).
-    const expense = sumBetween(db.collections.expenses, 'amount', start, end)
+    const expense = sumUsdBetween(db.collections.expenses, 'amount', start, end)
     const customerDebt = db.collections.customers.reduce((sum, row) => sum + Number(row.debtBalance || 0), 0)
     const supplierDebt = db.collections.suppliers.reduce((sum, row) => sum + Number(row.totalDebt || 0), 0)
     // COGS from sold quantities valued at product cost price (same rule as the backend).
@@ -426,6 +491,8 @@ export function createMockFinanceRepository(): FinanceRepository {
         amount: round2(amount),
         paymentMethod: String(input.paymentMethod || ''),
         reference: String(input.reference || ''),
+        currency: input.currency ?? 'USD',
+        exchangeRate: input.exchangeRate ?? 1,
         user: String(input.user || '—'),
       })
       return mockLatency({
@@ -437,6 +504,8 @@ export function createMockFinanceRepository(): FinanceRepository {
         description: String(record.description || ''),
         amount: round2(Number(record.amount || 0)),
         paymentMethod: String(record.paymentMethod || ''),
+        currency: String(record.currency || 'USD'),
+        exchangeRate: Number(record.exchangeRate ?? 1),
         user: String(record.user || '—'),
       })
     },
@@ -466,6 +535,8 @@ function financeEntries(start: string, end: string): FinanceEntry[] {
       description: String(sale.customer || ''),
       amount: round2(Number(sale.paidAmount || 0)),
       paymentMethod: String(sale.paymentMethod || ''),
+      currency: String(sale.currency || 'USD'),
+      exchangeRate: Number(sale.exchangeRate ?? 1),
       user: String(sale.cashier || '—'),
     }))
   const expense: FinanceEntry[] = db.collections.expenses
@@ -479,6 +550,8 @@ function financeEntries(start: string, end: string): FinanceEntry[] {
       description: String(row.description || ''),
       amount: round2(Number(row.amount || 0)),
       paymentMethod: String(row.paymentMethod || ''),
+      currency: String(row.currency || 'USD'),
+      exchangeRate: Number(row.exchangeRate ?? 1),
       user: String(row.user || '—'),
     }))
   return [...income, ...expense].sort((a, b) =>
@@ -700,13 +773,16 @@ export function createMockPosRepository(): PosCommandRepository {
         cashier: 'Sokha Chan',
         status: remaining <= 0 ? 'Paid' : salePaid > 0 ? 'Partial' : 'Unpaid',
         note: input.note ?? null,
+        currency: input.currency ?? 'USD',
+        exchangeRate: input.exchangeRate ?? 1,
       })
 
       for (const item of items) {
         const product = db.collections.products.find(row => String(row.id) === String(item.productId))!
         // Stock-out in the base UOM: quantity × factorToBase.
         product.quantity = roundQty(Number(product.quantity) - Number(item.baseQuantity))
-        applyMovement(String(product.id), String(product.name), 'Sale', -Number(item.baseQuantity), String(sale.saleNo), 'POS sale', { uom: String(item.uom || '') })
+        // Movement reference is the invoice number (matches the backend SALE movement).
+        applyMovement(String(product.id), String(product.name), 'Sale', -Number(item.baseQuantity), String(sale.invoiceNo || sale.saleNo), 'POS sale', { uom: String(item.uom || '') })
       }
       if (customer && remaining > 0) {
         customer.debtBalance = round2(Number(customer.debtBalance || 0) + remaining)
@@ -722,6 +798,8 @@ export function createMockPosRepository(): PosCommandRepository {
           remainingAmount: remaining,
           dueDate: null,
           status: salePaid > 0 ? 'PARTIAL' : 'UNPAID',
+          currency: input.currency ?? 'USD',
+          exchangeRate: input.exchangeRate ?? 1,
         })
       }
       if (customer && left > 0 && includedDebts.length) {
@@ -799,6 +877,86 @@ export function createMockPosRepository(): PosCommandRepository {
         quantity: signed,
         uom: lineUomSymbol,
         factorToBase: factor,
+        note: input.note ?? null,
+        createdAt: nowIso(),
+      } as AppRecord)
+    },
+
+    /**
+     * Complete purchase (Stock In): every line lands on ONE document with one
+     * reference; product quantities, movements and audit update per line.
+     */
+    async createPurchase(input): Promise<AppRecord> {
+      const db = useMockDb()
+      if (!input.lines?.length) throw new Error('At least one product line is required')
+      const reference = sequenceNext('STOCK_IN', 'PIN', 5)
+      let total = 0
+      const productNames: string[] = []
+      for (const line of input.lines) {
+        const product = db.collections.products.find(row => String(row.id) === String(line.productId))
+        if (!product) throw new Error(`Unknown product: ${line.productId}`)
+        const quantity = Number(line.quantity)
+        if (!Number.isFinite(quantity) || quantity <= 0) throw new Error(`Quantity is required for ${String(product.name)}`)
+        const factor = Number(line.factorToBase ?? 1)
+        if (!Number.isFinite(factor) || factor <= 0) throw new Error('UOM factor must be greater than zero')
+        const baseQty = roundQty(convertToBase(quantity, factor))
+        const uomRecord = db.collections.uoms.find(row => String(row.id) === String(product.uomId || ''))
+        const baseUomSymbol = String(product.uomSymbol || uomRecord?.symbol || uomRecord?.name || '')
+        const lineUomSymbol = String(line.uomSymbol || baseUomSymbol)
+        const lineUnitCost = line.unitCost != null ? Number(line.unitCost) : null
+        const baseUnitCost = lineUnitCost != null ? divideDecimalSafe(lineUnitCost, factor) : null
+        product.quantity = roundQty(Number(product.quantity) + baseQty)
+        if (Number(product.quantity) <= 10) product.status = 'Low Stock'
+        else if (String(product.status) === 'Low Stock') product.status = 'Active'
+        applyMovement(String(product.id), String(product.name), 'Stock In', baseQty, reference, input.note ?? '', {
+          uom: lineUomSymbol,
+          ...(baseUnitCost != null ? { unitCost: baseUnitCost } : {}),
+        })
+        total = round2(total + round2(quantity * (lineUnitCost ?? 0)))
+        productNames.push(String(product.name))
+      }
+      // Document-level purchase adjustments (discount then tax), matching
+      // the backend total: subtotal − discount + tax. Amounts are in the
+      // document currency (lines are sent already converted by the caller).
+      const discount = round2(Math.max(0, Number(input.discountAmount ?? 0)))
+      const tax = round2(Math.max(0, Number(input.taxAmount ?? 0)))
+      total = round2(Math.max(0, total - discount + tax))
+      const currency = input.currency ?? 'USD'
+      const exchangeRate = Number(input.exchangeRate ?? 1)
+      // Unpaid balance on a supplier purchase is recorded as supplier debt.
+      const paid = round2(Math.min(Math.max(0, Number(input.paidAmount ?? total)), total))
+      const outstanding = round2(total - paid)
+      if (outstanding > 0 && input.supplierId) {
+        const supplier = db.collections.suppliers.find(row => String(row.id) === String(input.supplierId))
+        if (supplier) {
+          supplier.totalDebt = round2(Number(supplier.totalDebt || 0) + outstanding)
+          mockInsert('supplierDebts', {
+            date: nowIso().slice(0, 10),
+            supplierId: String(supplier.id),
+            supplier: String(supplier.name),
+            purchaseNo: reference,
+            totalAmount: total,
+            paidAmount: paid,
+            remainingAmount: outstanding,
+            status: paid > 0 ? 'PARTIAL' : 'UNPAID',
+            currency,
+            exchangeRate,
+          } as unknown as Partial<AppRecord>)
+        }
+      }
+      addAudit('STOCK', 'stock_in', 'Purchase', reference, reference)
+      return mockLatency({
+        id: createId('purchase'),
+        reference,
+        documentNo: reference,
+        type: 'Stock In',
+        products: productNames,
+        quantity: input.lines.reduce((sum, line) => sum + Number(line.quantity || 0), 0),
+        total,
+        paidAmount: paid,
+        outstanding,
+        currency,
+        exchangeRate,
         note: input.note ?? null,
         createdAt: nowIso(),
       } as AppRecord)
@@ -1008,6 +1166,23 @@ export function createMockPosRepository(): PosCommandRepository {
         sale.status = 'Paid'
       }
       addAudit('SALE', 'return', 'Sale', String(sale.saleNo), returnNo)
+      // Persist the return document for the Customer Returns history report.
+      db.collections.saleReturns.unshift({
+        id: createId('srt'),
+        returnNo,
+        saleId: String(sale.id),
+        saleNo: String(sale.saleNo || ''),
+        createdAt: nowIso(),
+        date: nowIso().slice(0, 10),
+        customer: String(sale.customer || ''),
+        itemCount: returnItems.length,
+        refundAmount: refund,
+        restockedQuantity: roundQty(returnItems.reduce(
+          (sum, item) => sum + (item.restock ? Number(item.quantity) : 0), 0,
+        )),
+        reason,
+        user: 'You',
+      } as AppRecord)
       return mockLatency({
         id: createId('srt'),
         returnNo,
@@ -1088,6 +1263,22 @@ export function createMockPosRepository(): PosCommandRepository {
       }
       purchase.returnAmount = round2(Number(purchase.returnAmount || 0) + refund)
       addAudit('STOCK', 'purchase_return', 'Stock In', String(purchase.purchaseNo), returnNo)
+      // Persist the return document for the Supplier Returns history report.
+      db.collections.purchaseReturns.unshift({
+        id: createId('prt'),
+        returnNo,
+        stockInId: String(purchase.id),
+        purchaseNo: String(purchase.purchaseNo || ''),
+        createdAt: nowIso(),
+        date: nowIso().slice(0, 10),
+        supplier: String(purchase.supplier || ''),
+        itemCount: returnItems.length,
+        refundAmount: refund,
+        debtReduction: debtCut,
+        creditAmount: round2(refund - debtCut),
+        reason,
+        user: 'You',
+      } as AppRecord)
       return mockLatency({
         id: createId('prt'),
         returnNo,

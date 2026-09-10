@@ -16,16 +16,29 @@ const props = withDefaults(defineProps<{
   disabled?: boolean
   compact?: boolean
   viewOnlyActions?: boolean
+  /** When set, renders a USD/KHR toggle beside the table title; it controls
+   *  the currency every money amount on the document is entered in. */
+  currency?: 'USD' | 'KHR'
 }>(), {
   compact: false,
 })
 
 const emit = defineEmits<{
   'update:modelValue': [Array<Record<string, unknown>>]
+  'update:currency': ['USD' | 'KHR']
   'rowAction': [action: 'view', row: Record<string, unknown>]
 }>()
 
 const { t, te } = useI18n()
+
+const currencyOptions = [
+  { value: 'USD' as const, symbol: '$', labelKey: 'app.pos.currencyUsd' },
+  { value: 'KHR' as const, symbol: '៛', labelKey: 'app.pos.currencyKhr' },
+]
+
+function onCurrencySelect(value: 'USD' | 'KHR') {
+  if (!props.disabled && value !== props.currency) emit('update:currency', value)
+}
 const { fieldLabel, tableTitle } = useModuleLabel()
 const { inputRef, openPicker, rowsFromInput } = useFileAttachments()
 
@@ -51,6 +64,7 @@ const numericKeys = new Set(['quantity', 'actualQuantity', 'remaining', 'netWeig
 
 function columnCellClass(column: ModuleLineColumn) {
   if (column.key === 'blNo' || column.key === 'truckNo' || column.key === 'containerNo') return 'w-36 min-w-28'
+  if (column.key === 'productId' || column.key === 'productName') return 'w-72 min-w-56'
   if (column.key === 'quantity' || column.key === 'actualQuantity' || column.key === 'remaining') return 'w-20 min-w-20 text-right tabular-nums'
   if (column.key === 'unit') return 'w-24 min-w-24'
   if (column.key === 'discountPercent' || column.key === 'taxPercent' || column.key === 'taxRate') return 'w-24 min-w-24 text-right tabular-nums'
@@ -80,7 +94,7 @@ function displayValue(column: ModuleLineColumn, value: unknown, row?: Record<str
     const number = Number(value)
     if (!Number.isFinite(number)) return String(value)
     if (moneyKeys.has(column.key)) {
-      const currency = row?.currency ? String(row.currency) : undefined
+      const currency = row?.currency ? String(row.currency) : props.currency
       if (column.key === 'total' && currency) return formatMoney(number, currency)
       return formatMoney(number, currency)
     }
@@ -230,7 +244,10 @@ function addRow() {
   const blank = Object.fromEntries(props.table.columns.map((column) => {
     if (column.type === 'number') return [column.key, 0]
     if (column.type === 'checkbox') return [column.key, String(column.options?.[1] ?? 'No')]
-    if (column.type === 'select') return [column.key, column.optionItems?.[0]?.value || column.options?.[0] || '']
+    if (column.type === 'select') {
+      const items = typeof column.optionItems === 'function' ? [] : column.optionItems
+      return [column.key, items?.[0]?.value || column.options?.[0] || '']
+    }
     return [column.key, '']
   }))
   for (const column of props.table.columns) {
@@ -326,8 +343,12 @@ const columns = computed<TableColumn<Record<string, unknown>>[]>(() => {
           })
         }
         if (column.type === 'select') {
-          const items = column.optionItems?.length
-            ? column.optionItems
+          // optionItems may be a per-row resolver (e.g. a row's product UOMs).
+          const resolvedItems = typeof column.optionItems === 'function'
+            ? column.optionItems(row.original)
+            : column.optionItems
+          const items = resolvedItems?.length
+            ? resolvedItems
             : (column.options || []).filter(Boolean).map(option => ({ label: option, value: option }))
           return h(TableSelect, {
             'modelValue': String(row.original[column.key] || '') || undefined,
@@ -434,14 +455,33 @@ const columns = computed<TableColumn<Record<string, unknown>>[]>(() => {
       <h3 :class="compact ? 'text-xs font-medium text-highlighted' : 'text-sm font-medium text-highlighted'">
         {{ tableTitle(table) }}
       </h3>
-      <UButton
+      <div class="flex items-center gap-2">
+        <UFieldGroup
+          v-if="currency"
+          size="xs"
+        >
+          <UButton
+            v-for="option in currencyOptions"
+            :key="option.value"
+            :label="option.symbol"
+            :color="currency === option.value ? 'primary' : 'neutral'"
+            :variant="currency === option.value ? 'soft' : 'outline'"
+            :disabled="disabled"
+            :title="t(option.labelKey)"
+            :aria-label="t(option.labelKey)"
+            :aria-pressed="currency === option.value"
+            @click="onCurrencySelect(option.value)"
+          />
+        </UFieldGroup>
+        <UButton
 v-if="!disabled"
 :size="compact ? 'xs' : 'sm'"
 color="neutral"
 variant="soft"
-        :icon="isFileTable ? 'i-lucide-upload' : 'i-lucide-plus'"
-        :label="table.addLabelKey && te(table.addLabelKey) ? t(table.addLabelKey) : (table.addLabel || t('app.ui.addRow'))"
-        @click="addRow" />
+          :icon="isFileTable ? 'i-lucide-upload' : 'i-lucide-plus'"
+          :label="table.addLabelKey && te(table.addLabelKey) ? t(table.addLabelKey) : (table.addLabel || t('app.ui.addRow'))"
+          @click="addRow" />
+      </div>
     </div>
     <input
 v-if="isFileTable && !disabled"

@@ -245,7 +245,23 @@ function productTabs(module: ModuleConfig, options: ModuleDocumentTabsOptions): 
       id: 'general',
       labelKey: 'app.stock.tabGeneral',
       label: 'General',
-      sections: fieldsToSections(module.fields, options.readOnlyKeys, options),
+      sections: [
+        ...fieldsToSections(module.fields, options.readOnlyKeys, options),
+        {
+          id: 'stock-costing',
+          titleKey: 'app.stock.costingTitle',
+          title: 'Stock Costing',
+          fields: [
+            {
+              key: 'fifo',
+              labelKey: 'app.stock.fifo',
+              label: 'FIFO (First In, First Out)',
+              type: 'boolean',
+              helpKey: 'app.stock.fifoHint',
+            },
+          ],
+        },
+      ],
     },
     {
       id: 'pricing',

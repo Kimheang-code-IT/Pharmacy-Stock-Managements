@@ -150,6 +150,8 @@ describe('http POS/stock command endpoints (spec §7)', () => {
       includedDebtIds: ['debt-9'],
       deliveryPrice: 2.5,
       deposit: 0,
+      currency: 'KHR',
+      exchangeRate: 41000,
     })
     expect(captured[0]?.method).toBe('POST')
     expect(captured[0]?.url).toBe('/api/v1/pos/sales')
@@ -162,6 +164,8 @@ describe('http POS/stock command endpoints (spec §7)', () => {
       included_debt_ids: ['debt-9'],
       delivery_price: 2.5,
       deposit: 0,
+      currency: 'KHR',
+      exchange_rate: 41000,
       items: [{
         product_id: 'prd-1',
         quantity: 2,
@@ -311,5 +315,75 @@ describe('http finance endpoints (spec §7 reports)', () => {
     expect(captured[0]?.url).toBe('/api/v1/reports/finance/expenses')
     expect(captured[0]?.body).toMatchObject({ date: '2026-02-01', payment_method: 'Cash', amount: 90 })
     expect(created).toMatchObject({ type: 'expense', paymentMethod: 'Cash', user: 'Sokha' })
+  })
+})
+
+describe('complete purchase (Stock In) commands', () => {
+  it('posts the whole purchase basket as ONE /stock/in request with every line', async () => {
+    const captured = withFakeApi(() => ({ data: { id: 'sti-1', document_no: 'STI-000042' } }))
+    const commands = createHttpPosCommandRepository()
+    const record = await commands.createPurchase({
+      lines: [
+        { productId: 'prd-1', quantity: 2, uomId: 'uom-2', uomSymbol: 'box', factorToBase: 12, unitCost: 6 },
+        { productId: 'prd-2', quantity: 5, unitCost: 1.5 },
+      ],
+      supplierId: 'sup-1',
+      paidAmount: 10,
+      paymentMethod: 'BANK_QR',
+      note: 'weekly order',
+    })
+    expect(captured).toHaveLength(1)
+    expect(captured[0]?.url).toBe('/api/v1/stock/in')
+    expect(captured[0]?.body).toMatchObject({
+      supplier_id: 'sup-1',
+      paid_amount: 10,
+      payment_method: 'BANK_QR',
+      note: 'weekly order',
+      items: [
+        { product_id: 'prd-1', quantity: 2, uom_id: 'uom-2', uom_symbol: 'box', factor_to_base: 12, unit_cost: 6 },
+        { product_id: 'prd-2', quantity: 5, unit_cost: 1.5 },
+      ],
+    })
+    expect(record).toMatchObject({ id: 'sti-1' })
+  })
+
+  it('sends document currency and exchange rate with the purchase', async () => {
+    const captured = withFakeApi(() => ({ data: { id: 'sti-4' } }))
+    const commands = createHttpPosCommandRepository()
+    await commands.createPurchase({
+      lines: [{ productId: 'prd-1', quantity: 1, unitCost: 410000 }],
+      currency: 'KHR',
+      exchangeRate: 41000,
+    })
+    expect(captured[0]?.body).toMatchObject({ currency: 'KHR', exchange_rate: 41000 })
+  })
+
+  it('sends document-level discount and tax with the purchase', async () => {
+    const captured = withFakeApi(() => ({ data: { id: 'sti-3' } }))
+    const commands = createHttpPosCommandRepository()
+    await commands.createPurchase({
+      lines: [{ productId: 'prd-1', quantity: 10, unitCost: 2 }],
+      supplierId: 'sup-1',
+      paidAmount: 9,
+      discountAmount: 5,
+      taxAmount: 4,
+    })
+    expect(captured[0]?.body).toMatchObject({
+      discount_amount: 5,
+      tax_amount: 4,
+      paid_amount: 9,
+    })
+  })
+
+  it('omits optional purchase fields instead of sending nulls/zeroes', async () => {
+    const captured = withFakeApi(() => ({ data: { id: 'sti-2' } }))
+    const commands = createHttpPosCommandRepository()
+    await commands.createPurchase({
+      lines: [{ productId: 'prd-1', quantity: 1 }],
+    })
+    const body = captured[0]?.body as Record<string, unknown>
+    expect('supplier_id' in body).toBe(false)
+    expect('uom_id' in (body.items as Array<Record<string, unknown>>)[0]!).toBe(false)
+    expect('unit_cost' in (body.items as Array<Record<string, unknown>>)[0]!).toBe(false)
   })
 })

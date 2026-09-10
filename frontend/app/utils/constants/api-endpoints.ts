@@ -46,11 +46,15 @@ export const ApiEndpoints = {
   POS_PRODUCT_SEARCH: '/api/v1/pos/products/search',
   POS_PRODUCT_BARCODE: (barcode: string) => `/api/v1/pos/products/barcode/${encodeURIComponent(barcode)}`,
   POS_PRODUCT_DELIVERY_NOTE: (saleId: string) => `/api/v1/pos/sales/${saleId}/delivery-notes`,
+  /** Stock Out dialog click-through: invoice detail behind one SALE movement. */
+  MOVEMENT_INVOICE: (movementId: string) => `/api/v1/stock/movements/${movementId}/invoice`,
 
   /** Spec §7 Reports: Sales/Purchase reports back the report pages AND the
    *  Return dialogs (rows carry document ids + returnable quantities). */
   REPORT_SALES: '/api/v1/reports/sales',
   REPORT_PURCHASES: '/api/v1/reports/purchases',
+  REPORT_SALE_RETURNS: '/api/v1/reports/sale-returns',
+  REPORT_PURCHASE_RETURNS: '/api/v1/reports/purchase-returns',
 
   DELIVERY_NOTES: '/api/v1/delivery-notes',
   DELIVERY_NOTE: (id: string) => `/api/v1/delivery-notes/${id}`,
@@ -137,6 +141,8 @@ export const CollectionEndpoints = {
   // Purchase Report reads the report path; creating stock-in goes through
   // ApiEndpoints.STOCK_IN (PosCommandRepository.createStockOperation).
   stockIns: ApiEndpoints.REPORT_PURCHASES,
+  saleReturns: ApiEndpoints.REPORT_SALE_RETURNS,
+  purchaseReturns: ApiEndpoints.REPORT_PURCHASE_RETURNS,
   stockMovements: ApiEndpoints.STOCK_MOVEMENTS,
   // Sale-price rows are product-scoped (PRODUCT_SALE_PRICES(productId)); this
   // collection key exists for mock compatibility only and is never flat CRUD

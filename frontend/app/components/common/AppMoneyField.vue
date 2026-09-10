@@ -19,6 +19,8 @@ withDefaults(defineProps<{
   step?: number
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl'
   class?: string
+  /** When set, renders a USD/KHR toggle at the end of the input. */
+  currency?: 'USD' | 'KHR'
 }>(), {
   min: 0,
   step: 0.01,
@@ -27,6 +29,7 @@ withDefaults(defineProps<{
 
 defineEmits<{
   'update:modelValue': [number | undefined]
+  'update:currency': ['USD' | 'KHR']
   blur: [FocusEvent]
   focus: [FocusEvent]
 }>()
@@ -50,7 +53,9 @@ defineEmits<{
     :step="step"
     :size="size"
     :class="$props.class"
+    :currency="currency"
     @update:model-value="$emit('update:modelValue', $event)"
+    @update:currency="$emit('update:currency', $event)"
     @blur="$emit('blur', $event)"
     @focus="$emit('focus', $event)"
   />

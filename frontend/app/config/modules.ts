@@ -31,13 +31,16 @@ export type ModuleField = {
   labelKey?: string
 }
 
+export type ModuleLineOptionItem = { label: string, value: string }
+
 export type ModuleLineColumn = {
   key: string
   label: string
   labelKm?: string
   type?: 'text' | 'number' | 'select' | 'textarea' | 'checkbox' | 'date' | 'datetime'
   options?: readonly string[] | string[]
-  optionItems?: Array<{ label: string, value: string }>
+  /** Static items, or a per-row resolver (e.g. UOM options of the row's product). */
+  optionItems?: ModuleLineOptionItem[] | ((row: Record<string, unknown>) => ModuleLineOptionItem[])
   width?: string
   computed?: boolean
   required?: boolean
@@ -108,6 +111,9 @@ export type ModuleConfig = {
   readOnly?: boolean
   tableOnly?: boolean
   canCreate?: boolean
+  /** Permission for the Create action when it differs from `{prefix}.create`.
+   * Also lets a readOnly report module route Create to a full-page /new flow. */
+  createPermission?: string
   titleKey?: string
   kind?: 'standard' | 'reports'
 }
@@ -132,7 +138,9 @@ const col = (key: string, label: string, labelKm?: string, extra: Partial<Module
 
 function createModule(partial: Omit<ModuleConfig, 'canCreate'> & { canCreate?: boolean }): ModuleConfig {
   return {
-    canCreate: partial.readOnly ? false : partial.canCreate !== false,
+    // readOnly modules are create-less unless Create is explicitly enabled
+    // (e.g. the Purchase Report routing Create to the purchase page).
+    canCreate: partial.readOnly ? partial.canCreate === true : partial.canCreate !== false,
     kind: partial.kind || 'standard',
     ...partial,
   }

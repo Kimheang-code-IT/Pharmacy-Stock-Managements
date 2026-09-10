@@ -3,6 +3,7 @@ import PosCartPanel from '~/components/pos/PosCartPanel.vue'
 import PosCheckoutPanel from '~/components/pos/PosCheckoutPanel.vue'
 import PosProductBrowser from '~/components/pos/PosProductBrowser.vue'
 import { useAppHeader } from '~/composables/layout/useAppHeader'
+import { useCurrencyRateDialog } from '~/composables/common/useCurrencyRateDialog'
 import { usePosChrome } from '~/composables/layout/usePosChrome'
 import { usePageSeo } from '~/composables/usePageSeo'
 import { usePosCommands, useSettingsRepositories } from '~/repositories/index'
@@ -21,10 +22,11 @@ import {
   checkoutDepositTotal,
   checkoutDue,
   checkoutOutstanding,
+  checkoutPaidNow,
   checkoutSaleNet,
   type CheckoutDebtRow,
 } from '~/utils/pos/checkout'
-import { printSaleInvoice, type SaleInvoicePrintInput } from '~/utils/print/invoice'
+import { printSaleInvoice, type PrintCurrencyChoice, type SaleInvoicePrintInput } from '~/utils/print/invoice'
 import type { PrintPaperSize } from '~/utils/print/html'
 import { conversionForUom, salePriceForUom } from '~/utils/stock/uom-conversions'
 
@@ -51,15 +53,44 @@ const categoryId = ref('')
 const cart = ref<PosCartLine[]>([])
 const customerId = ref<string | undefined>(undefined)
 const customerName = ref('')
+/** Read-only customer snapshot (phone/location live on the customer record;
+ *  the checkout panel shows the Name selector only). */
 const customerPhone = ref('')
 const customerLocation = ref('')
 const paymentMethod = ref<string>('Cash')
 const paidInput = ref<number | undefined>()
 const includedDebtIds = ref<string[]>([])
 const deliveryPrice = ref(0)
+/** Delivery destination captured in the checkout delivery-info dialog;
+ *  prefills the post-sale Create Delivery Note (spec §2.1.9). */
+const deliveryPhone = ref('')
+const deliveryLocation = ref('')
 const needsDelivery = ref(false)
 const depositInput = ref(0)
 const completing = ref(false)
+// Document currency of THIS sale: USD prices convert at the entered rate
+// when the cashier checks out in KHR (all amounts recorded in KHR).
+const saleCurrency = ref<'USD' | 'KHR'>('USD')
+const exchangeRateInput = ref<number | undefined>()
+const saleRate = computed(() =>
+  saleCurrency.value === 'KHR' ? Math.max(0, Number(exchangeRateInput.value || 0)) : 1)
+/** USD-based cart amounts converted to the document currency. */
+const docFromUsd = (value: number) => value * saleRate.value
+/** Shared toggle logic: switching to KHR asks for the exchange rate through
+ *  the shared dialog; cancelling keeps the previous currency. Switching
+ *  currency also invalidates debt settling (debts keep their own currency). */
+const {
+  dialogOpen: exchangeRateDialogOpen,
+  toggle: onSaleCurrencyChange,
+  confirm: confirmSaleExchangeRate,
+} = useCurrencyRateDialog({
+  currency: saleCurrency,
+  rate: exchangeRateInput,
+  onChanged: () => {
+    includedDebtIds.value = []
+    depositInput.value = 0
+  },
+})
 const lastSaleNo = ref('')
 const lastSaleId = ref('')
 
@@ -115,10 +146,22 @@ const products = computed(() => {
     })
 })
 
+/** Checkout customer options: label = name (displayed), phone/location ride
+ *  on the item so the selector can search and show them (name · phone ·
+ *  address) for faster selection. */
 const customerOptions = computed(() =>
   store.list('customers')
     .filter(row => String(row.status) === 'Active')
-    .map(row => ({ label: `${row.name} · ${row.code}`, value: String(row.id) })),
+    .map(row => ({
+      label: String(row.name || ''),
+      value: String(row.id),
+      phone: String(row.phone || ''),
+      location: String(row.location || row.address || ''),
+      description: [row.phone, row.location || row.address]
+        .map(part => String(part || '').trim())
+        .filter(Boolean)
+        .join(' · '),
+    })),
 )
 
 const openDebts = computed<CheckoutDebtRow[]>(() => {
@@ -152,14 +195,28 @@ const selectedDeposit = computed(() => checkoutDepositTotal(
 ))
 const appliedDeliveryPrice = computed(() =>
   checkoutDeliveryFee(needsDelivery.value, deliveryPrice.value))
+// Delivery fee / deposit are typed in the document currency; cart prices are
+// USD-based and convert at the sale rate.
 const due = computed(() => checkoutDue(
-  checkoutSaleNet(cartSubtotal(cart.value), discountTotal.value, appliedDeliveryPrice.value),
+  checkoutSaleNet(cartSubtotal(cart.value), discountTotal.value, 0) * saleRate.value
+    + appliedDeliveryPrice.value,
   Number(depositInput.value || 0),
 ))
 const isCredit = computed(() => paymentMethod.value === 'Credit')
+/** Untouched Paid now pays the amount due in full — a walk-in cash sale
+ *  submits without typing the tender (spec §5.11 walk-in rule). */
 const paidAmount = computed(() =>
-  isCredit.value ? 0 : Math.min(Number(paidInput.value ?? 0), due.value))
+  checkoutPaidNow(paidInput.value, due.value, isCredit.value))
 const outstandingAmount = computed(() => checkoutOutstanding(due.value, paidAmount.value))
+// Previous debt (ខ្វះមុន): all open debts of the customer before this sale.
+const previousDebtTotal = computed(() => roundMoney(
+  openDebts.value.reduce((sum, row) => sum + row.remainingAmount, 0),
+))
+// Outstanding after this sale = current-sale outstanding + previous debt not
+// settled at checkout (depositInput is the amount allocated to old debts).
+const totalOutstanding = computed(() => roundMoney(
+  outstandingAmount.value + Math.max(0, previousDebtTotal.value - Number(depositInput.value || 0)),
+))
 
 const dateLabel = computed(() => {
   const now = new Date()
@@ -280,6 +337,8 @@ function clearCart() {
   customerLocation.value = ''
   includedDebtIds.value = []
   deliveryPrice.value = 0
+  deliveryPhone.value = ''
+  deliveryLocation.value = ''
   needsDelivery.value = false
   depositInput.value = 0
   paymentMethod.value = 'Cash'
@@ -305,15 +364,15 @@ watch(includedDebtIds, () => {
 watch(customerId, (id) => {
   includedDebtIds.value = []
   if (!id) {
+    customerName.value = ''
     customerPhone.value = ''
     customerLocation.value = ''
     return
   }
   const row = store.get('customers', String(id))
-  if (!row) return
-  customerName.value = String(row.name || '')
-  customerPhone.value = String(row.phone || '')
-  customerLocation.value = String(row.location || row.address || '')
+  customerName.value = String(row?.name || '')
+  customerPhone.value = String(row?.phone || '')
+  customerLocation.value = String(row?.location || row?.address || '')
 })
 
 watch(paymentMethod, (method) => {
@@ -321,23 +380,32 @@ watch(paymentMethod, (method) => {
   else paidInput.value = undefined
 })
 
-/* ------------------------- Invoice print size chooser ------------------------- */
+/** Walk-in customers cannot take debt (spec §5.11): switching to Credit
+ *  without a registered customer is blocked with a hint. */
+watch(isCredit, (credit) => {
+  if (credit && !customerId.value) {
+    toast.add({ title: t('app.pos.creditRequiresCustomer'), color: 'warning' })
+    paymentMethod.value = 'Cash'
+  }
+})
 
-/** Paper-size chooser opened after a successful Submit (A4 default). */
+/* ------------------------- Invoice print size + currency chooser ------------------------- */
+
+/** Paper-size + print-currency chooser opened after a successful Submit (A4 default). */
 const printSizeOpen = ref(false)
-let printSizeResolver: ((size: PrintPaperSize | null) => void) | null = null
+let printSizeResolver: ((choice: { size: PrintPaperSize, options: PrintCurrencyChoice } | null) => void) | null = null
 
-/** Resolves with the chosen size, or null when the cashier closes/cancels. */
-function choosePrintSize(): Promise<PrintPaperSize | null> {
+/** Resolves with the chosen size + currency, or null when the cashier closes/cancels. */
+function choosePrintSize(): Promise<{ size: PrintPaperSize, options: PrintCurrencyChoice } | null> {
   return new Promise((resolve) => {
     printSizeResolver = resolve
     printSizeOpen.value = true
   })
 }
 
-function onPrintSizeConfirm(size: PrintPaperSize) {
+function onPrintSizeConfirm(size: PrintPaperSize, options: PrintCurrencyChoice) {
   printSizeOpen.value = false
-  printSizeResolver?.(size)
+  printSizeResolver?.({ size, options })
   printSizeResolver = null
 }
 
@@ -355,6 +423,10 @@ async function completeSale() {
     toast.add({ title: t('app.pos.creditRequiresCustomer'), color: 'warning' })
     return
   }
+  if (saleCurrency.value === 'KHR' && saleRate.value <= 0) {
+    toast.add({ title: t('app.pos.exchangeRateRequired'), color: 'warning' })
+    return
+  }
   completing.value = true
   try {
     const snapshot = cart.value.map(line => ({ ...line }))
@@ -364,7 +436,8 @@ async function completeSale() {
       items: cart.value.map(line => ({
         productId: line.productId,
         quantity: line.quantity,
-        unitPrice: line.unitPrice,
+        // Line prices are sent in the document currency (KHR sale uses rate).
+        unitPrice: docFromUsd(line.unitPrice),
         discountPercent: line.discountPercent,
         uomId: line.uomId || undefined,
         uomSymbol: line.uom || undefined,
@@ -372,10 +445,12 @@ async function completeSale() {
       })),
       paymentMethod: paymentMethod.value,
       paidAmount: paidAmount.value,
-      discount: discountTotal.value,
+      discount: docFromUsd(discountTotal.value),
       deliveryPrice: appliedDeliveryPrice.value,
       deposit: depositInput.value,
       includedDebtIds: includedDebtIds.value,
+      currency: saleCurrency.value,
+      exchangeRate: saleRate.value,
     })
     lastSaleNo.value = String(sale.invoiceNo || sale.saleNo || '')
     lastSaleId.value = String(sale.id || '')
@@ -408,8 +483,9 @@ async function completeSale() {
       currency: currency.value,
       lines: printLines,
       deliveryPrice: appliedDeliveryPrice.value,
-      depositAmount: Number(depositInput.value || 0),
-      outstandingAmount: outstandingAmount.value,
+      previousDebtAmount: previousDebtTotal.value,
+      depositAmount: paidAmount.value,
+      outstandingAmount: totalOutstanding.value,
     }
     toast.add({
       title: `${t('app.pos.saleCompleted')} · ${lastSaleNo.value}`,
@@ -423,20 +499,24 @@ async function completeSale() {
     customerLocation.value = ''
     includedDebtIds.value = []
     deliveryPrice.value = 0
+    deliveryPhone.value = ''
+    deliveryLocation.value = ''
     needsDelivery.value = false
     depositInput.value = 0
     paymentMethod.value = 'Cash'
+    saleCurrency.value = 'USD'
+    exchangeRateInput.value = undefined
     step.value = 'cart'
     void store.fetchList('products')
     void store.fetchList('sales')
     void store.fetchList('customers')
     void store.fetchList('customerDebts')
     void store.fetchList('stockMovements')
-    // Ask which paper size to print (A4/A5); closing the dialog skips print.
-    const paperSize = await choosePrintSize()
-    if (paperSize) await printSaleInvoice(printInput, paperSize)
+    // Ask which paper size + print currency to use; closing skips print.
+    const printChoice = await choosePrintSize()
+    if (printChoice) await printSaleInvoice(printInput, printChoice.size, printChoice.options)
     if (shouldOpenDelivery) {
-      await navigateTo(`/delivery-notes/new?saleId=${lastSaleId.value}`)
+      await navigateTo(`/delivery-notes/new?saleId=${lastSaleId.value}&phone=${encodeURIComponent(deliveryPhone.value)}&location=${encodeURIComponent(deliveryLocation.value)}`)
     }
   }
   catch (error: unknown) {
@@ -490,11 +570,14 @@ async function completeSale() {
       <PosCartPanel
         :cart="cart"
         :currency="currency"
+        :sale-currency="saleCurrency"
+        :sale-rate="saleRate"
         :disabled="!canOperate"
         @change-qty="changeQty"
         @change-uom="changeUom"
         @update-price="updatePrice"
         @update-discount="updateDiscount"
+        @update-sale-currency="onSaleCurrencyChange"
         @remove="removeLine"
         @clear="clearCart"
       />
@@ -504,27 +587,40 @@ async function completeSale() {
       v-else
       v-model:customer-id="customerId"
       v-model:customer-name="customerName"
-      v-model:customer-phone="customerPhone"
-      v-model:customer-location="customerLocation"
       v-model:payment-method="paymentMethod"
       v-model:paid-input="paidInput"
       v-model:delivery-price="deliveryPrice"
+      v-model:delivery-phone="deliveryPhone"
+      v-model:delivery-location="deliveryLocation"
       v-model:needs-delivery="needsDelivery"
       v-model:deposit-input="depositInput"
       v-model:included-debt-ids="includedDebtIds"
+      v-model:exchange-rate="exchangeRateInput"
+      :customer-phone="customerPhone"
+      :customer-location="customerLocation"
+      :sale-currency="saleCurrency"
       :cart="cart"
       :currency="currency"
+      :sale-rate="saleRate"
       :debts="openDebts"
       :customer-options="customerOptions"
       :can-operate="canOperate"
       :completing="completing"
+      @update:sale-currency="onSaleCurrencyChange"
       @back="goBack"
       @complete="completeSale"
     />
 
     <PosPrintSizeDialog
       v-model:open="printSizeOpen"
+      :document-currency="currency"
       @confirm="onPrintSizeConfirm"
+    />
+
+    <!-- Shared KHR exchange-rate dialog: opened by any USD/KHR price toggle. -->
+    <CommonAppExchangeRateDialog
+      v-model:open="exchangeRateDialogOpen"
+      @confirm="confirmSaleExchangeRate"
     />
   </div>
 </template>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { TableColumn } from '@nuxt/ui'
 import type { PaginationState } from '@tanstack/vue-table'
-import { UButton, UCheckbox, UInputNumber, USelect } from '#components'
+import { UButton, UInputNumber, USelect } from '#components'
 import { h } from 'vue'
 import { moduleDocumentRecordKey } from '~/utils/module/document-tabs'
 import type { UomConversion } from '~/utils/stock/uom-conversions'
@@ -16,10 +16,11 @@ import type { UomConversion } from '~/utils/stock/uom-conversions'
  * unit), **Convert UOM** (read-only, defaults to the product base UOM from
  * General — shown `symbol — name`), **Conversion qty** (`factor_to_base` > 0;
  * the base=base row is locked at 1), **Sale price** (per Original UOM,
- * > 0), **Default sale** (exactly one row checked — checking another
- * unchecks the previous), **Delete** (pack rows only; the base row stays so
- * the product always keeps one sellable row). No Cost column, no
- * Sell-on-POS column, no separate Convert UOM tab.
+ * > 0), **Delete** (pack rows only; the base row stays so the product
+ * always keeps one sellable row). No Default-sale column or field — the POS
+ * pre-select unit is always the product's base UOM (save-time
+ * normalization stores exactly one `isDefaultSale` on the base row). No
+ * Cost column, no Sell-on-POS column, no separate Convert UOM tab.
  */
 const props = withDefaults(defineProps<{
   modelValue?: unknown
@@ -81,7 +82,6 @@ function toRow(raw: Record<string, unknown>, index: number): PricingRow {
     convertUomSymbol: String(raw.convertUomSymbol ?? ''),
     factorToBase: Number(raw.factorToBase ?? 1),
     salePrice: Number(raw.salePrice ?? 0),
-    isDefaultSale: raw.isDefaultSale === true || raw.isDefaultSale === 'true',
     costPrice: raw.costPrice == null || raw.costPrice === '' ? null : Number(raw.costPrice),
     __key: `row:${index}:${uomId}`,
     __base: uomId === baseUomId.value,
@@ -95,9 +95,9 @@ const savedRows = computed<PricingRow[]>(() => {
 
 /**
  * Displayed rows. When nothing is saved yet (new product / legacy record),
- * the base=base row is shown as a draft (factor 1, the record's sale price,
- * default sale) — it is materialized into `uomConversions` on the first
- * edit, and the save-time normalization keeps it even when untouched.
+ * the base=base row is shown as a draft (factor 1, the record's sale price)
+ * — it is materialized into `uomConversions` on the first edit, and the
+ * save-time normalization keeps it even when untouched.
  */
 const draftBaseRow = computed<PricingRow>(() => ({
   uomId: baseUomId.value,
@@ -106,7 +106,6 @@ const draftBaseRow = computed<PricingRow>(() => ({
   convertUomSymbol: baseUomSymbol.value,
   factorToBase: 1,
   salePrice: baseSalePrice.value,
-  isDefaultSale: true,
   costPrice: null,
   __key: 'draft-base',
   __base: true,
@@ -121,11 +120,6 @@ function emitRows(next: PricingRow[]) {
 
 function updateRow(key: string, patch: Partial<UomConversion>) {
   emitRows(rows.value.map(row => row.__key === key ? { ...row, ...patch } : row))
-}
-
-/** Exactly one default-sale row: checking another unchecks the previous. */
-function setDefaultSale(key: string) {
-  emitRows(rows.value.map(row => ({ ...row, isDefaultSale: row.__key === key })))
 }
 
 function removeRow(key: string) {
@@ -154,7 +148,6 @@ function addRow() {
     convertUomSymbol: baseUomSymbol.value,
     factorToBase: 1,
     salePrice: 0,
-    isDefaultSale: false,
     costPrice: null,
   }
   emitRows([...rows.value, { ...conversion, __key: `new:${Date.now()}`, __base: false }])
@@ -245,22 +238,6 @@ const columns = computed<TableColumn<PricingRow>[]>(() => [
         // The base row's price stays in sync with the product sale price.
         if (row.original.__base) setBaseSalePrice(value)
         updateRow(row.original.__key, { salePrice: Number(value ?? 0) })
-      },
-    }),
-  },
-  {
-    accessorKey: 'isDefaultSale',
-    header: t('app.stock.pricingDefaultSale'),
-    enableSorting: false,
-    meta: { class: { td: 'w-16 text-center', th: 'w-16 text-center' } },
-    cell: ({ row }) => h(UCheckbox, {
-      modelValue: row.original.isDefaultSale,
-      size: 'sm',
-      disabled: props.disabled,
-      ariaLabel: t('app.stock.pricingDefaultSale'),
-      // Checking another row unchecks the previous (exactly one default).
-      'onUpdate:modelValue': (value: unknown) => {
-        if (value === true) setDefaultSale(row.original.__key)
       },
     }),
   },

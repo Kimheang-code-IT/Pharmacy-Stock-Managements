@@ -28,7 +28,7 @@ const money = (value: unknown) => formatMoney(value, props.currency)
     :class="outOfStock || disabled ? 'opacity-60' : 'cursor-pointer'"
     @click="!outOfStock && !disabled && emit('add', product)"
   >
-    <div class="relative aspect-[5/4] overflow-hidden bg-elevated">
+    <div class="relative aspect-[4/3] overflow-hidden bg-elevated">
       <img
         v-if="image"
         :src="image"
@@ -42,10 +42,10 @@ const money = (value: unknown) => formatMoney(value, props.currency)
       >
         <UIcon
 name="i-lucide-package"
-class="size-7 opacity-40" />
+class="size-6 opacity-40" />
       </div>
       <span
-        class="absolute left-1.5 top-1.5 rounded-sm px-1 py-0.5 text-[10px] font-medium tabular-nums"
+        class="absolute left-1 top-1 rounded-sm px-1 py-0.5 text-[9px] font-medium tabular-nums"
         :class="outOfStock
           ? 'bg-error/90 text-white'
           : lowStock
@@ -56,12 +56,12 @@ class="size-7 opacity-40" />
       </span>
     </div>
 
-    <div class="flex flex-1 items-end gap-1.5 p-1.5">
+    <div class="flex flex-1 items-end gap-1 p-1">
       <div class="min-w-0 flex-1">
-        <p class="line-clamp-2 text-xs font-semibold leading-snug text-highlighted">
+        <p class="line-clamp-1 text-[11px] font-semibold leading-snug text-highlighted">
           {{ product.name }}
         </p>
-        <p class="mt-1 text-xs font-bold text-primary tabular-nums">
+        <p class="text-[11px] font-bold text-primary tabular-nums">
           {{ money(product.salePrice) }}
         </p>
       </div>
@@ -71,7 +71,7 @@ class="size-7 opacity-40" />
         variant="solid"
         icon="i-lucide-plus"
         square
-        class="shrink-0"
+        class="shrink-0 p-1"
         :disabled="outOfStock || disabled"
         :aria-label="t('app.pos.addToCart')"
         @click.stop="emit('add', product)"

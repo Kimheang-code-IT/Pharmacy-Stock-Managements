@@ -220,6 +220,7 @@ function adaptProductOut(row: Record<string, unknown>): Record<string, unknown> 
     salePrice: row.salePrice ?? row.selling_price,
     minimumStock: row.minimumStock ?? row.minimum_stock,
     expiryTracking: row.expiryTracking ?? row.expiry_tracking ?? false,
+    fifo: row.fifo ?? false,
     stockInQty: row.stockInQty ?? row.stock_in_qty,
     stockOutQty: row.stockOutQty ?? row.stock_out_qty,
     damageQty: row.damageQty ?? row.damage_qty,
@@ -280,6 +281,7 @@ function adaptProductIn(input: Record<string, unknown>): Record<string, unknown>
   if (input.salePrice != null) output.salePrice = Number(input.salePrice)
   if (input.minimumStock != null) output.minimum_stock = Number(input.minimumStock)
   if (input.expiryTracking != null) output.expiry_tracking = Boolean(input.expiryTracking)
+  if (input.fifo != null) output.fifo = Boolean(input.fifo)
   if (input.note != null) output.note = input.note
   // imageObjectKey is the stored object key; a bare string imageUrl without a
   // scheme is treated as one too (data:/http: URLs are UI-only previews).
@@ -325,6 +327,8 @@ function adaptEntityOut(collection: ApiCollection, row: Record<string, unknown>)
   if (collection === 'stockMovements') return adaptStockMovementOut(row)
   if (collection === 'sales') return adaptSalesReportLine(row)
   if (collection === 'stockIns') return adaptPurchaseReportLine(row)
+  if (collection === 'saleReturns') return adaptSaleReturnRow(row)
+  if (collection === 'purchaseReturns') return adaptPurchaseReturnRow(row)
   if (collection === 'documentSequences') {
     return {
       ...row,
@@ -332,6 +336,43 @@ function adaptEntityOut(collection: ApiCollection, row: Record<string, unknown>)
     }
   }
   return row
+}
+
+/** Backend SaleReturnRow → UI camelCase customer-return history row. */
+function adaptSaleReturnRow(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: asRecordId(row.return_id ?? row.returnId),
+    returnNo: String(row.return_no ?? row.returnNo ?? ''),
+    saleId: asRecordId(row.sale_id ?? row.saleId),
+    saleNo: String(row.sale_no ?? row.saleNo ?? ''),
+    date: row.return_date ?? row.returnDate ?? null,
+    createdAt: row.return_date ?? row.returnDate ?? null,
+    customer: String(row.customer_name ?? row.customer ?? ''),
+    itemCount: Number(row.item_count ?? row.itemCount ?? 0),
+    refundAmount: q2(row.refund_amount ?? row.refundAmount),
+    restockedQuantity: q4(row.restocked_quantity ?? row.restockedQuantity),
+    reason: String(row.reason ?? ''),
+    user: String(row.user_name ?? row.user ?? ''),
+  }
+}
+
+/** Backend PurchaseReturnRow → UI camelCase supplier-return history row. */
+function adaptPurchaseReturnRow(row: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: asRecordId(row.return_id ?? row.returnId),
+    returnNo: String(row.return_no ?? row.returnNo ?? ''),
+    stockInId: asRecordId(row.stock_transaction_id ?? row.stockTransactionId),
+    purchaseNo: String(row.document_no ?? row.documentNo ?? ''),
+    date: row.return_date ?? row.returnDate ?? null,
+    createdAt: row.return_date ?? row.returnDate ?? null,
+    supplier: String(row.supplier_name ?? row.supplier ?? ''),
+    itemCount: Number(row.item_count ?? row.itemCount ?? 0),
+    refundAmount: q2(row.refund_amount ?? row.refundAmount),
+    debtReduction: q2(row.debt_reduction ?? row.debtReduction),
+    creditAmount: q2(row.credit_amount ?? row.creditAmount),
+    reason: String(row.reason ?? ''),
+    user: String(row.user_name ?? row.user ?? ''),
+  }
 }
 
 /** UI delivery status label ⇄ canonical backend status (one mapping). */
@@ -774,6 +815,8 @@ export function createHttpPosCommandRepository(): PosCommandRepository {
       included_debt_ids: input.includedDebtIds ?? [],
       delivery_price: input.deliveryPrice ?? 0,
       deposit: input.deposit ?? 0,
+      currency: input.currency ?? 'USD',
+      exchange_rate: input.exchangeRate ?? 1,
     }
   }
 
@@ -783,6 +826,35 @@ export function createHttpPosCommandRepository(): PosCommandRepository {
       ApiEndpoints.POS_SALE_COMPLETE,
       saleBody(input),
     )) as AppRecord
+  }
+
+  /**
+   * Complete purchase (Stock In): ONE POST /stock/in carrying every product
+   * line. The server converts each line to the base UOM, stores all items on
+   * the stock-in document, creates the supplier debt for any unpaid balance
+   * and the payment row, appends movements, allocates the STI number and
+   * audits — all in one transaction.
+   */
+  async function createPurchase(input: Parameters<PosCommandRepository['createPurchase']>[0]): Promise<AppRecord> {
+    const paymentMethod = canonicalPaymentMethod(input.paymentMethod ?? 'Cash')
+    return unwrap<Record<string, unknown>>(await api.post<unknown>(ApiEndpoints.STOCK_IN, {
+      ...(input.supplierId ? { supplier_id: input.supplierId } : {}),
+      paid_amount: Math.max(0, Number(input.paidAmount ?? 0)),
+      payment_method: paymentMethod === 'CUSTOMER_DEBT' ? 'CASH' : paymentMethod,
+      discount_amount: Math.max(0, Number(input.discountAmount ?? 0)),
+      tax_amount: Math.max(0, Number(input.taxAmount ?? 0)),
+      currency: input.currency ?? 'USD',
+      exchange_rate: input.exchangeRate ?? 1,
+      note: input.note ?? null,
+      items: input.lines.map(line => ({
+        product_id: line.productId,
+        quantity: Number(line.quantity || 0),
+        ...(line.unitCost != null ? { unit_cost: Number(line.unitCost) } : {}),
+        ...(line.uomId ? { uom_id: line.uomId } : {}),
+        ...(line.uomSymbol ? { uom_symbol: line.uomSymbol } : {}),
+        ...(line.factorToBase != null ? { factor_to_base: line.factorToBase } : {}),
+      })),
+    })) as AppRecord
   }
 
   async function createStockOperation(input: Parameters<PosCommandRepository['createStockOperation']>[0]): Promise<AppRecord> {
@@ -856,32 +928,7 @@ export function createHttpPosCommandRepository(): PosCommandRepository {
       ApiEndpoints.POS_RECEIPT(saleId),
       { requestKey: `pos-receipt:${saleId}`, cancelPrevious: true },
     ))
-    const items = (Array.isArray(data.items) ? data.items : []) as Array<Record<string, unknown>>
-    return {
-      saleId: String(data.sale_id ?? data.saleId ?? saleId),
-      saleNo: String(data.sale_no ?? data.saleNo ?? data.invoice_no ?? ''),
-      invoiceNo: String(data.invoice_no ?? data.invoiceNo ?? ''),
-      date: String(data.sale_date ?? data.date ?? '').slice(0, 10),
-      customer: String(data.customer_name ?? data.customer ?? 'Walk-in customer'),
-      cashier: String(data.cashier ?? data.created_by_name ?? ''),
-      paymentMethod: String(data.payment_method ?? data.paymentMethod ?? ''),
-      note: String(data.note ?? ''),
-      items: items.map(item => ({
-        name: String(item.name ?? item.product_name ?? ''),
-        quantity: Number(item.quantity ?? item.qty ?? 0),
-        uom: String(item.uom_symbol ?? item.uom ?? ''),
-        unitPrice: Number(item.unit_price ?? item.price ?? 0),
-        discount: Number(item.discount ?? 0),
-        total: Number(item.total ?? item.line_total ?? 0),
-      })),
-      subtotal: Number(data.subtotal ?? 0),
-      discount: Number(data.discount ?? 0),
-      deliveryPrice: Number(data.delivery_price ?? data.deliveryPrice ?? 0),
-      deposit: Number(data.deposit ?? 0),
-      total: Number(data.grand_total ?? data.total ?? 0),
-      paidAmount: Number(data.paid_amount ?? data.paid ?? data.paidAmount ?? 0),
-      remaining: Number(data.debt_remaining ?? data.remaining ?? data.remaining_amount ?? 0),
-    }
+    return adaptSaleReceiptOut(data, saleId)
   }
 
   async function returnSale(input: Parameters<PosCommandRepository['returnSale']>[0]): Promise<AppRecord> {
@@ -912,7 +959,7 @@ export function createHttpPosCommandRepository(): PosCommandRepository {
     )) as AppRecord
   }
 
-  return { completeSale, createStockOperation, payCustomerDebt, paySupplierDebt, getSaleReceipt, returnSale, returnPurchase }
+  return { completeSale, createPurchase, createStockOperation, payCustomerDebt, paySupplierDebt, getSaleReceipt, returnSale, returnPurchase }
 }
 
 /** Backend product-history row → UI camelCase (kind derived from type). */
@@ -921,11 +968,46 @@ function adaptProductHistoryOut(row: Record<string, unknown>, kind: StockHistory
     id: String(row.id ?? ''),
     date: String(row.date ?? row.created_at ?? '').slice(0, 10),
     type: String(row.type ?? ''),
-    quantity: Number(row.quantity ?? 0),
+    quantity: Number(row.qty ?? row.quantity ?? 0),
+    product: String(row.product ?? row.product_name ?? ''),
+    unit: String(row.unit ?? row.uom_symbol ?? ''),
+    unitPrice: Number(row.unit_price ?? row.unitPrice ?? 0),
     reference: String(row.reference ?? row.document_no ?? ''),
+    referenceType: String(row.reference_type ?? row.referenceType ?? ''),
+    referenceId: String(row.reference_id ?? row.referenceId ?? ''),
     user: String(row.user ?? row.created_by_name ?? ''),
     note: String(row.note ?? ''),
     kind: (row.kind as StockHistoryKind) ?? kind,
+  }
+}
+
+/** Backend receipt payload (print + Stock Out invoice detail dialog) → UI camelCase. */
+function adaptSaleReceiptOut(data: Record<string, unknown>, fallbackSaleId: string): SaleReceipt {
+  const items = (Array.isArray(data.items) ? data.items : []) as Array<Record<string, unknown>>
+  return {
+    saleId: String(data.sale_id ?? data.saleId ?? fallbackSaleId),
+    saleNo: String(data.sale_no ?? data.saleNo ?? data.invoice_no ?? ''),
+    invoiceNo: String(data.invoice_no ?? data.invoiceNo ?? ''),
+    date: String(data.sale_date ?? data.date ?? '').slice(0, 10),
+    customer: String(data.customer_name ?? data.customer ?? 'Walk-in customer'),
+    cashier: String(data.cashier ?? data.created_by_name ?? ''),
+    paymentMethod: String(data.payment_method ?? data.paymentMethod ?? ''),
+    note: String(data.note ?? ''),
+    items: items.map(item => ({
+      name: String(item.name ?? item.product_name ?? ''),
+      quantity: Number(item.quantity ?? item.qty ?? 0),
+      uom: String(item.uom_symbol ?? item.uom ?? ''),
+      unitPrice: Number(item.unit_price ?? item.price ?? 0),
+      discount: Number(item.discount ?? 0),
+      total: Number(item.total ?? item.line_total ?? 0),
+    })),
+    subtotal: Number(data.subtotal ?? 0),
+    discount: Number(data.discount ?? 0),
+    deliveryPrice: Number(data.delivery_price ?? data.deliveryPrice ?? 0),
+    deposit: Number(data.deposit ?? 0),
+    total: Number(data.grand_total ?? data.total ?? 0),
+    paidAmount: Number(data.paid_amount ?? data.paid ?? data.paidAmount ?? 0),
+    remaining: Number(data.debt_remaining ?? data.remaining ?? data.remaining_amount ?? 0),
   }
 }
 
@@ -1037,6 +1119,20 @@ export function createHttpStockQueryRepository(): StockQueryRepository {
       const response = await api.post<unknown>(ApiEndpoints.PRODUCT_SALE_PRICE_ACTIVATE(productId, priceId), {})
       return adaptSalePriceOut(unwrap<Record<string, unknown>>(response))
     },
+
+    async getMovementInvoice(movementId): Promise<SaleReceipt | null> {
+      try {
+        const data = unwrap<Record<string, unknown>>(await api.get<unknown>(
+          ApiEndpoints.MOVEMENT_INVOICE(movementId),
+          { requestKey: `movement-invoice:${movementId}`, cancelPrevious: true },
+        ))
+        return adaptSaleReceiptOut(data, movementId)
+      }
+      catch {
+        // Not a sale movement (or the invoice is gone) — nothing to show.
+        return null
+      }
+    },
   }
 }
 
@@ -1138,6 +1234,8 @@ export function createHttpFinanceRepository(): FinanceRepository {
           amount: input.amount,
           payment_method: input.paymentMethod,
           reference: input.reference ?? null,
+          currency: input.currency ?? 'USD',
+          exchange_rate: input.exchangeRate ?? 1,
         },
       ))
       return normalizeFinanceEntry(data)
@@ -1156,6 +1254,8 @@ function normalizeFinanceEntry(row: Record<string, unknown>): FinanceEntry {
     description: String(row.description || ''),
     amount: Number(row.amount || 0),
     paymentMethod: String(row.paymentMethod || row.payment_method || ''),
+    currency: String(row.currency || 'USD'),
+    exchangeRate: Number(row.exchange_rate ?? row.exchangeRate ?? 1),
     user: String(row.user || row.created_by_name || ''),
   }
 }

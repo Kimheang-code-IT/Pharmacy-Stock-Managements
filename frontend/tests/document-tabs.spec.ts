@@ -40,7 +40,7 @@ describe('product document tabs (spec §5.9)', () => {
     ])
   })
 
-  it('keeps General to identity, cost price, and read-only current stock', () => {
+  it('keeps General to identity fields (cost price / current stock removed)', () => {
     const tabs = moduleDocumentTabs(productModule)
     const generalKeys = tabs[0]!.sections.flatMap(section =>
       section.fields.map(field => field.key))
@@ -48,14 +48,13 @@ describe('product document tabs (spec §5.9)', () => {
     expect(generalKeys).toContain('categoryId')
     expect(generalKeys).toContain('uomId')
     expect(generalKeys).toContain('supplierId')
-    expect(generalKeys).toContain('costPrice')
-    expect(generalKeys).toContain('quantity')
+    // Cost Price and Current Stock are not editable document fields.
+    expect(generalKeys).not.toContain('costPrice')
+    expect(generalKeys).not.toContain('quantity')
     // Moved to Pricing / Expire tabs.
     expect(generalKeys).not.toContain('salePrice')
     expect(generalKeys).not.toContain('expiryTracking')
     expect(generalKeys).not.toContain('expiryDate')
-    const quantity = tabs[0]!.sections.flatMap(s => s.fields).find(f => f.key === 'quantity')
-    expect(quantity?.readOnly).toBe(true)
   })
 
   it('binds the Pricing tab to uomConversions with the exact column contract', () => {

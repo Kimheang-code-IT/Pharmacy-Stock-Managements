@@ -30,8 +30,9 @@ export type UomConversion = {
   factorToBase: number
   /** Sale price per Original UOM (required, > 0). */
   salePrice: number
-  /** Exactly one row per product is the POS default sale. */
-  isDefaultSale: boolean
+  /** Exactly one row per product is the POS default sale. Not shown in the
+   *  product form — save-time normalization always flags the base row. */
+  isDefaultSale?: boolean
   /** Cost per this UOM; `null` = derived from base cost × factor on save. */
   costPrice: number | null
 }
@@ -209,11 +210,17 @@ export function defaultSaleRow(product: Record<string, unknown> | null | undefin
     || rows[0]!
 }
 
-/** Unit price for a UOM: the Pricing row's sale price, else the base sale price. */
+/**
+ * Unit price for a UOM: the Pricing row's sale price, else the base sale
+ * price. The product's **base UOM** always resolves to the POS-active mirror
+ * `product.salePrice` — activating a sale-price version copies the price
+ * there first, so POS add-to-cart / UOM switch / cart sync pick it up
+ * immediately even when the stored base Pricing row holds a stale snapshot.
+ */
 export function salePriceForUom(product: Record<string, unknown> | null | undefined, uomId: string): number | null {
   if (!product) return null
+  if (uomId && String(product.uomId ?? '') === String(uomId)) return Number(product.salePrice ?? 0)
   const conversion = conversionForUom(product, uomId)
   if (conversion) return conversion.salePrice
-  if (String(product.uomId ?? '') === String(uomId)) return Number(product.salePrice ?? 0)
   return null
 }

@@ -1,4 +1,4 @@
-import { formatMoney } from '~/utils/format/format-service'
+import { formatMoney, formatNumber } from '~/utils/format/format-service'
 import { cartTotal, lineNet, type PosCartLine } from '~/utils/pos/cart'
 import { escapeHtml, PAPER_STYLES, printHtmlDocument, type PrintPaperSize } from '~/utils/print/html'
 
@@ -16,8 +16,49 @@ export type SaleInvoicePrintInput = {
   currency: string
   lines: SaleInvoicePrintLine[]
   deliveryPrice: number
+  /** Customer's open (unpaid) debt before this sale — printed as ខ្វះមុន. */
+  previousDebtAmount: number
+  /** Cash received at checkout (covers this sale + any settled previous debt). */
   depositAmount: number
+  /** Amount still owed after this sale, including previous debt not settled now. */
   outstandingAmount: number
+  /** Currency to render the printed document in (defaults to `currency`). */
+  displayCurrency?: string
+  /** Exchange rate as **1 USD = X KHR**; required when `displayCurrency` differs. */
+  exchangeRate?: number
+}
+
+/**
+ * Print-currency choice made in the document print chooser: the paper
+ * currency (USD/KHR, defaulting to the record currency) plus the exchange
+ * rate applied when the print currency differs from the record currency.
+ */
+export type PrintCurrencyChoice = {
+  currency: string
+  exchangeRate?: number
+}
+
+/**
+ * Format an amount for the printed document, converting between the record
+ * currency and the print currency when they differ. Rate is always stated as
+ * **1 USD = X KHR**; KHR amounts are rounded to whole riel (no decimals).
+ */
+function formatPrintMoney(
+  value: unknown,
+  recordCurrency: string,
+  displayCurrency: string,
+  exchangeRate: number,
+): string {
+  const amount = Number(value || 0)
+  const converting = displayCurrency !== recordCurrency && exchangeRate > 0
+  const converted = converting
+    ? (displayCurrency === 'KHR' ? amount * exchangeRate : amount / exchangeRate)
+    : amount
+  const code = converting ? displayCurrency : recordCurrency
+  if (code === 'KHR') {
+    return formatNumber(Math.round(converted), { style: 'currency', currency: 'KHR', maximumFractionDigits: 0 })
+  }
+  return formatMoney(converted, code)
 }
 
 function asCartLine(line: SaleInvoicePrintLine): PosCartLine {
@@ -34,18 +75,35 @@ function asCartLine(line: SaleInvoicePrintLine): PosCartLine {
 }
 
 /**
- * Empty filler rows so the lines grid fills ~70% of the printable page
- * height (shop-form look) without forcing a short sale onto page 2 when
- * product rows already cover that space.
+ * Height reserved on page 1 for the fixed blocks (title, meta, summary rows,
+ * buyer/seller signature lines) outside the lines grid. Filler rows are sized
+ * from what is left so the signatures stay on page 1 — a fixed 70% target
+ * used to push the A5 signature block onto page 2 even for short sales.
+ * A4 keeps the previous 70%-target behaviour (281 − 84 ≈ 197mm).
+ */
+const FIXED_PAGE1_MM: Record<PrintPaperSize, number> = {
+  A4: 84,
+  A5: 76,
+}
+
+/** Filler rows trimmed below the budget so short sales stay safely on one page. */
+const FILLER_TRIM: Record<PrintPaperSize, number> = {
+  A4: 3,
+  A5: 5,
+}
+
+/**
+ * Empty filler rows so the lines grid fills the page-1 budget left after the
+ * fixed blocks (shop-form look) without forcing a short sale — and its
+ * signatures — onto page 2 when product rows already cover that space.
  */
 function emptyInvoiceRows(filled: number, paperSize: PrintPaperSize): string {
   const style = PAPER_STYLES[paperSize]
-  const targetMm = style.printableMm * 0.7
+  const targetMm = style.printableMm - FIXED_PAGE1_MM[paperSize]
   const headerMm = style.rowMm * 1.6
   const bodyMm = Math.max(0, targetMm - headerMm)
   const totalRows = Math.max(filled, Math.floor(bodyMm / style.rowMm))
-  // Trim 3 filler rows so the grid stays shorter and totals fit on page 1.
-  const missing = Math.max(0, totalRows - filled - 3)
+  const missing = Math.max(0, totalRows - filled - FILLER_TRIM[paperSize])
   return Array.from({ length: missing }, () => `
     <tr class="empty">
       <td class="num">&nbsp;</td>
@@ -76,7 +134,10 @@ export function buildSaleInvoiceHtml(
   input: SaleInvoicePrintInput,
   paperSize: PrintPaperSize = 'A4',
 ): string {
-  const money = (value: unknown) => escapeHtml(formatMoney(value, input.currency))
+  const displayCurrency = input.displayCurrency || input.currency
+  const exchangeRate = Number(input.exchangeRate || 0)
+  const converting = displayCurrency !== input.currency && exchangeRate > 0
+  const money = (value: unknown) => escapeHtml(formatPrintMoney(value, input.currency, displayCurrency, exchangeRate))
   const lines = input.lines.map(asCartLine)
   const total = cartTotal(lines)
   const rows = lines.map((line, index) => `
@@ -107,7 +168,7 @@ export function buildSaleInvoiceHtml(
   <div class="meta">
     <div>
       <p>លេខ Invoice : <strong>${escapeHtml(input.invoiceNo)}</strong></p>
-      <p>កាលបរិច្ឆេទ Date : <strong>${escapeHtml(input.dateLabel)}</strong></p>
+      <p>កាលបរិច្ឆេទ Date : <strong>${escapeHtml(input.dateLabel)}</strong></p>${converting ? `\n      <p>អត្រាប្តូរប្រាក់ Exchange rate : <strong>1 USD = ${escapeHtml(formatNumber(Math.round(exchangeRate)))} KHR</strong></p>` : ''}
     </div>
     <div class="right">
       <p>អតិថិជន Customer : <strong>${escapeHtml(input.customerName)}</strong></p>
@@ -133,6 +194,7 @@ export function buildSaleInvoiceHtml(
     <table class="summary">
       ${colgroup}
       ${summaryRow('ទឹកប្រាក់សរុប / Total Amount', money(total))}
+      ${summaryRow('ខ្វះមុន', money(input.previousDebtAmount))}
       ${summaryRow('តម្លៃដឹកជញ្ជូន_____/_____/_____', money(input.deliveryPrice))}
       ${summaryRow('បានទូទាត់_____/_____/_____', money(input.depositAmount))}
       ${summaryRow('ខ្វះសរុប', money(input.outstandingAmount), true)}
@@ -151,7 +213,14 @@ export function buildSaleInvoiceHtml(
 </article>`
 }
 
-/** Print the invoice in the chosen paper size (POS chooser: A4 default). */
-export function printSaleInvoice(input: SaleInvoicePrintInput, paperSize: PrintPaperSize = 'A4'): Promise<void> {
-  return printHtmlDocument(buildSaleInvoiceHtml(input, paperSize), input.invoiceNo || 'Invoice', { paperSize })
+/** Print the invoice in the chosen paper size and print currency (POS chooser). */
+export function printSaleInvoice(
+  input: SaleInvoicePrintInput,
+  paperSize: PrintPaperSize = 'A4',
+  currencyChoice?: PrintCurrencyChoice,
+): Promise<void> {
+  const printInput: SaleInvoicePrintInput = currencyChoice
+    ? { ...input, displayCurrency: currencyChoice.currency, exchangeRate: currencyChoice.exchangeRate }
+    : input
+  return printHtmlDocument(buildSaleInvoiceHtml(printInput, paperSize), printInput.invoiceNo || 'Invoice', { paperSize })
 }
