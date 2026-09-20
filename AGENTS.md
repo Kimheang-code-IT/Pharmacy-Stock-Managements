@@ -55,8 +55,8 @@ Docker (run from `infrastructure/`, where `.env` lives): `docker compose up -d -
   `tests/support/` for unit tests.
 - E2E is not in CI. It needs the running Docker stack and a real API: `pnpm e2e:install` then
   `E2E_BASE_URL=http://localhost:80 pnpm e2e`. Credentials default to `admin@gmail.com` / `123456`.
-- CI (`.github/workflows/ci.yml`): compose config validation; frontend install → `prepare:nuxt` →
-  test → typecheck; backend pytest against Postgres+Redis service containers. No lint/e2e in CI.
+- No CI/CD pipeline is configured. Run the backend, frontend, and Compose checks locally
+  with the commands above before committing or deploying.
 
 ## Repo conventions
 

@@ -199,7 +199,42 @@ function adaptProductOut(row: Record<string, unknown>): Record<string, unknown> 
     // { uomId, uomSymbol, convertUomId, convertUomSymbol, factorToBase,
     //   salePrice, isDefaultSale, costPrice }.
     uomConversions: adaptUomConversionsOut(row.uomConversions ?? row.uom_conversions),
+    // Batch-aware POS read model (FEFO lot price + sellable stock). Null when
+    // the list endpoint did not compute it (create/update); POS falls back to
+    // the general sale price / total quantity.
+    posPrice: row.posPrice ?? row.pos_price ?? null,
+    sellableStock: row.sellableStock ?? row.sellable_stock ?? null,
+    nextBatchNo: row.nextBatchNo ?? row.next_batch_no ?? null,
+    priceConfigured: row.priceConfigured ?? row.price_configured ?? true,
+    posUomPrices: adaptDecimalMap(row.posUomPrices ?? row.pos_uom_prices),
+    posBatches: adaptPosBatches(row.posBatches ?? row.pos_batches),
   }
+}
+
+/** A { uomId: price } map from the POS catalog → numbers keyed by uom id. */
+function adaptDecimalMap(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object') return {}
+  const output: Record<string, number> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const price = Number(raw)
+    if (Number.isFinite(price)) output[String(key)] = price
+  }
+  return output
+}
+
+/** FEFO-ordered sellable lots exposed by the POS product read model. */
+function adaptPosBatches(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter(row => row && typeof row === 'object')
+    .map((row: Record<string, unknown>) => ({
+      batchNo: String(row.batchNo ?? row.batch_no ?? ''),
+      remainingQty: Number(row.remainingQty ?? row.remaining_quantity ?? 0),
+      expiryDate: row.expiryDate ?? row.expiry_date ?? null,
+      unitPrice: row.unitPrice != null || row.unit_price != null
+        ? Number(row.unitPrice ?? row.unit_price)
+        : null,
+    }))
 }
 
 /** Backend Pricing rows (snake or camel) → the UI camelCase row shape. */
@@ -215,6 +250,7 @@ function adaptUomConversionsOut(value: unknown): Array<Record<string, unknown>> 
       factorToBase: Number(row.factorToBase ?? row.factor_to_base ?? 1),
       salePrice: Number(row.salePrice ?? row.sale_price ?? 0),
       isDefaultSale: row.isDefaultSale === true || row.is_default_sale === true,
+      isActive: row.isActive !== false && row.is_active !== false,
       costPrice: row.costPrice != null || row.cost_price != null
         ? Number(row.costPrice ?? row.cost_price)
         : null,
@@ -979,6 +1015,16 @@ export function createHttpPosCommandRepository(): PosCommandRepository {
       ...(item.uomId ? { uom_id: item.uomId } : {}),
       ...(item.uomSymbol ? { uom_symbol: item.uomSymbol } : {}),
       ...(item.factorToBase != null ? { factor_to_base: item.factorToBase } : {}),
+      // FEFO breakdown shown in the cart (the server recomputes it).
+      ...(item.allocations?.length
+        ? {
+            allocations: item.allocations.map(row => ({
+              ...(row.batchNo ? { batch_no: row.batchNo } : {}),
+              qty: row.qty,
+              ...(row.unitPrice != null ? { unit_price: row.unitPrice } : {}),
+            })),
+          }
+        : {}),
     }))
   }
 
@@ -1379,6 +1425,7 @@ function adaptSalePriceOut(row: Record<string, unknown>): ProductSalePriceRow {
       factorToBase: Number(uomRow.factor_to_base ?? uomRow.factorToBase ?? 1),
       salePrice: Number(uomRow.sale_price ?? uomRow.salePrice ?? 0),
       isDefaultSale: uomRow.is_default_sale === true || uomRow.isDefaultSale === true,
+      isActive: uomRow.is_active !== false && uomRow.isActive !== false,
     })),
   }
 }
@@ -1486,6 +1533,7 @@ export function createHttpStockQueryRepository(): StockQueryRepository {
               ? String(row.sale_price_id ?? row.salePriceId)
               : null,
             pricingActive: row.pricing_active === true || row.pricingActive === true,
+            isActive: row.is_active !== false && row.isActive !== false,
           }
         }),
         meta: metaOf(response),
@@ -1526,6 +1574,7 @@ export function createHttpStockQueryRepository(): StockQueryRepository {
               factor_to_base: row.factorToBase,
               sale_price: row.salePrice,
               is_default_sale: row.isDefaultSale ?? false,
+              is_active: row.isActive ?? true,
             }))
           : null,
       })
@@ -1540,6 +1589,27 @@ export function createHttpStockQueryRepository(): StockQueryRepository {
     async setSalePriceActive(priceId, isActive): Promise<ProductSalePriceRow> {
       const response = await api.patch<unknown>(ApiEndpoints.SALE_PRICE(priceId), { is_active: isActive })
       return adaptSalePriceOut(unwrap<Record<string, unknown>>(response))
+    },
+
+    async setBatchActive(productId, batchId, isActive): Promise<ProductBatchRow> {
+      const response = await api.patch<unknown>(ApiEndpoints.PRODUCT_BATCH(productId, batchId), {
+        is_active: isActive,
+      })
+      const row = unwrap<Record<string, unknown>>(response)
+      return {
+        id: String(row.id ?? batchId),
+        productId,
+        batchNo: String(row.batch_no ?? row.batchNo ?? ''),
+        expiryDate: null,
+        remainingQty: 0,
+        receivedQty: 0,
+        unitCost: 0,
+        supplier: '',
+        purchaseNo: '',
+        createdDate: '',
+        status: 'Active',
+        isActive: row.is_active !== false && row.isActive !== false,
+      }
     },
 
     async getMovementInvoice(movementId): Promise<SaleReceipt | null> {

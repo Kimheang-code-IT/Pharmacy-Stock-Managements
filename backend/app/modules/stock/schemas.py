@@ -441,6 +441,11 @@ class SalePriceUomIn(BaseModel):
         default=None,
         validation_alias=AliasChoices("is_default_sale", "isDefaultSale"),
     )
+    # POS-active flag of this UOM price row (default: active).
+    is_active: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices("is_active", "isActive"),
+    )
 
 class SalePriceCreate(BaseModel):
     """Add Sale Price payload (snake_case and camelCase accepted)."""
@@ -491,3 +496,13 @@ class SalePriceUpdate(BaseModel):
         default=None,
         validation_alias=AliasChoices("is_active", "isActive"),
     )
+
+
+class BatchActiveUpdate(BaseModel):
+    """PATCH payload for a batch's manual sellable flag. Inactive lots keep
+    their stock, cost and historical pricing but are never allocated to a new
+    POS sale (spec: inactive batch)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    is_active: bool = Field(validation_alias=AliasChoices("is_active", "isActive"))

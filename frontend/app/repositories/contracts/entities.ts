@@ -50,6 +50,12 @@ export interface PosSaleItemInput {
   /** How many base UOM units 1 of the selected UOM contains (default 1).
    *  Stock is always mutated in the base UOM: baseQty = quantity × factor. */
   factorToBase?: number
+  /** Displayed FEFO lot breakdown (hint only — the server recomputes). */
+  allocations?: Array<{
+    batchNo?: string
+    qty: number
+    unitPrice?: number
+  }>
 }
 
 export interface PosCompleteSaleInput {
@@ -219,6 +225,8 @@ export interface SalePriceUomRow {
   factorToBase: number
   salePrice: number
   isDefaultSale?: boolean
+  /** POS-active flag of this UOM row (inactive rows are not offered on POS). */
+  isActive?: boolean
 }
 
 /** Query accepted by the product-scoped history / price dialogs. */
@@ -268,6 +276,9 @@ export interface ProductBatchRow {
   salePriceId?: string | null
   /** True when this lot has an active batch-scoped sale-price version (POS). */
   pricingActive?: boolean
+  /** Manual sellable flag: an inactive lot is never allocated to a new POS
+   *  sale but keeps its stock and historical pricing. */
+  isActive?: boolean
 }
 
 /** Read-only product-scoped queries used by the Stock list dialogs. */
@@ -291,12 +302,14 @@ export interface StockQueryRepository {
     batchNo?: string | null
     purchaseDate?: string | null
     expiryDate?: string | null
-    uomPrices?: Array<{ uomId: string, uomSymbol?: string | null, factorToBase: number, salePrice: number, isDefaultSale?: boolean }>
+    uomPrices?: Array<{ uomId: string, uomSymbol?: string | null, factorToBase: number, salePrice: number, isDefaultSale?: boolean, isActive?: boolean }>
   }): Promise<ProductSalePriceRow>
   /** Activate one version — exactly one stays active; copies onto products.salePrice. */
   activateSalePrice(productId: string, priceId: string): Promise<ProductSalePriceRow>
   /** Set `isActive` on a version (`false` deactivates that scope for POS). */
   setSalePriceActive(priceId: string, isActive: boolean): Promise<ProductSalePriceRow>
+  /** Toggle a batch lot's manual sellable flag (inactive = not sold on POS). */
+  setBatchActive(productId: string, batchId: string, isActive: boolean): Promise<ProductBatchRow>
 }
 
 /** One original sale line for POS return mode (GET /pos/sales/{id}). */

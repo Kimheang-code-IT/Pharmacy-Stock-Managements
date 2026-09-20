@@ -34,8 +34,10 @@ def _product_aggregates(product_id: uuid.UUID, grouped: dict) -> dict:
     }
 
 
-def product_to_out(product: Product, *, grouped: dict | None = None) -> dict:
+def product_to_out(product: Product, *, grouped: dict | None = None, pos: dict | None = None) -> dict:
     aggregates = _product_aggregates(product.id, grouped or {})
+    pos = pos or {}
+    pos_prices = {str(key): value for key, value in (pos.get("prices") or {}).items()}
     data = {
         "id": product.id,
         "sku": product.sku,
@@ -68,6 +70,24 @@ def product_to_out(product: Product, *, grouped: dict | None = None) -> dict:
         "quantity": product.balance.quantity if product.balance else Decimal("0"),
         "average_cost": product.balance.average_cost if product.balance else Decimal("0.00"),
         "created_at": product.created_at,
+        # Batch-aware POS read model (computed in bulk by ProductService):
+        # the FEFO lot's base price, its per-UOM prices, the total SELLABLE
+        # stock (active + unexpired lots only) and whether a price exists.
+        # `pos` is absent on create/update, where these stay null and the UI
+        # falls back to the product's general selling price.
+        "pos_price": pos.get("base_price"),
+        "posPrice": pos.get("base_price"),
+        "pos_uom_prices": pos_prices or None,
+        "posUomPrices": pos_prices or None,
+        "sellable_stock": pos.get("sellable_stock"),
+        "sellableStock": pos.get("sellable_stock"),
+        "next_batch_no": pos.get("next_batch_no"),
+        "nextBatchNo": pos.get("next_batch_no"),
+        "price_configured": pos.get("price_configured", True),
+        "priceConfigured": pos.get("price_configured", True),
+        # FEFO-ordered sellable lots for the POS cart allocation display.
+        "pos_batches": pos.get("batches") or None,
+        "posBatches": pos.get("batches") or None,
         **aggregates,
     }
     return data

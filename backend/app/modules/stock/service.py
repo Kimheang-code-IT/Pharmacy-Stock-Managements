@@ -73,14 +73,22 @@ class ProductService:
             q=q, category_id=category_id, brand_id=brand_id, status=status, page=page, limit=limit, sort=sort
         )
         grouped = await self.repo.aggregate_movements([p.id for p in products])
-        return [product_to_out(p, grouped=grouped) for p in products], total
+        from app.modules.stock import sale_prices as sale_price_service
+
+        pos_map = await sale_price_service.batch_pos_prices(self.session, products)
+        return [
+            product_to_out(p, grouped=grouped, pos=pos_map.get(p.id)) for p in products
+        ], total
 
     async def get(self, product_id: uuid.UUID) -> dict:
         product = await self.repo.get(product_id)
         if product is None:
             raise NotFoundError("Product not found")
         grouped = await self.repo.aggregate_movements([product.id])
-        return product_to_out(product, grouped=grouped)
+        from app.modules.stock import sale_prices as sale_price_service
+
+        pos_map = await sale_price_service.batch_pos_prices(self.session, [product])
+        return product_to_out(product, grouped=grouped, pos=pos_map.get(product.id))
 
     async def create(self, payload) -> dict:
         if payload.sku and await self.repo.get_by_sku(payload.sku):
@@ -175,16 +183,39 @@ class ProductService:
 
         for key, value in changes.items():
             setattr(product, key, value)
-        if new_selling_price is not None and Decimal(str(new_selling_price)) != Decimal(str(product.selling_price)):
+
+        # A Pricing save (uom_conversions) or a selling-price change becomes ONE
+        # new POS-active general version carrying EVERY UOM row and its per-UOM
+        # active flag — so POS always reads a single, consistent active version.
+        # An unchanged Pricing table writes nothing (no version churn).
+        pricing_touched = "uom_conversions" in payload.model_fields_set
+        price_only = (
+            new_selling_price is not None
+            and Decimal(str(new_selling_price)) != Decimal(str(product.selling_price))
+        )
+        if pricing_touched or price_only:
             from app.modules.stock import sale_prices as sale_price_service
 
-            await sale_price_service.add_sale_price(
-                self.session,
-                product_id=product.id,
-                sale_price=new_selling_price,
-                effective_date=None,
-                actor=actor,
+            general_rows = sale_price_service.uom_price_rows_from_conversions(
+                product.uom_conversions or [],
+                base_uom_id=product.uom_id,
+                base_sale_price=new_selling_price if price_only else None,
             )
+            if general_rows and await sale_price_service.general_version_differs(
+                self.session, product.id, general_rows
+            ):
+                default_price = next(
+                    (row["sale_price"] for row in general_rows if row["is_default_sale"]),
+                    general_rows[0]["sale_price"],
+                )
+                await sale_price_service.add_sale_price(
+                    self.session,
+                    product_id=product.id,
+                    sale_price=default_price,
+                    effective_date=None,
+                    actor=actor,
+                    uom_prices=general_rows,
+                )
         await self.session.flush()
 
         if price_changed:

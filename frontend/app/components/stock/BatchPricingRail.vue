@@ -57,6 +57,7 @@ const cards = computed<BatchPricingCard[]>(() => {
     salePrices: salePrices.value,
     generalSalePrice: Number(props.product?.salePrice ?? 0) || null,
     generalUomPrices: generalRows,
+    baseUomId: String(props.product?.uomId ?? ''),
   // Only stock-lot cards: the General card is hidden on this rail.
   }).filter(card => card.scope !== 'general')
 })
@@ -118,6 +119,7 @@ function draftUomPrices(card: BatchPricingCard): SalePriceVersionSelection['uomP
     factorToBase: row.factorToBase,
     salePrice: row.salePrice,
     isDefaultSale: row.isDefaultSale,
+    isActive: row.isActive !== false,
   }))
 }
 
@@ -253,6 +255,7 @@ async function saveBatchPrice() {
         factorToBase: Number(row.factorToBase) || 1,
         salePrice: Number(row.salePrice),
         isDefaultSale: row.isDefaultSale === true,
+        isActive: row.isActive !== false,
       })),
     })
     toast.add({ title: t('app.stock.batchPricingSaved'), color: 'success' })
@@ -348,6 +351,9 @@ defineExpose({ saveBatchPrice, reload: load, busy })
                 <span v-if="card.remainingQty != null"> · </span>
                 {{ t('app.stock.costPrice') }}: {{ formatMoney(card.unitCost) }}
               </template>
+            </span>
+            <span v-if="card.grossValue != null" class="block text-[11px] text-muted">
+              {{ t('app.stock.batchPricingGross') }}: {{ formatMoney(card.grossValue) }}
             </span>
           </span>
           <!-- Active-for-POS checkbox (replaces the ⋯ menu). -->

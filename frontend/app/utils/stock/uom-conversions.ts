@@ -35,6 +35,8 @@ export type UomConversion = {
   isDefaultSale?: boolean
   /** Cost per this UOM; `null` = derived from base cost × factor on save. */
   costPrice: number | null
+  /** POS-active flag: inactive rows are hidden from the POS cart (default true). */
+  isActive?: boolean
 }
 
 const MAX_SCALE = 6
@@ -109,6 +111,7 @@ function asConversionRow(row: Record<string, unknown>): UomConversion {
     costPrice: row.costPrice == null || row.costPrice === '' ? null : Number(row.costPrice),
     salePrice: Number(row.salePrice ?? 0),
     isDefaultSale: row.isDefaultSale === true || row.isDefaultSale === 'true',
+    isActive: row.isActive !== false && row.is_active !== false,
   }
 }
 
@@ -174,6 +177,7 @@ export function normalizeUomConversions(
         salePrice: Number(opts.baseSalePrice),
         isDefaultSale: false,
         costPrice: null,
+        isActive: true,
       })
     }
     // Exactly one default-sale row: the marked row, else the base row, else
@@ -205,9 +209,12 @@ export function conversionForUom(product: Record<string, unknown> | null | undef
 export function defaultSaleRow(product: Record<string, unknown> | null | undefined): UomConversion | null {
   const rows = pricingRowsFor(product)
   if (!rows.length) return null
-  return rows.find(row => row.isDefaultSale)
-    || rows.find(row => row.uomId === String(product?.uomId ?? ''))
-    || rows[0]!
+  // Prefer POS-active rows so a deactivated default never starts a cart line.
+  const active = rows.filter(row => row.isActive !== false)
+  const pool = active.length ? active : rows
+  return pool.find(row => row.isDefaultSale)
+    || pool.find(row => row.uomId === String(product?.uomId ?? ''))
+    || pool[0]!
 }
 
 /**
@@ -254,6 +261,8 @@ export interface SalePriceVersionSelection {
     factorToBase: number
     salePrice: number
     isDefaultSale?: boolean
+    /** POS-active flag of the UOM row (default true). */
+    isActive?: boolean
   }>
 }
 
@@ -300,12 +309,30 @@ export type BatchPricingCard = {
   isPriceActive: boolean
   salePrice: number | null
   uomPrices: SalePriceVersionSelection['uomPrices']
+  /** Base-UOM sale price used for the gross value (active row, else fallback). */
+  unitSalePrice: number | null
+  /** Gross value of the lot: remaining base qty × base-UOM sale price. */
+  grossValue: number | null
 }
 
 /**
  * Build rail cards: always General first, then stock lots joined to the
  * newest/active sale-price version for that `batchNo`.
  */
+/** Base-UOM sale price of a card's POS-active price rows (fallback: any row). */
+function baseUnitSalePrice(
+  uomPrices: SalePriceVersionSelection['uomPrices'],
+  baseUomId: string | undefined,
+  fallback: number | null,
+): number | null {
+  const active = uomPrices.filter(uom => uom.isActive !== false)
+  const pool = active.length ? active : uomPrices
+  if (!pool.length) return fallback
+  const base = pool.find(uom => String(uom.uomId) === String(baseUomId ?? ''))
+  const price = Number((base ?? pool[0]!).salePrice)
+  return Number.isFinite(price) ? price : fallback
+}
+
 export function buildBatchPricingCards(input: {
   lots: Array<{
     batchNo: string
@@ -325,9 +352,14 @@ export function buildBatchPricingCards(input: {
   }>
   generalSalePrice?: number | null
   generalUomPrices?: SalePriceVersionSelection['uomPrices']
+  /** Product base UOM — the row whose price drives the gross value. */
+  baseUomId?: string
 }): BatchPricingCard[] {
   const generalPrices = input.salePrices.filter(row => !String(row.batchNo ?? '').trim())
   const generalActive = generalPrices.find(row => row.isActive) ?? generalPrices[0] ?? null
+  const generalUomPrices = generalActive?.uomPrices?.length
+    ? generalActive.uomPrices.map(uom => ({ ...uom }))
+    : (input.generalUomPrices || []).map(uom => ({ ...uom }))
   const cards: BatchPricingCard[] = [{
     key: 'general',
     scope: 'general',
@@ -343,31 +375,47 @@ export function buildBatchPricingCards(input: {
     salePrice: generalActive != null
       ? Number(generalActive.salePrice ?? 0)
       : (input.generalSalePrice != null ? Number(input.generalSalePrice) : null),
-    uomPrices: generalActive?.uomPrices?.length
-      ? generalActive.uomPrices.map(uom => ({ ...uom }))
-      : (input.generalUomPrices || []).map(uom => ({ ...uom })),
+    uomPrices: generalUomPrices,
+    unitSalePrice: baseUnitSalePrice(
+      generalUomPrices,
+      input.baseUomId,
+      input.generalSalePrice != null ? Number(input.generalSalePrice) : null,
+    ),
+    grossValue: null,
   }]
 
+  const generalUnit = cards[0]!.unitSalePrice
   for (const lot of input.lots) {
     const batchNo = String(lot.batchNo || '').trim()
     if (!batchNo) continue
     const scoped = input.salePrices.filter(row => String(row.batchNo ?? '').trim() === batchNo)
     const active = scoped.find(row => row.isActive) ?? null
     const latest = active ?? scoped[0] ?? null
+    const uomPrices = latest?.uomPrices?.length ? latest.uomPrices.map(uom => ({ ...uom })) : []
+    const remainingQty = lot.remainingQty != null ? Number(lot.remainingQty) : null
+    const unitSalePrice = baseUnitSalePrice(
+      uomPrices,
+      input.baseUomId,
+      latest != null ? Number(latest.salePrice ?? 0) : generalUnit,
+    )
     cards.push({
       key: `batch:${batchNo}`,
       scope: 'batch',
       batchNo,
       label: batchNo,
       expiryDate: lot.expiryDate ?? latest?.expiryDate ?? null,
-      remainingQty: lot.remainingQty != null ? Number(lot.remainingQty) : null,
+      remainingQty,
       unitCost: lot.unitCost != null ? Number(lot.unitCost) : null,
       lotStatus: lot.status ?? null,
       priceId: latest ? String(latest.id) : null,
       priceVersion: latest ? Number(latest.version) : null,
       isPriceActive: active != null,
       salePrice: latest != null ? Number(latest.salePrice ?? 0) : null,
-      uomPrices: latest?.uomPrices?.length ? latest.uomPrices.map(uom => ({ ...uom })) : [],
+      uomPrices,
+      unitSalePrice,
+      grossValue: remainingQty != null && unitSalePrice != null
+        ? multiplyDecimalSafe(remainingQty, unitSalePrice)
+        : null,
     })
   }
   return cards

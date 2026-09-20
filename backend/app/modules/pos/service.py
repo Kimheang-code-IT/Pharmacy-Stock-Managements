@@ -154,29 +154,48 @@ class POSService:
         from app.modules.stock import sale_prices as sale_price_service
 
         balance = product.balance
-        # Active version prices (batch-specific first, else general) picked
-        # per UOM — POS always prices through the active price version.
-        version_prices = await sale_price_service.active_version_uom_prices(self.session, product.id)
-        # Pricing rows (spec §2.1.3): every row is POS-selectable; the base UOM
-        # row is synthesized for legacy products saved without one.
-        conversions: list[UomConversionOut] = [
-            {
-                "uom_id": row["uom_id"],
-                "uom_symbol": row.get("uom_symbol") or None,
-                "convert_uom_id": uuid.UUID(str(row["convert_uom_id"])) if row.get("convert_uom_id") else None,
-                "convert_uom_symbol": row.get("convert_uom_symbol") or None,
-                "factor_to_base": Decimal(str(row.get("factor_to_base", 1))),
-                "cost_price": Decimal(str(row["cost_price"])) if row.get("cost_price") else None,
-                "sale_price": (
-                    version_prices.get(str(row["uom_id"]), Decimal(str(row["sale_price"])))
-                    if row.get("sale_price") else None
-                ),
-                "is_default_sale": bool(row.get("is_default_sale")),
-            }
-            for row in (product.uom_conversions or [])
-            if row.get("uom_id")
-        ]
-        if not any(str(item["uom_id"]) == str(product.uom_id) for item in conversions):
+        # Batch-aware POS price/stock: the FEFO lot's active version wins, the
+        # total is the SELLABLE stock (active + unexpired lots only). Falls back
+        # to the product's general active version when a lot has no scoped price.
+        pos_info = (await sale_price_service.batch_pos_prices(self.session, [product])).get(product.id, {})
+        version_prices = pos_info.get("prices") or {}
+        sellable_stock = pos_info.get("sellable_stock")
+        base_price = pos_info.get("base_price")
+        price_configured = bool(pos_info.get("price_configured", True))
+        # Pricing rows (spec §2.1.3): every ACTIVE row is POS-selectable; a row
+        # toggled inactive on the Pricing tab is dropped here, so it never shows
+        # in the POS cart. The base UOM row is synthesized for legacy products
+        # saved without one.
+        raw_rows = [row for row in (product.uom_conversions or []) if row.get("uom_id")]
+        base_key = str(product.uom_id)
+        base_present = any(str(row["uom_id"]) == base_key for row in raw_rows)
+        conversions: list[UomConversionOut] = []
+        for row in raw_rows:
+            uom_key = str(row["uom_id"])
+            is_active = bool(row.get("is_active", row.get("isActive", True)))
+            if uom_key in version_prices:
+                sale_price = version_prices[uom_key]
+            elif not is_active:
+                # Inactive for POS and not priced by the active version → skip.
+                continue
+            else:
+                sale_price = Decimal(str(row["sale_price"])) if row.get("sale_price") else None
+            if sale_price is None:
+                continue
+            conversions.append(
+                {
+                    "uom_id": row["uom_id"],
+                    "uom_symbol": row.get("uom_symbol") or None,
+                    "convert_uom_id": uuid.UUID(str(row["convert_uom_id"])) if row.get("convert_uom_id") else None,
+                    "convert_uom_symbol": row.get("convert_uom_symbol") or None,
+                    "factor_to_base": Decimal(str(row.get("factor_to_base", 1))),
+                    "cost_price": Decimal(str(row["cost_price"])) if row.get("cost_price") else None,
+                    "sale_price": sale_price,
+                    "is_default_sale": bool(row.get("is_default_sale")),
+                    "is_active": is_active,
+                }
+            )
+        if not base_present:
             conversions.insert(
                 0,
                 {
@@ -186,9 +205,10 @@ class POSService:
                     "convert_uom_symbol": product.uom_ref.symbol if product.uom_ref else None,
                     "factor_to_base": Decimal("1"),
                     "cost_price": product.cost_price,
-                    # selling_price IS the POS-active sale-price version.
-                    "sale_price": product.selling_price,
+                    # FEFO-lot base price, else the general active version.
+                    "sale_price": base_price if base_price is not None else product.selling_price,
                     "is_default_sale": not any(item["is_default_sale"] for item in conversions),
+                    "is_active": True,
                 },
             )
         return POSProductOut(
@@ -198,8 +218,11 @@ class POSService:
             name=product.name,
             category_id=product.category_id,
             category_name=product.category_ref.name if product.category_ref else None,
-            selling_price=product.selling_price,
-            quantity=balance.quantity if balance else Decimal("0"),
+            selling_price=base_price if base_price is not None else product.selling_price,
+            quantity=sellable_stock if sellable_stock is not None else (balance.quantity if balance else Decimal("0")),
+            sellable_stock=sellable_stock if sellable_stock is not None else (balance.quantity if balance else Decimal("0")),
+            next_batch_no=pos_info.get("next_batch_no"),
+            price_configured=price_configured,
             image_object_key=product.image_object_key,
             image_url=resolve_media_url(product.image_object_key),
             uom_id=product.uom_id,
@@ -209,6 +232,247 @@ class POSService:
         )
 
     # ------------------------------------------------------------------ sale
+
+    async def _resolve_line_uom(self, product: Product, item) -> tuple[uuid.UUID, str | None, str | None, Decimal]:
+        """Server-authoritative (uom_id, uom_symbol, uom_code, factor_to_base)
+        of a cart line. The frontend factor is never trusted: a line without an
+        explicit UOM is the base UOM at factor 1; a conversion UOM is resolved
+        from the product's Pricing rows."""
+        from app.modules.uoms.models import UOM
+
+        uom_id = item.uom_id
+        uom_symbol = item.uom_symbol
+        if uom_id is None:
+            uom_symbol = uom_symbol or (product.uom_ref.symbol if product.uom_ref else None)
+            return product.uom_id, uom_symbol, (product.uom_ref.code if product.uom_ref else None), Decimal("1")
+        if str(uom_id) == str(product.uom_id):
+            uom_symbol = uom_symbol or (product.uom_ref.symbol if product.uom_ref else None)
+            return uom_id, uom_symbol, (product.uom_ref.code if product.uom_ref else None), Decimal("1")
+        conversion = next(
+            (row for row in (product.uom_conversions or []) if str(row.get("uom_id")) == str(uom_id)),
+            None,
+        )
+        if conversion is None:
+            raise ValidationError(
+                "The selected UOM is not a conversion UOM of this product",
+                field_errors={"items": "Invalid UOM"},
+            )
+        factor = Decimal(str(conversion.get("factor_to_base", 1)))
+        if factor <= 0:
+            raise ValidationError(
+                "Conversion qty must be greater than zero",
+                field_errors={"items": "Invalid factor"},
+            )
+        if not bool(conversion.get("is_active", conversion.get("isActive", True))):
+            raise ValidationError(
+                "The selected UOM is not active for POS",
+                field_errors={"items": "UOM inactive"},
+            )
+        uom_symbol = uom_symbol or conversion.get("uom_symbol") or None
+        uom_row = await self.session.get(UOM, uom_id)
+        return uom_id, uom_symbol, (uom_row.code if uom_row else None), factor
+
+    async def _line_batch_pricer(self, product: Product, item, uom_id, exchange_rate):
+        """Build the per-batch sale-price resolver for one cart line.
+
+        Returns ``(price_for_batch, fallback_price)`` where `price_for_batch` is
+        an async callable ``(batch) -> Decimal | None`` (price per sold UOM unit
+        in the SALE currency) and `fallback_price` is the price used when a sale
+        is allowed with no tracked lots (negative stock). The FEFO lot's own
+        price version wins; the general active version applies only when that
+        lot has no scoped version. A cashier-typed override (the client price
+        differing from both the general and the FEFO price) is honored for the
+        whole line."""
+        from app.modules.stock import batch_service, sale_prices as sale_price_service
+
+        key = str(uom_id)
+        general_map = await sale_price_service.active_version_uom_prices(self.session, product.id)
+
+        # Legacy fallback: the product's own Pricing row price for this UOM
+        # (used when no active version carries the row). An inactive row with
+        # no version price is not sellable.
+        conversion = next(
+            (row for row in (product.uom_conversions or []) if str(row.get("uom_id")) == key),
+            None,
+        )
+        conversion_price: Decimal | None = None
+        conversion_inactive = False
+        if conversion is not None and str(uom_id) != str(product.uom_id):
+            conversion_inactive = not bool(conversion.get("is_active", conversion.get("isActive", True)))
+            if conversion.get("sale_price") is not None and Decimal(str(conversion["sale_price"])) > 0:
+                conversion_price = Decimal(str(conversion["sale_price"]))
+
+        def with_fallback(price_map: dict) -> Decimal | None:
+            value = price_map.get(key)
+            if value is not None and Decimal(value) > 0:
+                return value
+            return conversion_price
+
+        general_price = with_fallback(general_map)
+        if general_price is None and conversion_inactive:
+            raise ValidationError(
+                "The selected UOM is not active for POS",
+                field_errors={"items": "UOM inactive"},
+            )
+
+        fefo_price: Decimal | None = None
+        lots = await batch_service.eligible_batches(self.session, product.id)
+        if lots:
+            fefo_map = await sale_price_service.active_version_uom_prices(
+                self.session, product.id, batch_no=lots[0].batch_no
+            )
+            fefo_price = with_fallback(fefo_map)
+        if fefo_price is None:
+            fefo_price = general_price
+
+        override: Decimal | None = None
+        if item.unit_price is not None:
+            client = Decimal(item.unit_price)
+            matches_general = (
+                general_price is not None
+                and client == _to_sale_currency(general_price, exchange_rate)
+            )
+            matches_fefo = (
+                fefo_price is not None
+                and client == _to_sale_currency(fefo_price, exchange_rate)
+            )
+            if not matches_general and not matches_fefo:
+                override = client
+
+        cache: dict[str, Decimal | None] = {}
+
+        async def price_for_batch(batch) -> Decimal | None:
+            if override is not None:
+                return override
+            scope_key = str(batch.batch_no or "")
+            if scope_key not in cache:
+                price_map = await sale_price_service.active_version_uom_prices(
+                    self.session, product.id, batch_no=batch.batch_no
+                )
+                usd_price = with_fallback(price_map)
+                cache[scope_key] = (
+                    _to_sale_currency(usd_price, exchange_rate) if usd_price is not None else None
+                )
+            return cache[scope_key]
+
+        if override is not None:
+            fallback_price = override
+        else:
+            source = fefo_price if fefo_price is not None else general_price
+            fallback_price = _to_sale_currency(source, exchange_rate) if source is not None else None
+        return price_for_batch, fallback_price
+
+    async def _apply_sale_line(
+        self,
+        *,
+        sale: Sale,
+        item,
+        product: Product,
+        actor: User,
+        invoice_no: str,
+        negative_ok: bool,
+        max_discount: Decimal,
+        exchange_rate,
+    ) -> tuple[SaleItem, Decimal, Decimal]:
+        """Apply ONE cart line: authoritative FEFO allocation, PER-BATCH pricing
+        snapshots, discount, stock deduction and movement. Returns
+        (sale_item, gross, discount)."""
+        from app.modules.stock import batch_service
+
+        quantity = item.quantity
+        uom_id, uom_symbol, uom_code, factor = await self._resolve_line_uom(product, item)
+        base_quantity = _q4(quantity * factor)
+        if base_quantity <= 0:
+            raise ValidationError("Line quantity must be greater than zero", field_errors={"items": "Invalid quantity"})
+
+        price_for_batch, fallback_price = await self._line_batch_pricer(product, item, uom_id, exchange_rate)
+        if fallback_price is None:
+            raise ValidationError(
+                f"No sale price configured for {product.name}",
+                field_errors={"items": "Price not configured"},
+            )
+
+        provisional = SaleItem(
+            sale_id=sale.id,
+            product_id=product.id,
+            product_name=product.name,
+            sku=product.sku,
+            barcode=product.barcode,
+            uom_id=uom_id,
+            uom_code=uom_code,
+            uom_symbol=uom_symbol,
+            factor_to_base=factor,
+            discount_percent=item.discount_percent,
+            quantity=quantity,
+            unit_price=Decimal("0.00"),
+            unit_cost=Decimal("0.00"),
+            discount_amount=Decimal("0.00"),
+            line_total=Decimal("0.00"),
+        )
+        self.session.add(provisional)
+        await self.session.flush()
+
+        balance = await _lock_balance(self.session, product.id)
+        # Line cost follows the product's costing option (FIFO lots or weighted
+        # average) — batch cost only feeds the SaleItemBatch snapshots.
+        line_cost = await resolve_outbound_unit_cost(
+            self.session, product, base_quantity, fallback=balance.average_cost
+        )
+        _, consumed_batches, details = await batch_service.commit_sale_allocations(
+            self.session,
+            sale_item=provisional,
+            product=product,
+            quantity_base=base_quantity,
+            allow_negative=negative_ok,
+            unit_price_for_batch=price_for_batch,
+            factor=factor,
+        )
+        if details:
+            gross = _q2(sum((detail["line_amount"] or Decimal("0")) for detail in details))
+        else:
+            # Negative stock with no tracked lots: charge the fallback price.
+            gross = _q2(quantity * fallback_price)
+        unit_price = (gross / quantity).quantize(TWO, rounding=ROUND_HALF_UP) if quantity else Decimal("0.00")
+
+        if item.discount_percent > 0:
+            discount = _q2(gross * item.discount_percent / Decimal("100"))
+        else:
+            discount = _q2(item.discount_amount)
+        if discount > 0:
+            if max_discount > 0:
+                implied_percent = (discount / gross * Decimal("100")) if gross > 0 else Decimal("100")
+                if item.discount_percent > max_discount or implied_percent > max_discount:
+                    raise ValidationError(
+                        f"Line discount exceeds the maximum allowed ({max_discount}%)",
+                        field_errors={"items": "Discount exceeds maximum"},
+                    )
+            if discount >= gross:
+                raise ValidationError("Discount cannot exceed the line amount", field_errors={"items": "Invalid discount"})
+        line_total = gross - discount
+
+        provisional.unit_price = unit_price
+        provisional.unit_cost = line_cost
+        provisional.discount_amount = discount
+        provisional.line_total = line_total
+        await self.session.flush()
+
+        movement_batch = consumed_batches[0] if len(consumed_batches) == 1 else None
+        await apply_stock_movement(
+            self.session,
+            product_id=product.id,
+            movement_type="SALE",
+            quantity_delta=-base_quantity,
+            unit_cost=line_cost,
+            reference_type="sale",
+            reference_id=sale.id,
+            created_by=actor.id,
+            document_no=invoice_no,
+            batch_no=movement_batch.batch_no if movement_batch else None,
+            batch_id=movement_batch.id if movement_batch else None,
+            expiry_date=movement_batch.expiry_date if movement_batch else None,
+            allow_negative=negative_ok,
+        )
+        return provisional, gross, discount
 
     async def complete_sale(self, payload, *, actor: User) -> SaleOut:
         discount_allowed = user_has_permission(actor, "pos.discount")
@@ -254,194 +518,18 @@ class POSService:
         subtotal = Decimal("0.00")
         discount_total = Decimal("0.00")
         item_rows: list[SaleItem] = []
-        version_prices: dict[uuid.UUID, dict[str, Decimal]] = {}
-        general_version_prices: dict[uuid.UUID, dict[str, Decimal]] = {}
         for item in payload.items:
             product = products[item.product_id]
-            quantity = item.quantity
-
-            # Active price-version prices per UOM. Batch-first priority:
-            # the sold (FEFO) lot's active version wins per UOM, then the
-            # general active version, then the product fallbacks.
-            if item.product_id not in version_prices:
-                from app.modules.stock import batch_service, sale_prices as sale_price_service
-
-                general_prices = await sale_price_service.active_version_uom_prices(
-                    self.session, item.product_id
-                )
-                batch_prices: dict = {}
-                if product.track_batch:
-                    lots = await batch_service.lock_batches_for_product(self.session, product.id)
-                    fefo_batch = lots[0].batch_no if lots else None
-                    if fefo_batch:
-                        batch_prices = await sale_price_service.active_version_uom_prices(
-                            self.session, item.product_id, batch_no=fefo_batch
-                        )
-                general_version_prices[item.product_id] = general_prices
-                version_prices[item.product_id] = {**general_prices, **batch_prices}
-            active_uom_prices = version_prices[item.product_id]
-            general_uom_prices = general_version_prices[item.product_id]
-
-            # ---- line UOM resolution (stock is always mutated in base UOM) ----
-            factor = item.factor_to_base
-            uom_id = item.uom_id
-            uom_symbol = item.uom_symbol
-            uom_code = None
-            default_price = active_uom_prices.get(str(product.uom_id), product.selling_price)
-            default_price = default_price if default_price is not None else product.selling_price  # POS-active sale price
-            if uom_id is not None and str(uom_id) != str(product.uom_id):
-                conversion = next(
-                    (
-                        row
-                        for row in (product.uom_conversions or [])
-                        if str(row.get("uom_id")) == str(uom_id)
-                    ),
-                    None,
-                )
-                if conversion is None:
-                    raise ValidationError(
-                        "The selected UOM is not a conversion UOM of this product",
-                        field_errors={"items": "Invalid UOM"},
-                    )
-                factor = Decimal(str(conversion.get("factor_to_base", factor)))
-                if str(uom_id) in active_uom_prices:
-                    # The chosen UOM's price from the ACTIVE version wins.
-                    default_price = active_uom_prices[str(uom_id)]
-                elif conversion.get("sale_price") is not None:
-                    default_price = Decimal(str(conversion["sale_price"]))
-                uom_symbol = uom_symbol or conversion.get("uom_symbol") or None
-            elif uom_id is not None and str(uom_id) == str(product.uom_id):
-                factor = Decimal("1")
-                # The base=base Pricing row's sale price is the base unit price
-                # (spec §2.1.3); the active version / selling_price stays the fallback.
-                base_row = next(
-                    (
-                        row
-                        for row in (product.uom_conversions or [])
-                        if str(row.get("uom_id")) == str(uom_id)
-                    ),
-                    None,
-                )
-                if str(uom_id) in active_uom_prices:
-                    default_price = active_uom_prices[str(uom_id)]
-                elif base_row is not None and base_row.get("sale_price") is not None:
-                    default_price = Decimal(str(base_row["sale_price"]))
-            if uom_id is None:
-                uom_id = product.uom_id
-                # The frontend factor is NEVER authoritative: a line without
-                # an explicit UOM is always the base UOM (factor 1), whatever
-                # factor_to_base the caller sent.
-                factor = Decimal("1")
-                uom_symbol = uom_symbol or (product.uom_ref.symbol if product.uom_ref else None)
-                uom_code = product.uom_ref.code if product.uom_ref else None
-            else:
-                from app.modules.uoms.models import UOM
-
-                uom_row = await self.session.get(UOM, uom_id)
-                uom_code = uom_row.code if uom_row else None
-                uom_symbol = uom_symbol or (uom_row.symbol if uom_row else None)
-            base_quantity = _q4(quantity * factor)
-            if base_quantity <= 0:
-                raise ValidationError("Line quantity must be greater than zero", field_errors={"items": "Invalid quantity"})
-
-            if item.unit_price is None:
-                # No client price → charge the batch-first active version.
-                unit_price = _to_sale_currency(default_price, payload.exchange_rate)
-            else:
-                unit_price = item.unit_price
-                # The POS cart always sends the general active price. When a
-                # batch-scoped active version changes that price, charge the
-                # batch price — unless the cashier manually overrode the line.
-                general_price = _uom_price_from_map(product, uom_id, general_uom_prices)
-                resolved_price = _uom_price_from_map(product, uom_id, active_uom_prices)
-                if (
-                    general_price is not None
-                    and resolved_price is not None
-                    and Decimal(item.unit_price)
-                    == _to_sale_currency(general_price, payload.exchange_rate)
-                    and _to_sale_currency(resolved_price, payload.exchange_rate)
-                    != _to_sale_currency(general_price, payload.exchange_rate)
-                ):
-                    unit_price = _to_sale_currency(resolved_price, payload.exchange_rate)
-            gross = (quantity * unit_price).quantize(TWO, rounding=ROUND_HALF_UP)
-            if item.discount_percent > 0:
-                discount = _q2(gross * item.discount_percent / Decimal("100"))
-            else:
-                discount = _q2(item.discount_amount)
-
-            if discount > 0:
-                if max_discount > 0:
-                    implied_percent = (discount / gross * Decimal("100")) if gross > 0 else Decimal("100")
-                    if item.discount_percent > max_discount or implied_percent > max_discount:
-                        raise ValidationError(
-                            f"Line discount exceeds the maximum allowed ({max_discount}%)",
-                            field_errors={"items": "Discount exceeds maximum"},
-                        )
-                if discount >= gross:
-                    raise ValidationError("Discount cannot exceed the line amount", field_errors={"items": "Invalid discount"})
-
-            line_total = gross - discount
-            # FEFO batch allocation runs BEFORE the movement is appended so
-            # the immutable SALE movement carries the blended cost snapshot
-            # (unit_cost 0 on the ledger would make the Stock Out dialog
-            # meaningless). The customer price is INDEPENDENT of batch cost.
-            from app.modules.stock import batch_service
-
-            provisional = SaleItem(
-                sale_id=sale.id,
-                product_id=product.id,
-                product_name=product.name,
-                sku=product.sku,
-                barcode=product.barcode,
-                uom_id=uom_id,
-                uom_code=uom_code,
-                uom_symbol=uom_symbol,
-                factor_to_base=factor,
-                discount_percent=item.discount_percent,
-                quantity=quantity,
-                unit_price=unit_price,
-                unit_cost=Decimal("0.00"),
-                discount_amount=discount,
-                line_total=line_total,
-            )
-            self.session.add(provisional)
-            await self.session.flush()
-            # Line cost follows the product's costing option (FIFO lots or
-            # weighted average) — the same canonical path as every other
-            # outbound. Batch cost only feeds the SaleItemBatch snapshots.
-            balance = await _lock_balance(self.session, product.id)
-            line_cost = await resolve_outbound_unit_cost(
-                self.session, product, base_quantity, fallback=balance.average_cost
-            )
-            _, consumed_batches = await batch_service.commit_sale_allocations(
-                self.session,
-                sale_item=provisional,
+            row, gross, discount = await self._apply_sale_line(
+                sale=sale,
+                item=item,
                 product=product,
-                quantity_base=base_quantity,
-                allow_negative=negative_ok,
+                actor=actor,
+                invoice_no=invoice_no,
+                negative_ok=negative_ok,
+                max_discount=max_discount,
+                exchange_rate=payload.exchange_rate,
             )
-            provisional.unit_cost = line_cost
-            await self.session.flush()
-            # Single-batch lines link the immutable SALE movement to the lot
-            # (batch_no / batch_id / expiry click-through); multi-batch lines
-            # keep the per-lot detail in the sale_item_batches allocations.
-            movement_batch = consumed_batches[0] if len(consumed_batches) == 1 else None
-            balance = await apply_stock_movement(
-                self.session,
-                product_id=product.id,
-                movement_type="SALE",
-                quantity_delta=-base_quantity,
-                unit_cost=line_cost,
-                reference_type="sale",
-                reference_id=sale.id,
-                created_by=actor.id,
-                document_no=invoice_no,
-                batch_no=movement_batch.batch_no if movement_batch else None,
-                batch_id=movement_batch.id if movement_batch else None,
-                expiry_date=movement_batch.expiry_date if movement_batch else None,
-                allow_negative=negative_ok,
-            )
-            row = provisional
             item_rows.append(row)
             subtotal += gross
             discount_total += discount
@@ -697,163 +785,19 @@ class POSService:
         subtotal = Decimal("0.00")
         discount_total = Decimal("0.00")
         item_rows: list[SaleItem] = []
-        version_prices: dict[uuid.UUID, dict[str, Decimal]] = {}
-        general_version_prices: dict[uuid.UUID, dict[str, Decimal]] = {}
         for item in payload.items:
             product = products[item.product_id]
-            quantity = item.quantity
-
-            if item.product_id not in version_prices:
-                from app.modules.stock import batch_service, sale_prices as sale_price_service
-
-                general_prices = await sale_price_service.active_version_uom_prices(
-                    self.session, item.product_id
-                )
-                batch_prices: dict = {}
-                if product.track_batch:
-                    lots = await batch_service.lock_batches_for_product(self.session, product.id)
-                    fefo_batch = lots[0].batch_no if lots else None
-                    if fefo_batch:
-                        batch_prices = await sale_price_service.active_version_uom_prices(
-                            self.session, item.product_id, batch_no=fefo_batch
-                        )
-                general_version_prices[item.product_id] = general_prices
-                version_prices[item.product_id] = {**general_prices, **batch_prices}
-            active_uom_prices = version_prices[item.product_id]
-            general_uom_prices = general_version_prices[item.product_id]
-
-            factor = item.factor_to_base
-            uom_id = item.uom_id
-            uom_symbol = item.uom_symbol
-            uom_code = None
-            default_price = active_uom_prices.get(str(product.uom_id), product.selling_price)
-            default_price = default_price if default_price is not None else product.selling_price
-            if uom_id is not None and str(uom_id) != str(product.uom_id):
-                conversion = next(
-                    (row for row in (product.uom_conversions or []) if str(row.get("uom_id")) == str(uom_id)),
-                    None,
-                )
-                if conversion is None:
-                    raise ValidationError(
-                        "The selected UOM is not a conversion UOM of this product",
-                        field_errors={"items": "Invalid UOM"},
-                    )
-                factor = Decimal(str(conversion.get("factor_to_base", factor)))
-                if str(uom_id) in active_uom_prices:
-                    default_price = active_uom_prices[str(uom_id)]
-                elif conversion.get("sale_price") is not None:
-                    default_price = Decimal(str(conversion["sale_price"]))
-                uom_symbol = uom_symbol or conversion.get("uom_symbol") or None
-            elif uom_id is not None and str(uom_id) == str(product.uom_id):
-                factor = Decimal("1")
-                base_row = next(
-                    (row for row in (product.uom_conversions or []) if str(row.get("uom_id")) == str(uom_id)),
-                    None,
-                )
-                if str(uom_id) in active_uom_prices:
-                    default_price = active_uom_prices[str(uom_id)]
-                elif base_row is not None and base_row.get("sale_price") is not None:
-                    default_price = Decimal(str(base_row["sale_price"]))
-            if uom_id is None:
-                uom_id = product.uom_id
-                factor = Decimal("1")
-                uom_symbol = uom_symbol or (product.uom_ref.symbol if product.uom_ref else None)
-                uom_code = product.uom_ref.code if product.uom_ref else None
-            else:
-                from app.modules.uoms.models import UOM
-
-                uom_row = await self.session.get(UOM, uom_id)
-                uom_code = uom_row.code if uom_row else None
-                uom_symbol = uom_symbol or (uom_row.symbol if uom_row else None)
-            base_quantity = _q4(quantity * factor)
-            if base_quantity <= 0:
-                raise ValidationError("Line quantity must be greater than zero", field_errors={"items": "Invalid quantity"})
-
-            if item.unit_price is None:
-                # No client price → charge the batch-first active version.
-                unit_price = _to_sale_currency(default_price, payload.exchange_rate)
-            else:
-                unit_price = item.unit_price
-                # The POS cart always sends the general active price. When a
-                # batch-scoped active version changes that price, charge the
-                # batch price — unless the cashier manually overrode the line.
-                general_price = _uom_price_from_map(product, uom_id, general_uom_prices)
-                resolved_price = _uom_price_from_map(product, uom_id, active_uom_prices)
-                if (
-                    general_price is not None
-                    and resolved_price is not None
-                    and Decimal(item.unit_price)
-                    == _to_sale_currency(general_price, payload.exchange_rate)
-                    and _to_sale_currency(resolved_price, payload.exchange_rate)
-                    != _to_sale_currency(general_price, payload.exchange_rate)
-                ):
-                    unit_price = _to_sale_currency(resolved_price, payload.exchange_rate)
-            gross = (quantity * unit_price).quantize(TWO, rounding=ROUND_HALF_UP)
-            if item.discount_percent > 0:
-                discount = _q2(gross * item.discount_percent / Decimal("100"))
-            else:
-                discount = _q2(item.discount_amount)
-            if discount > 0:
-                if max_discount > 0:
-                    implied_percent = (discount / gross * Decimal("100")) if gross > 0 else Decimal("100")
-                    if item.discount_percent > max_discount or implied_percent > max_discount:
-                        raise ValidationError(
-                            f"Line discount exceeds the maximum allowed ({max_discount}%)",
-                            field_errors={"items": "Discount exceeds maximum"},
-                        )
-                if discount >= gross:
-                    raise ValidationError("Discount cannot exceed the line amount", field_errors={"items": "Invalid discount"})
-            line_total = gross - discount
-
-            provisional = SaleItem(
-                sale_id=sale.id,
-                product_id=product.id,
-                product_name=product.name,
-                sku=product.sku,
-                barcode=product.barcode,
-                uom_id=uom_id,
-                uom_code=uom_code,
-                uom_symbol=uom_symbol,
-                factor_to_base=factor,
-                discount_percent=item.discount_percent,
-                quantity=quantity,
-                unit_price=unit_price,
-                unit_cost=Decimal("0.00"),
-                discount_amount=discount,
-                line_total=line_total,
-            )
-            self.session.add(provisional)
-            await self.session.flush()
-            balance = await _lock_balance(self.session, product.id)
-            line_cost = await resolve_outbound_unit_cost(
-                self.session, product, base_quantity, fallback=balance.average_cost
-            )
-            _, consumed_batches = await batch_service.commit_sale_allocations(
-                self.session,
-                sale_item=provisional,
+            row, gross, discount = await self._apply_sale_line(
+                sale=sale,
+                item=item,
                 product=product,
-                quantity_base=base_quantity,
-                allow_negative=negative_ok,
+                actor=actor,
+                invoice_no=sale.invoice_no,
+                negative_ok=negative_ok,
+                max_discount=max_discount,
+                exchange_rate=payload.exchange_rate,
             )
-            provisional.unit_cost = line_cost
-            await self.session.flush()
-            movement_batch = consumed_batches[0] if len(consumed_batches) == 1 else None
-            await apply_stock_movement(
-                self.session,
-                product_id=product.id,
-                movement_type="SALE",
-                quantity_delta=-base_quantity,
-                unit_cost=line_cost,
-                reference_type="sale",
-                reference_id=sale.id,
-                created_by=actor.id,
-                document_no=sale.invoice_no,
-                batch_no=movement_batch.batch_no if movement_batch else None,
-                batch_id=movement_batch.id if movement_batch else None,
-                expiry_date=movement_batch.expiry_date if movement_batch else None,
-                allow_negative=negative_ok,
-            )
-            item_rows.append(provisional)
+            item_rows.append(row)
             subtotal += gross
             discount_total += discount
 

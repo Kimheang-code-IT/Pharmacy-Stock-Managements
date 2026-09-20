@@ -125,6 +125,13 @@ class SaleItemBatch(Base):
     quantity_base: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     # Cost-per-BASE-unit snapshot (6dp to match batch_stock_balances.unit_cost).
     cost_per_base: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=Decimal("0.000000"))
+    # Sale-price snapshot for THIS allocation (spec: historical sales never
+    # change when a batch price is edited later). NULL on rows written before
+    # migration 0034 — readers fall back to the sale-item line figures.
+    batch_no_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    unit_price_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    conversion_qty_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    line_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

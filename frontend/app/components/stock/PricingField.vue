@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { TableColumn } from '@nuxt/ui'
 import type { PaginationState } from '@tanstack/vue-table'
-import { CommonAppMoneyField, UButton, UInputNumber, USelect } from '#components'
+import { CommonAppMoneyField, UButton, UCheckbox, UInputNumber, USelect } from '#components'
 import { h } from 'vue'
 import { moduleDocumentRecordKey } from '~/utils/module/document-tabs'
 import { useCurrencyRateDialog } from '~/composables/common/useCurrencyRateDialog'
@@ -81,6 +81,7 @@ function toRow(raw: Record<string, unknown>, index: number): PricingRow {
     factorToBase: Number(raw.factorToBase ?? 1),
     salePrice: Number(raw.salePrice ?? 0),
     costPrice: raw.costPrice == null || raw.costPrice === '' ? null : Number(raw.costPrice),
+    isActive: raw.isActive !== false && raw.is_active !== false,
     __key: `row:${index}:${uomId}`,
     __base: uomId === baseUomId.value,
   }
@@ -103,6 +104,7 @@ const draftBaseRow = computed<PricingRow>(() => ({
   factorToBase: 1,
   salePrice: baseSalePrice.value,
   costPrice: null,
+  isActive: true,
   __key: 'draft-base',
   __base: true,
 }))
@@ -171,6 +173,7 @@ watch(versionSelection, (selected) => {
     salePrice: Number(uom.salePrice) || 0,
     costPrice: null,
     isDefaultSale: uom.isDefaultSale === true,
+    isActive: uom.isActive !== false,
     __key: `batch:${selected.batchNo || 'x'}:${index}:${String(uom.uomId)}`,
     __base: String(uom.uomId) === baseUomId.value,
   }))
@@ -200,6 +203,7 @@ function emitBatchDraft(next: PricingRow[]) {
     factorToBase: Number(row.factorToBase) || 1,
     salePrice: Number(row.salePrice) || 0,
     isDefaultSale: row.__base || row.isDefaultSale === true,
+    isActive: row.isActive !== false,
   }))
   const defaultPrice = uomPrices.find(row => row.isDefaultSale)?.salePrice ?? uomPrices[0]?.salePrice ?? 0
   recordAccess.set('__salePriceSelection', {
@@ -352,6 +356,20 @@ const columns = computed<TableColumn<PricingRow>[]>(() => [
         if (row.original.__base && !isBatchScope.value) setBaseSalePrice(usd)
         updateRow(row.original.__key, { salePrice: usd })
       },
+    }),
+  },
+  {
+    accessorKey: '__active',
+    header: t('app.stock.convActiveForPos'),
+    enableSorting: false,
+    meta: { class: { td: 'w-16 text-center', th: 'w-16 text-center' } },
+    cell: ({ row }) => h(UCheckbox, {
+      modelValue: row.original.isActive !== false,
+      size: 'xs',
+      disabled: effectiveDisabled.value,
+      'aria-label': t('app.stock.convActiveForPos'),
+      'onUpdate:modelValue': (value: unknown) =>
+        updateRow(row.original.__key, { isActive: value === true }),
     }),
   },
   {

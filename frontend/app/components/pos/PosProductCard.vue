@@ -15,9 +15,13 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const image = computed(() => productImageUrl(props.product))
-const stock = computed(() => Number(props.product.quantity || 0))
+const stock = computed(() => Number(props.product.sellableStock ?? props.product.quantity ?? 0))
 const outOfStock = computed(() => stock.value <= 0)
 const lowStock = computed(() => stock.value > 0 && stock.value <= 10)
+/** FEFO lot price when the backend computed it, else the product mirror. */
+const price = computed(() => Number(props.product.posPrice ?? props.product.salePrice ?? 0))
+const priceConfigured = computed(() => props.product.priceConfigured !== false)
+const blocked = computed(() => outOfStock.value || props.disabled === true || !priceConfigured.value)
 
 const money = (value: unknown) => formatMoney(value, props.currency)
 </script>
@@ -25,8 +29,8 @@ const money = (value: unknown) => formatMoney(value, props.currency)
 <template>
   <article
     class="group flex flex-col overflow-hidden rounded-sm border border-default bg-default shadow-sm transition hover:shadow-md"
-    :class="outOfStock || disabled ? 'opacity-60' : 'cursor-pointer'"
-    @click="!outOfStock && !disabled && emit('add', product)"
+    :class="blocked ? 'opacity-60' : 'cursor-pointer'"
+    @click="!blocked && emit('add', product)"
   >
     <div class="relative aspect-[4/3] overflow-hidden bg-elevated">
       <img
@@ -61,8 +65,11 @@ class="size-6 opacity-40" />
         <p class="line-clamp-1 text-sm font-semibold leading-snug text-highlighted">
           {{ product.name }}
         </p>
-        <p class="text-sm font-bold text-primary tabular-nums">
-          {{ money(product.salePrice) }}
+        <p v-if="priceConfigured" class="text-sm font-bold text-primary tabular-nums">
+          {{ money(price) }}
+        </p>
+        <p v-else class="text-xs font-medium text-warning">
+          {{ t('app.pos.priceNotConfigured') }}
         </p>
       </div>
       <UButton
@@ -72,7 +79,7 @@ class="size-6 opacity-40" />
         icon="i-lucide-plus"
         square
         class="shrink-0"
-        :disabled="outOfStock || disabled"
+        :disabled="blocked"
         :aria-label="t('app.pos.addToCart')"
         @click.stop="emit('add', product)"
       />

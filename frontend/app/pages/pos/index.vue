@@ -10,6 +10,8 @@ import { usePageSeo } from '~/composables/usePageSeo'
 import { useDeliveryCommands, usePosCommands, useSettingsRepositories } from '~/repositories/index'
 import type { PosCartLine } from '~/utils/pos/cart'
 import {
+  allocateBatches,
+  allocationUnitPrice,
   availableStockInUom,
   cartDiscountTotal,
   cartSubtotal,
@@ -92,6 +94,12 @@ function convertCartLines(from: 'USD' | 'KHR', to: 'USD' | 'KHR', rate: number) 
   const factor = to === 'KHR' ? rate : 1 / rate
   cart.value.forEach((line) => {
     line.unitPrice = roundMoney(line.unitPrice * factor)
+    if (line.batchAllocations) {
+      line.batchAllocations = line.batchAllocations.map(row => ({
+        ...row,
+        unitPrice: roundMoney(row.unitPrice * factor),
+      }))
+    }
   })
 }
 /** Shared toggle logic: switching to KHR asks for the exchange rate through
@@ -333,10 +341,45 @@ function productById(productId: string): Record<string, unknown> | null {
   return store.list('products').find(row => String(row.id) === productId) ?? null
 }
 
+/** USD price of a line's UOM: the product's FEFO/POS lot price map first
+ *  (batch-aware), then the general Pricing row. */
+function posPriceForUom(row: Record<string, unknown>, uomId: string): number | null {
+  const map = (row.posUomPrices || {}) as Record<string, unknown>
+  if (map && map[uomId] != null) {
+    const value = Number(map[uomId])
+    if (Number.isFinite(value) && value > 0) return value
+  }
+  return salePriceForUom(row, uomId)
+}
+
+/** Sale-currency FEFO breakdown for a base-UOM line, and its blended price.
+ *  Conversion-UOM lines keep the single FEFO price (the server blends the
+ *  per-lot prices of that UOM authoritatively at checkout). */
+function applyLineAllocations(line: PosCartLine, row: Record<string, unknown> | null) {
+  const rate = saleCurrency.value === 'KHR' ? saleRate.value : 1
+  const lots = row && Array.isArray(row.posBatches) ? row.posBatches as Array<Record<string, unknown>> : []
+  if (Number(line.factorToBase) === 1 && lots.length) {
+    const allocations = allocateBatches(lots, line.quantity, 1)
+      .map(row => ({ ...row, unitPrice: roundMoney(row.unitPrice * rate) }))
+    line.batchAllocations = allocations.length ? allocations : undefined
+    if (allocations.length) {
+      line.unitPrice = roundMoney(allocationUnitPrice(allocations, line.quantity))
+      return
+    }
+  }
+  line.batchAllocations = undefined
+}
+
 function addProduct(row: Record<string, unknown>) {
   if (returnMode.value) return
   const id = String(row.id)
-  const stock = Number(row.quantity || 0)
+  // Sellable stock (active + unexpired lots) when the batch read model is
+  // present, else the materialized product quantity.
+  const stock = Number(row.sellableStock ?? row.quantity ?? 0)
+  if (row.priceConfigured === false) {
+    toast.add({ title: t('app.pos.priceNotConfigured'), color: 'warning' })
+    return
+  }
   if (stock <= 0) {
     toast.add({ title: t('app.pos.outOfStock'), color: 'warning' })
     return
@@ -348,6 +391,7 @@ function addProduct(row: Record<string, unknown>) {
       return
     }
     existing.quantity += 1
+    applyLineAllocations(existing, productById(id) ?? row)
     return
   }
   // Pre-select the product's **Default sale** Pricing row (else base/first,
@@ -355,9 +399,10 @@ function addProduct(row: Record<string, unknown>) {
   // stock shown in the selected UOM (base stock ÷ conversion qty).
   const lineUom = defaultLineUomFor(row)
   // Product master prices are USD; the cart stores prices in the sale currency.
-  const usdPrice = salePriceForUom(row, lineUom.uomId) ?? Number(row.salePrice || 0)
+  const usdPrice = posPriceForUom(row, lineUom.uomId)
+    ?? Number(row.posPrice ?? row.salePrice ?? 0)
   const price = saleCurrency.value === 'KHR' ? usdPrice * saleRate.value : usdPrice
-  cart.value.push({
+  const line: PosCartLine = {
     productId: id,
     name: String(row.name || ''),
     barcode: String(row.barcode || ''),
@@ -370,7 +415,9 @@ function addProduct(row: Record<string, unknown>) {
     unitPrice: roundMoney(price),
     discountPercent: 0,
     quantity: 1,
-  })
+  }
+  cart.value.push(line)
+  applyLineAllocations(line, row)
 }
 
 /**
@@ -383,7 +430,7 @@ function changeUom(productId: string, uomId: string) {
   if (!line || !uomId || line.uomId === uomId) return
   const product = productById(productId)
   if (!product) return
-  const usdPrice = salePriceForUom(product, uomId)
+  const usdPrice = posPriceForUom(product, uomId)
   if (usdPrice == null) return
   // Product master prices are USD; the cart stores prices in the sale currency.
   const price = saleCurrency.value === 'KHR' ? usdPrice * saleRate.value : usdPrice
@@ -394,7 +441,8 @@ function changeUom(productId: string, uomId: string) {
   line.uom = symbol
   line.factorToBase = factor
   line.unitPrice = roundMoney(price)
-  line.availableStock = availableStockInUom(product.quantity, factor)
+  line.availableStock = availableStockInUom(Number(product.sellableStock ?? product.quantity ?? 0), factor)
+  applyLineAllocations(line, product)
 }
 
 /**
@@ -443,6 +491,7 @@ function changeQty(productId: string, delta: number) {
   if (!line) return
   const next = Math.max(1, Math.min(line.availableStock, line.quantity + delta))
   line.quantity = next
+  applyLineAllocations(line, productById(productId))
 }
 
 function updatePrice(productId: string, unitPrice: number) {
@@ -860,6 +909,12 @@ async function completeSale() {
         uomId: line.uomId || undefined,
         uomSymbol: line.uom || undefined,
         factorToBase: line.factorToBase || 1,
+        // Displayed FEFO breakdown (server recomputes authoritatively).
+        allocations: line.batchAllocations?.map(row => ({
+          batchNo: row.batchNo,
+          qty: row.qty,
+          unitPrice: row.unitPrice,
+        })),
       })),
       paymentMethod: paymentMethod.value,
       paidAmount: paidAmount.value,

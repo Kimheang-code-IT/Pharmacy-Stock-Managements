@@ -137,6 +137,7 @@ class BatchStockBalance(Base):
         Index("ix_batch_stock_balances_product_id", "product_id"),
         Index("ix_batch_stock_balances_product_expiry", "product_id", "expiry_date"),
         Index("ix_batch_stock_balances_expiry_date", "expiry_date"),
+        Index("ix_batch_stock_balances_product_active_expiry", "product_id", "is_active", "expiry_date"),
         # Ledger integrity (spec: batch quantities never negative, never
         # exceed what was received into the lot).
         CheckConstraint("remaining_quantity >= 0", name="ck_batch_remaining_nonneg"),
@@ -157,6 +158,11 @@ class BatchStockBalance(Base):
     )
     # Lifecycle: ACTIVE | DEPLETED | EXPIRED (maintained by the mutation paths).
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="ACTIVE", server_default="ACTIVE")
+    # Manual sellable flag: an inactive lot keeps its stock, cost and historical
+    # pricing but is NEVER allocated to a new POS sale (spec: inactive batch).
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
     # Traceable purchase cost per BASE unit of the lot (latest purchase).
     unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=Decimal("0.000000"))
     supplier_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -257,6 +263,9 @@ class ProductSalePriceUom(Base):
     factor_to_base: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     sale_price: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     is_default_sale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # POS-active flag toggled from the Pricing tab: inactive rows stay in the
+    # version for history but are ignored by POS price resolution.
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -31,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictError, ValidationError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.modules.pos.models import SaleItemBatch
 from app.modules.stock.models import BatchStockBalance, Product
 
@@ -234,7 +234,10 @@ async def lock_batches_for_product(
     serialize per product.
 
     Sale-eligible lots exclude expired batches unless `include_expired` —
-    disposals (damage / expiry / purchase return) opt in; sales never do."""
+    disposals (damage / expiry / purchase return) opt in; sales never do.
+    They also exclude manually deactivated lots (`is_active = false`); a
+    disposal may still write an inactive lot down because it opts in to
+    `include_expired`."""
     conditions = [
         BatchStockBalance.product_id == product_id,
         BatchStockBalance.remaining_quantity > 0,
@@ -245,6 +248,7 @@ async def lock_batches_for_product(
             (BatchStockBalance.expiry_date.is_(None))
             | (BatchStockBalance.expiry_date >= today)
         )
+        conditions.append(BatchStockBalance.is_active.is_(True))
     result = await session.execute(
         select(BatchStockBalance)
         .where(*conditions)
@@ -258,6 +262,80 @@ async def lock_batches_for_product(
         .execution_options(populate_existing=True)
     )
     return list(result.scalars().all())
+
+
+async def eligible_batches(
+    session: AsyncSession,
+    product_id: uuid.UUID,
+) -> list[BatchStockBalance]:
+    """Non-locking FEFO-ordered SELLABLE lots for a product.
+
+    Used by the POS catalog to show the next lot's price and the total
+    sellable stock without taking row locks: active, not expired and with
+    remaining stock. Read-only."""
+    today = await business_today(session)
+    result = await session.execute(
+        select(BatchStockBalance)
+        .where(
+            BatchStockBalance.product_id == product_id,
+            BatchStockBalance.remaining_quantity > 0,
+            BatchStockBalance.is_active.is_(True),
+            (BatchStockBalance.expiry_date.is_(None))
+            | (BatchStockBalance.expiry_date >= today),
+        )
+        .order_by(
+            BatchStockBalance.expiry_date.is_(None),
+            BatchStockBalance.expiry_date.asc(),
+            BatchStockBalance.created_at.asc(),
+            BatchStockBalance.id.asc(),
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def set_batch_active(
+    session: AsyncSession,
+    *,
+    product_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    is_active: bool,
+    actor,
+) -> BatchStockBalance:
+    """Toggle a lot's manual sellable flag (spec: inactive batch).
+
+    Inactive lots are excluded from FEFO sales but keep their stock, cost and
+    historical pricing. Audit + commit inside this transaction."""
+    from app.shared.audit.service import record_audit
+
+    result = await session.execute(
+        select(BatchStockBalance)
+        .where(
+            BatchStockBalance.id == batch_id,
+            BatchStockBalance.product_id == product_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    batch = result.scalar_one_or_none()
+    if batch is None:
+        raise NotFoundError("Batch not found for this product")
+    batch.is_active = bool(is_active)
+    await session.flush()
+    await record_audit(
+        session,
+        action="batch_active_changed",
+        module="stock",
+        user_id=actor.id,
+        entity_type="batch_stock_balance",
+        entity_id=batch.id,
+        new_values={
+            "product_id": str(product_id),
+            "batch_no": batch.batch_no,
+            "is_active": batch.is_active,
+        },
+    )
+    await session.commit()
+    return batch
 
 
 async def batch_in(
@@ -351,12 +429,22 @@ async def commit_sale_allocations(
     product: Product,
     quantity_base,
     allow_negative: bool = False,
-) -> tuple[Decimal, list[BatchStockBalance]]:
+    unit_price_for_batch=None,
+    factor: Decimal = Decimal("1"),
+) -> tuple[Decimal, list[BatchStockBalance], list[dict]]:
     """Allocate FEFO, deduct batch rows, append SaleItemBatch rows.
 
-    Returns (blended cost-per-base snapshot, consumed batch lots). The
-    customer price is INDEPENDENT of batch cost; the blended cost is only the
-    sale line's cost snapshot. Must run inside the sale transaction."""
+    Returns (blended cost-per-base snapshot, consumed batch lots, allocation
+    details). The customer price is INDEPENDENT of batch cost; the blended cost
+    is only the sale line's cost snapshot. Must run inside the sale transaction.
+
+    `unit_price_for_batch` is an async callable ``(batch) -> Decimal | None``
+    giving the sale price of ONE sold-UOM unit supplied by that lot. When given,
+    each allocation snapshots its own unit price and line amount (so a cart line
+    spanning several FEFO lots is priced per lot, not at a single price). When it
+    returns None the batch has no configured price for the sold UOM and the sale
+    is rejected (spec: no valid price). `factor` is the line UOM's
+    factor-to-base (sold qty = base qty / factor)."""
     needed = _q4(quantity_base)
     allocations = await allocate_fefo(
         session, product=product, quantity_base=needed, allow_negative=allow_negative
@@ -366,17 +454,45 @@ async def commit_sale_allocations(
     weighted = Decimal("0")
     taken = Decimal("0")
     consumed: list[BatchStockBalance] = []
+    details: list[dict] = []
+    line_factor = Decimal(factor or 1)
+    if line_factor <= 0:
+        line_factor = Decimal("1")
     for batch, amount in allocations:
         batch.remaining_quantity = _q4(batch.remaining_quantity - amount)
         refresh_batch_status(batch, today)
         cost = _q6(batch.unit_cost)
+        unit_price = None
+        if unit_price_for_batch is not None:
+            unit_price = await unit_price_for_batch(batch)
+            if unit_price is None:
+                raise ValidationError(
+                    f"No sale price configured for batch {batch.batch_no or '(unbatched)'}",
+                    field_errors={"items": "Price not configured"},
+                )
+            unit_price = _q2(unit_price)
+        sold_qty = _q4(amount / line_factor)
+        line_amount = _q2(sold_qty * unit_price) if unit_price is not None else None
         session.add(
             SaleItemBatch(
                 sale_item_id=sale_item.id,
                 batch_id=batch.id,
                 quantity_base=amount,
                 cost_per_base=cost,
+                batch_no_snapshot=batch.batch_no,
+                unit_price_snapshot=unit_price,
+                conversion_qty_snapshot=line_factor,
+                line_amount=line_amount,
             )
+        )
+        details.append(
+            {
+                "batch": batch,
+                "quantity_base": amount,
+                "sold_qty": sold_qty,
+                "unit_price": unit_price,
+                "line_amount": line_amount,
+            }
         )
         consumed.append(batch)
         remaining -= amount
@@ -390,7 +506,7 @@ async def commit_sale_allocations(
         taken += remaining
     await session.flush()
     blended = (weighted / taken).quantize(TWO, rounding=ROUND_HALF_UP) if taken > 0 else Decimal("0.00")
-    return blended, consumed
+    return blended, consumed, details
 
 
 async def restore_sale_batches(
@@ -410,8 +526,16 @@ async def restore_sale_batches(
         return
     result = await session.execute(
         select(SaleItemBatch)
+        .join(BatchStockBalance, BatchStockBalance.id == SaleItemBatch.batch_id, isouter=True)
         .where(SaleItemBatch.sale_item_id == sale_item.id)
-        .order_by(SaleItemBatch.created_at.desc(), SaleItemBatch.id.desc())
+        # Reverse-FEFO: refill the LATEST-expiring lot first (the last lot the
+        # sale consumed). `created_at` ties because a line's allocations are
+        # written in one flush, so expiry is the deterministic key.
+        .order_by(
+            BatchStockBalance.expiry_date.desc().nulls_last(),
+            SaleItemBatch.created_at.desc(),
+            SaleItemBatch.id.desc(),
+        )
     )
     allocations = list(result.scalars().all())
     if not allocations:

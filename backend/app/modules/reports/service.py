@@ -16,7 +16,7 @@ from sqlalchemy.orm import aliased
 from app.core.exceptions import ValidationError
 from app.modules.auth.models import User
 from app.modules.customers.models import Customer, CustomerDebt
-from app.modules.pos.models import Payment, Sale, SaleItem, SaleReturn, SaleReturnItem
+from app.modules.pos.models import Payment, Sale, SaleItem, SaleItemBatch, SaleReturn, SaleReturnItem
 from app.modules.reports.models import Expense
 from app.modules.reports.schemas import ExpenseCreate
 from app.modules.stock.models import (
@@ -83,6 +83,15 @@ class ReportsService:
             .correlate(Sale)
             .scalar_subquery()
         )
+        # Batch-snapshot COGS for the line (USD, base units): the exact per-lot
+        # cost recorded at checkout. NULL for pre-0034 lines — those fall back
+        # to the sale item's unit_cost snapshot in `_sales_row`.
+        batch_cost_usd = (
+            select(func.sum(SaleItemBatch.quantity_base * SaleItemBatch.cost_per_base))
+            .where(SaleItemBatch.sale_item_id == SaleItem.id)
+            .correlate(SaleItem)
+            .scalar_subquery()
+        )
         return (
             select(
                 Sale.id,
@@ -99,6 +108,7 @@ class ReportsService:
                 SaleItem.line_total,
                 SaleItem.returned_quantity,
                 SaleItem.unit_cost,
+                batch_cost_usd.label("batch_cost_usd"),
                 SaleItem.factor_to_base,
                 User.full_name.label("cashier_name"),
                 Sale.debt_amount,
@@ -136,10 +146,14 @@ class ReportsService:
         net_quantity = quantity - returned
         return_amount = (line_total * returned / quantity).quantize(Q2) if quantity else Q2 * 0
         net_sales = line_total - return_amount
-        # unit_cost is per BASE unit in the canonical USD cost currency;
-        # quantity is in the entered UOM. Reconcile the factor, then convert
-        # to the document (sale) currency so the report line matches the invoice.
-        cost_usd = unit_cost * net_quantity * factor
+        # COGS prefers the exact per-batch cost snapshot recorded at checkout
+        # (sale_item_batches), scaled for partial returns; legacy lines without
+        # batch snapshots fall back to the sale-item unit_cost × base quantity.
+        batch_cost = getattr(row, "batch_cost_usd", None)
+        if batch_cost is not None and quantity:
+            cost_usd = (Decimal(batch_cost) * net_quantity / quantity)
+        else:
+            cost_usd = unit_cost * net_quantity * factor
         cost = (
             (cost_usd * Decimal(row.exchange_rate or 1)).quantize(Q2)
             if str(row.currency or "USD").upper() == "KHR"
@@ -669,18 +683,50 @@ class ReportsService:
         damage_loss = await loss("DAMAGE")
         expiry_loss = await loss("EXPIRE")
 
+        # COGS per sold line: exact per-batch cost snapshot when present
+        # (sale_item_batches), else the sale item's unit_cost × base quantity.
+        batch_costs = (
+            select(
+                SaleItemBatch.sale_item_id.label("sale_item_id"),
+                func.sum(SaleItemBatch.quantity_base * SaleItemBatch.cost_per_base).label("batch_cost"),
+            )
+            .group_by(SaleItemBatch.sale_item_id)
+            .subquery()
+        )
         sold = await self.session.execute(
-            select(func.coalesce(func.sum(SaleItem.unit_cost * SaleItem.quantity * SaleItem.factor_to_base), 0))
+            select(
+                func.coalesce(
+                    func.sum(
+                        func.coalesce(
+                            batch_costs.c.batch_cost,
+                            SaleItem.unit_cost * SaleItem.quantity * SaleItem.factor_to_base,
+                        )
+                    ),
+                    0,
+                )
+            )
             .select_from(SaleItem)
             .join(Sale, Sale.id == SaleItem.sale_id)
+            .join(batch_costs, batch_costs.c.sale_item_id == SaleItem.id, isouter=True)
             .where(Sale.sale_date >= start_at, Sale.sale_date < end_at)
         )
         restocked = await self.session.execute(
-            select(func.coalesce(func.sum(SaleReturnItem.quantity * SaleItem.unit_cost * SaleItem.factor_to_base), 0))
+            select(
+                func.coalesce(
+                    func.sum(
+                        func.coalesce(
+                            batch_costs.c.batch_cost * SaleReturnItem.quantity / SaleItem.quantity,
+                            SaleReturnItem.quantity * SaleItem.unit_cost * SaleItem.factor_to_base,
+                        )
+                    ),
+                    0,
+                )
+            )
             .select_from(SaleReturnItem)
             .join(SaleItem, SaleItem.id == SaleReturnItem.sale_item_id)
             .join(SaleReturn, SaleReturn.id == SaleReturnItem.sale_return_id)
             .join(Sale, Sale.id == SaleItem.sale_id)
+            .join(batch_costs, batch_costs.c.sale_item_id == SaleItem.id, isouter=True)
             .where(
                 SaleReturnItem.restock.is_(True),
                 SaleReturn.return_date >= start_at,

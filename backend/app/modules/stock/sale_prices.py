@@ -42,6 +42,15 @@ def _batch_scope(batch_no: str | None) -> str | None:
     return text_value or None
 
 
+def _active_flag(row: dict) -> bool:
+    """POS-active flag of a UOM price row: an explicit False disables it, an
+    omitted/None value keeps the row active (default true)."""
+    value = row.get("is_active")
+    if value is None:
+        value = row.get("isActive")
+    return True if value is None else bool(value)
+
+
 async def _deactivate_matching_scope(session: AsyncSession, *, product_id, batch_no: str | None) -> None:
     """Retire the currently ACTIVE version of the SAME (product, batch scope)
     — other scopes (e.g. a batch-specific price) stay active."""
@@ -126,6 +135,7 @@ async def _validate_uom_prices(
                 "factor_to_base": factor,
                 "sale_price": price,
                 "is_default_sale": False,
+                "is_active": _active_flag(row),
             }
         )
     if default_index is None:
@@ -170,6 +180,7 @@ async def seed_initial_sale_price(session: AsyncSession, product: Product, *, ac
             factor_to_base=Decimal("1"),
             sale_price=row.sale_price,
             is_default_sale=True,
+            is_active=True,
         )
     )
     session.add(row)
@@ -190,6 +201,8 @@ def _serialize_uom_price(row: ProductSalePriceUom) -> dict:
         "salePrice": row.sale_price,
         "is_default_sale": row.is_default_sale,
         "isDefaultSale": row.is_default_sale,
+        "is_active": row.is_active,
+        "isActive": row.is_active,
     }
 
 
@@ -308,6 +321,7 @@ async def add_sale_price(
             "factor_to_base": Decimal("1"),
             "sale_price": amount,
             "is_default_sale": True,
+            "is_active": True,
         }
     ]
     default_price = next(
@@ -367,6 +381,101 @@ async def add_sale_price(
     )
     await session.commit()
     return _serialize_version(row, selling_price=product.selling_price)
+
+
+def uom_price_rows_from_conversions(
+    conversions,
+    *,
+    base_uom_id,
+    base_sale_price=None,
+) -> list[dict]:
+    """Map a product's normalized `uom_conversions` rows to the per-UOM price
+    rows of a sale-price version, preserving each row's POS-active flag.
+
+    `base_sale_price` overrides the base-UOM row price (a pure selling-price
+    change); a missing base row is synthesized so the version stays sellable
+    in the product base UOM. Rows without a positive price are dropped.
+    """
+    rows: list[dict] = []
+    base_key = str(base_uom_id)
+    has_base = False
+    for row in conversions or []:
+        uom_key = str(row.get("uom_id") or row.get("uomId") or "").strip()
+        if not uom_key:
+            continue
+        price_raw = row.get("sale_price", row.get("salePrice"))
+        if uom_key == base_key:
+            has_base = True
+            if base_sale_price is not None:
+                price_raw = base_sale_price
+        try:
+            factor = Decimal(str(row.get("factor_to_base", row.get("factorToBase", 1))))
+            price = Decimal(str(price_raw)).quantize(TWO, rounding=ROUND_HALF_UP)
+        except Exception:
+            continue
+        if price <= 0:
+            continue
+        rows.append(
+            {
+                "uom_id": uuid.UUID(uom_key),
+                "uom_symbol": row.get("uom_symbol") or row.get("uomSymbol"),
+                "factor_to_base": factor,
+                "sale_price": price,
+                "is_default_sale": bool(row.get("is_default_sale", row.get("isDefaultSale", False))),
+                "is_active": _active_flag(row),
+            }
+        )
+    if not has_base and base_sale_price is not None and Decimal(str(base_sale_price)) > 0:
+        rows.insert(
+            0,
+            {
+                "uom_id": uuid.UUID(base_key),
+                "uom_symbol": None,
+                "factor_to_base": Decimal("1"),
+                "sale_price": Decimal(str(base_sale_price)).quantize(TWO, rounding=ROUND_HALF_UP),
+                "is_default_sale": not any(row["is_default_sale"] for row in rows),
+                "is_active": True,
+            },
+        )
+    return rows
+
+
+async def general_version_differs(session: AsyncSession, product_id, rows: list[dict]) -> bool:
+    """True when the incoming UOM rows differ (price, factor, default-sale or
+    POS-active flag) from the product's active GENERAL price version — so the
+    product form only writes a new version when the Pricing table changed."""
+    result = await session.execute(
+        select(ProductSalePrice)
+        .where(
+            ProductSalePrice.product_id == product_id,
+            ProductSalePrice.is_active.is_(True),
+            ProductSalePrice.batch_no.is_(None),
+        )
+        .options(selectinload(ProductSalePrice.uom_prices))
+        .limit(1)
+    )
+    active = result.scalar_one_or_none()
+    if active is None:
+        return True
+    current = {
+        str(child.uom_id): (
+            Decimal(child.sale_price),
+            Decimal(child.factor_to_base),
+            bool(child.is_default_sale),
+            bool(child.is_active),
+        )
+        for child in active.uom_prices
+    }
+    incoming = {
+        str(row["uom_id"]): (
+            Decimal(row["sale_price"]),
+            Decimal(row["factor_to_base"]),
+            bool(row["is_default_sale"]),
+            bool(row["is_active"]),
+        )
+        for row in rows
+    }
+    return current != incoming
 
 
 async def activate_sale_price(session: AsyncSession, *, price_id, actor: User) -> dict:
@@ -487,9 +596,134 @@ async def active_version_uom_prices(
     if row is None:
         return {}
     children = await session.execute(
-        select(ProductSalePriceUom).where(ProductSalePriceUom.price_version_id == row.id)
+        select(ProductSalePriceUom).where(
+            ProductSalePriceUom.price_version_id == row.id,
+            ProductSalePriceUom.is_active.is_(True),
+        )
     )
     return {str(child.uom_id): Decimal(child.sale_price) for child in children.scalars().all()}
+
+
+# --------------------------------------------------- batch-aware POS pricing
+
+
+async def batch_pos_prices(session: AsyncSession, products) -> dict:
+    """Bulk FEFO-aware POS price + sellable stock for product rows.
+
+    One query for the eligible lots and one for the active price versions of
+    every product (never a per-product lookup, spec: no POS N+1). For each
+    product returns::
+
+        {
+            "sellable_stock": Decimal,   # sum of active, unexpired lots
+            "next_batch_no": str | None, # FEFO-first lot (the one POS consumes)
+            "prices": {uom_id: Decimal}, # that lot's active UOM prices
+            "base_price": Decimal | None,# prices[product.uom_id]
+            "price_configured": bool,    # a price exists for the base UOM
+        }
+
+    The lot's price version wins; when the lot has no scoped version the
+    product's general active version applies (a batch price, once configured,
+    fully replaces the general price for that lot)."""
+    from app.modules.stock.batch_service import business_today
+    from app.modules.stock.models import BatchStockBalance
+
+    ids = [p.id for p in products]
+    if not ids:
+        return {}
+    today = await business_today(session)
+
+    lot_rows = await session.execute(
+        select(BatchStockBalance)
+        .where(
+            BatchStockBalance.product_id.in_(ids),
+            BatchStockBalance.remaining_quantity > 0,
+            BatchStockBalance.is_active.is_(True),
+            (BatchStockBalance.expiry_date.is_(None))
+            | (BatchStockBalance.expiry_date >= today),
+        )
+        .order_by(
+            BatchStockBalance.expiry_date.is_(None),
+            BatchStockBalance.expiry_date.asc(),
+            BatchStockBalance.created_at.asc(),
+            BatchStockBalance.id.asc(),
+        )
+    )
+    fefo: dict = {}
+    sellable: dict = {}
+    lots_by_product: dict = {}
+    for batch in lot_rows.scalars().all():
+        sellable[batch.product_id] = (
+            sellable.get(batch.product_id, Decimal("0")) + Decimal(batch.remaining_quantity)
+        )
+        fefo.setdefault(batch.product_id, batch)
+        lots_by_product.setdefault(batch.product_id, []).append(batch)
+
+    version_rows = await session.execute(
+        select(ProductSalePrice)
+        .where(
+            ProductSalePrice.product_id.in_(ids),
+            ProductSalePrice.is_active.is_(True),
+        )
+        .options(selectinload(ProductSalePrice.uom_prices))
+    )
+    scopes_by_product: dict = {}
+    for version in version_rows.scalars().all():
+        scopes_by_product.setdefault(version.product_id, {})[str(version.batch_no or "")] = version
+
+    def _base_uom_price(version) -> Decimal | None:
+        if version is None:
+            return None
+        for child in version.uom_prices:
+            if child.is_active and child.is_default_sale and Decimal(child.sale_price) > 0:
+                return Decimal(child.sale_price)
+        return None
+
+    result: dict = {}
+    for product in products:
+        scopes = scopes_by_product.get(product.id, {})
+        batch = fefo.get(product.id)
+        version = None
+        if batch is not None:
+            version = scopes.get(str(batch.batch_no or ""))
+        if version is None:
+            version = scopes.get("")
+        prices: dict[str, Decimal] = {}
+        if version is not None:
+            prices = {
+                str(child.uom_id): Decimal(child.sale_price)
+                for child in version.uom_prices
+                if child.is_active
+            }
+        base_price = prices.get(str(product.uom_id))
+        if base_price is not None and base_price <= 0:
+            base_price = None
+        general_base = _base_uom_price(scopes.get(""))
+        # FEFO-ordered lots with this product's base-UOM price per lot — lets
+        # the POS cart allocate a quantity across lots and show the breakdown.
+        lots: list[dict] = []
+        for lot in lots_by_product.get(product.id, []):
+            lot_version = scopes.get(str(lot.batch_no or ""))
+            lot_base = _base_uom_price(lot_version)
+            if lot_base is None:
+                lot_base = general_base
+            lots.append(
+                {
+                    "batch_no": lot.batch_no,
+                    "remaining_quantity": Decimal(lot.remaining_quantity),
+                    "expiry_date": lot.expiry_date,
+                    "unit_price": lot_base,
+                }
+            )
+        result[product.id] = {
+            "sellable_stock": sellable.get(product.id, Decimal("0")),
+            "next_batch_no": batch.batch_no if batch is not None else None,
+            "prices": prices,
+            "base_price": base_price,
+            "price_configured": base_price is not None,
+            "batches": lots,
+        }
+    return result
 
 
 # ------------------------------------------------------------- cost history
@@ -638,6 +872,8 @@ def normalize_uom_conversions(
                 "cost_price": str(Decimal(str(cost_price))) if cost_price is not None else None,
                 "sale_price": str(Decimal(str(sale_price))),
                 "is_default_sale": False,
+                # POS-active flag per UOM (default: active).
+                "is_active": _active_flag(row),
             }
         )
         if bool(row.get("is_default_sale", row.get("isDefaultSale", False))) and default_index is None:
@@ -671,6 +907,7 @@ def normalize_uom_conversions(
                 "cost_price": None,
                 "sale_price": str(Decimal(str(base_sale_price))),
                 "is_default_sale": not has_default,
+                "is_active": True,
             }
         )
     return cleaned

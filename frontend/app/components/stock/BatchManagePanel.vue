@@ -41,6 +41,7 @@ const rows = ref<ProductBatchRow[]>([])
 const pagination = ref<PaginationState>({ pageIndex: 0, pageSize: 50 })
 
 const canExpire = computed(() => auth.canAccessPage('stock.expire'))
+const canUpdate = computed(() => auth.canAccessPage('product.update'))
 
 const productRecord = computed(() => {
   const id = String(props.product?.id || '')
@@ -90,6 +91,36 @@ const filteredRows = computed(() => {
 
 function bumpPricingRail() {
   recordAccess?.set?.('__batchPricingEpoch', Date.now())
+}
+
+/** Mark a lot inactive (or active): inactive lots are never sold on POS but
+ *  keep their stock and historical pricing. */
+async function toggleBatchActive(row: ProductBatchRow) {
+  if (!props.product?.id || props.disabled || busyId.value) return
+  const nextActive = row.isActive === false
+  busyId.value = row.id
+  try {
+    await stockQueries.setBatchActive(String(props.product.id), row.id, nextActive)
+    toast.add({
+      title: t(nextActive ? 'core.rowActions.activate' : 'core.rowActions.deactivate'),
+      color: 'success',
+    })
+    await loadBatches()
+    void store.fetchList('products')
+    bumpPricingRail()
+  }
+  catch (error: unknown) {
+    if (!isApiErrorHandled(error)) {
+      toast.add({
+        title: t('app.ui.operationFailed'),
+        description: apiErrorMessage(error, t('app.ui.operationFailed')),
+        color: 'error',
+      })
+    }
+  }
+  finally {
+    busyId.value = ''
+  }
 }
 
 async function expireBatch(row: ProductBatchRow) {
@@ -196,6 +227,26 @@ const columns = computed<TableColumn<ProductBatchRow & Record<string, unknown>>[
     enableSorting: false,
     cell: ({ row }) => h('span', { class: 'whitespace-nowrap tabular-nums text-muted' },
       row.original.expiryDate ? formatDate(row.original.expiryDate) : '—'),
+  },
+  {
+    id: 'active',
+    header: '',
+    enableSorting: false,
+    meta: { class: { td: 'w-28 text-end whitespace-nowrap', th: 'w-28' } },
+    cell: ({ row }) => !canUpdate.value
+      ? h('span')
+      : h(UButton, {
+          size: 'xs',
+          color: row.original.isActive === false ? 'success' : 'warning',
+          variant: 'subtle',
+          icon: row.original.isActive === false ? 'i-lucide-circle-check' : 'i-lucide-circle-off',
+          label: row.original.isActive === false
+            ? t('core.rowActions.activate')
+            : t('core.rowActions.deactivate'),
+          loading: busyId.value === row.original.id,
+          disabled: props.disabled || busyId.value === row.original.id,
+          onClick: () => { void toggleBatchActive(row.original) },
+        }),
   },
   {
     id: 'actions',

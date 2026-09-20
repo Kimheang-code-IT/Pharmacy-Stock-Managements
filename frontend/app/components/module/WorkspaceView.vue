@@ -1048,6 +1048,14 @@ async function setRowStatus(row: Record<string, unknown>, active: boolean) {
 /** Delivery row action: move a Processing note to Completed (audited server-side). */
 async function completeDelivery(row: Record<string, unknown>) {
   if (!row.id || busyId.value) return
+  const ok = await confirm({
+    kind: 'generic',
+    titleKey: 'app.delivery.confirmCompleteTitle',
+    descriptionKey: 'app.delivery.confirmCompleteDescription',
+    confirmLabelKey: 'app.delivery.markCompleted',
+    confirmColor: 'primary',
+  })
+  if (!ok) return
   const id = String(row.id)
   busyId.value = id
   try {

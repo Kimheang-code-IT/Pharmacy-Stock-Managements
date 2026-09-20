@@ -343,6 +343,9 @@ async def product_batches(
                 "document_no": batch.document_no,
                 "created_at": batch.created_at,
                 "status": computed_status,
+                # Manual sellable flag: inactive lots are excluded from POS FEFO.
+                "is_active": batch.is_active,
+                "isActive": batch.is_active,
                 "purchase_date": purchase_date,
                 "purchase_uom": purchase_uom_by_lot.get((batch_key, expiry)) or base_uom_symbol,
                 "currency": currency,

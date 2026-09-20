@@ -326,6 +326,7 @@ export function createMockStockQueryRepository(): StockQueryRepository {
             : Number(generalPrice?.salePrice ?? product?.salePrice ?? 0),
           salePriceId: latestPrice?.id ? String(latestPrice.id) : null,
           pricingActive: activePrice != null,
+          isActive: mockBatchActive.get(key) ?? true,
         })
       }
       const filtered = rows
@@ -468,8 +469,29 @@ export function createMockStockQueryRepository(): StockQueryRepository {
       target.isActive = false
       return mockLatency(productSalePriceRows(String(target.productId)).find(row => String(row.id) === String(priceId))!)
     },
+
+    async setBatchActive(productId, batchId, isActive): Promise<ProductBatchRow> {
+      mockBatchActive.set(String(batchId), isActive)
+      return mockLatency({
+        id: String(batchId),
+        productId: String(productId),
+        batchNo: '',
+        expiryDate: null,
+        remainingQty: 0,
+        receivedQty: 0,
+        unitCost: 0,
+        supplier: '',
+        purchaseNo: '',
+        createdDate: '',
+        status: 'Active',
+        isActive,
+      })
+    },
   }
 }
+
+/** In-memory batch sellable overrides shared by the mock batch reads/writes. */
+const mockBatchActive = new Map<string, boolean>()
 
 function lastNDays(n: number): string[] {
   const days: string[] = []

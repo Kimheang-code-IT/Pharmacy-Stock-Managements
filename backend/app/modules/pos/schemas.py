@@ -32,6 +32,8 @@ class UomConversionOut(BaseModel):
     cost_price: Decimal | None = None
     sale_price: Decimal | None = None
     is_default_sale: bool = False
+    # POS-active flag of the Pricing row (inactive rows are not offered).
+    is_active: bool = True
 
 
 class POSProductOut(BaseModel):
@@ -43,6 +45,14 @@ class POSProductOut(BaseModel):
     category_name: str | None = None
     selling_price: Decimal
     quantity: Decimal = Decimal("0")
+    # Sellable stock = sum of active, unexpired lots (spec: POS product card).
+    sellable_stock: Decimal = Decimal("0")
+    sellableStock: Decimal = Decimal("0")
+    # FEFO-first lot and whether a sale price exists for the base UOM.
+    next_batch_no: str | None = None
+    nextBatchNo: str | None = None
+    price_configured: bool = True
+    priceConfigured: bool = True
     image_object_key: str | None
     image_url: str | None = None
     uom_id: UUID | None = None
@@ -54,6 +64,31 @@ class POSProductOut(BaseModel):
 
 
 # --------------------------------------------------------------------- sale
+
+
+class BatchAllocationRequest(BaseModel):
+    """Optional client batch-allocation hint (spec 5.10). The server NEVER
+    trusts it: FEFO allocation and per-batch pricing are recomputed
+    authoritatively at checkout; the field is accepted so clients can send the
+    allocation they displayed and is validated for shape only."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    batch_id: UUID | None = Field(
+        default=None,
+        validation_alias=AliasChoices("batch_id", "batchId"),
+    )
+    batch_no: str | None = Field(
+        default=None,
+        max_length=100,
+        validation_alias=AliasChoices("batch_no", "batchNo"),
+    )
+    qty: Decimal = Field(gt=0)
+    unit_price: Decimal | None = Field(
+        default=None,
+        gt=0,
+        validation_alias=AliasChoices("unit_price", "unitPrice"),
+    )
 
 
 class SaleItemRequest(BaseModel):
@@ -95,6 +130,9 @@ class SaleItemRequest(BaseModel):
         gt=0,
         validation_alias=AliasChoices("factor_to_base", "factorToBase"),
     )
+    # Server recomputes FEFO allocation + per-batch pricing; accepted for
+    # client/server agreement and validated for shape only.
+    allocations: list[BatchAllocationRequest] = Field(default_factory=list)
 
 
 class SaleCreateRequest(BaseModel):

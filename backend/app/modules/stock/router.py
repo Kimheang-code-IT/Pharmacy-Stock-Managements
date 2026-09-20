@@ -13,6 +13,7 @@ from app.api.deps import (
 )
 from app.modules.auth.models import User
 from app.modules.stock.schemas import (
+    BatchActiveUpdate,
     ProductCreate,
     ProductUpdate,
     PurchaseReturnRequest,
@@ -496,6 +497,38 @@ async def product_batches(
         limit=params.limit,
     )
     return envelope(rows, list_meta(params.page, params.limit, total))
+
+
+@router.patch("/products/{product_id}/batches/{batch_id}")
+async def update_product_batch(
+    product_id: UUID,
+    batch_id: UUID,
+    payload: BatchActiveUpdate,
+    db: AsyncSession = Depends(get_db_session),
+    actor: User = Depends(require_permission("product.update")),
+) -> dict:
+    """Toggle a batch lot's manual sellable flag (spec: inactive batch).
+
+    The only write path on a batch: quantity/cost stay immutable (Stock In /
+    operations own them). An inactive lot keeps its stock and pricing but is
+    never allocated to a new POS sale."""
+    from app.modules.stock import batch_service
+
+    batch = await batch_service.set_batch_active(
+        db,
+        product_id=product_id,
+        batch_id=batch_id,
+        is_active=payload.is_active,
+        actor=actor,
+    )
+    return envelope(
+        {
+            "id": batch.id,
+            "batch_no": batch.batch_no,
+            "is_active": batch.is_active,
+            "isActive": batch.is_active,
+        }
+    )
 
 
 @router.get("/movements/{movement_id}/invoice")
