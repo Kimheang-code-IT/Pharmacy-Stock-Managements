@@ -65,7 +65,13 @@ async def send_message(
             response = await client.post(url, json=payload)
             if response.status_code == 200:
                 return True
-            logger.error("Telegram sendMessage failed: HTTP %s", response.status_code)
+            # Log Telegram's own description so an operator can tell an invalid
+            # token (401) from "chat not found" (400) or a blocked bot (403).
+            logger.error(
+                "Telegram sendMessage failed: HTTP %s %s",
+                response.status_code,
+                response.text[:500],
+            )
             return False
     except httpx.HTTPError as exc:
         logger.error("Telegram sendMessage error: %s", exc)
