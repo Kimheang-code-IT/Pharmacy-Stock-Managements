@@ -291,7 +291,12 @@ function productTabs(module: ModuleConfig, options: ModuleDocumentTabsOptions): 
       label: 'General',
       sections: generalSections,
     },
-    {
+  ]
+
+  // Pricing / Batches / Barcode need the saved product (lots, versions, barcode),
+  // so they appear only once the product exists (detail/edit).
+  if (!options.isCreate) {
+    tabs.push({
       id: 'pricing',
       labelKey: 'app.stock.tabPricing',
       label: 'Pricing',
@@ -307,10 +312,7 @@ function productTabs(module: ModuleConfig, options: ModuleDocumentTabsOptions): 
           },
         ],
       }],
-    },
-  ]
-
-  if (!options.isCreate) {
+    })
     tabs.push({
       id: 'batches',
       labelKey: 'app.stock.tabBatches',

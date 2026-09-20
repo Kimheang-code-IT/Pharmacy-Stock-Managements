@@ -74,9 +74,9 @@ describe('product document tabs (spec §5.9)', () => {
     expect(keys).not.toContain('expiryDate')
   })
 
-  it('create mode hides Barcode, Expire Date/batches and the Movements tab', () => {
+  it('create mode hides Pricing, Barcode, Expire Date/batches and the Movements tab', () => {
     const tabs = moduleDocumentTabs(productModule, { isCreate: true })
-    expect(tabs.map(tab => tab.id)).toEqual(['general', 'pricing'])
+    expect(tabs.map(tab => tab.id)).toEqual(['general'])
 
     const sections = tabs.flatMap(tab => tab.sections)
     expect(sections.some(section => section.id === 'stock-expire')).toBe(false)
@@ -84,6 +84,7 @@ describe('product document tabs (spec §5.9)', () => {
 
     const keys = sections.flatMap(section => section.fields.map(field => field.key))
     expect(keys).not.toContain('barcode')
+    expect(keys).not.toContain('uomConversions')
     expect(keys).not.toContain('expiryDate')
     expect(keys).not.toContain('trackBatch')
     // Editable create inputs stay.

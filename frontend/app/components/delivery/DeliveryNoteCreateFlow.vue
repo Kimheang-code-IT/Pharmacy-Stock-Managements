@@ -4,7 +4,6 @@ import type { ModuleTable } from '~/config/modules'
 import type { DocumentTabSchema } from '~/types/stock-pos/common'
 import { useDeliveryCommands } from '~/repositories/index'
 import { collectionOptionsEndpoint } from '~/utils/module/document-tabs'
-import { formatDate } from '~/utils/format/format-service'
 import {
   invoiceDeliveryStatusLabelKey,
   normalizeDeliverableInvoice,
@@ -151,7 +150,11 @@ function applyEditNote(note: AppRecord) {
   model.note = String(note.note || '')
   model.driverName = String(note.driverName || '')
   model.vehicleNo = String(note.vehicleNo || '')
-  model.lines = noteSales(note).map(link => ({ saleId: link.saleId, invoiceDate: '', invoiceStatus: '' }))
+  model.lines = noteSales(note).map(link => ({
+    saleId: link.saleId,
+    invoiceNo: link.invoiceNo,
+    invoiceStatus: '',
+  }))
 }
 
 onMounted(async () => {
@@ -172,7 +175,7 @@ onMounted(async () => {
       const invoice = invoiceById.value.get(preselect)
       if (invoice) {
         model.customerId = invoice.customerId
-        model.lines = [{ saleId: preselect, invoiceDate: '', invoiceStatus: '' }]
+        model.lines = [{ saleId: preselect, invoiceNo: invoice.invoiceNo, invoiceStatus: '' }]
       }
       else toast.add({ title: t('app.delivery.noDeliverableSales'), color: 'warning' })
     }
@@ -191,14 +194,23 @@ const invoiceById = computed(() =>
 function invoiceOptionsFor(row: Record<string, unknown>): Array<{ label: string, value: string }> {
   const customerId = String(model.customerId || '')
   const rows = Array.isArray(model.lines) ? model.lines as Array<Record<string, unknown>> : []
+  const own = String(row.saleId || '')
   const taken = new Set(rows
     .filter(other => other !== row)
     .map(other => String(other.saleId || ''))
     .filter(Boolean))
-  return invoices.value
-    .filter(invoice => !customerId || invoice.customerId === customerId)
-    .filter(invoice => !taken.has(invoice.saleId))
+  const items = invoices.value
+    // The row's own invoice is always offered (so the picker shows its number,
+    // never the raw UUID) even when it is no longer "deliverable" or the
+    // customer filter would drop it.
+    .filter(invoice => invoice.saleId === own
+      || ((!customerId || invoice.customerId === customerId) && !taken.has(invoice.saleId)))
     .map(invoice => ({ label: invoice.invoiceNo, value: invoice.saleId }))
+  if (own && !items.some(item => item.value === own)) {
+    const stored = String(row.invoiceNo || '').trim()
+    items.unshift({ label: stored || own, value: own })
+  }
+  return items
 }
 
 const linesTable = computed<ModuleTable>(() => ({
@@ -216,8 +228,7 @@ const linesTable = computed<ModuleTable>(() => ({
       width: 'w-80 min-w-64',
       optionItems: row => invoiceOptionsFor(row),
     },
-    // Auto-filled snapshots of the selected invoice (display only).
-    { key: 'invoiceDate', label: t('app.fields.date'), type: 'text', computed: true, width: 'w-32 min-w-28' },
+    // Auto-filled snapshot of the selected invoice (display only).
     { key: 'invoiceStatus', label: t('app.fields.status'), type: 'text', computed: true, width: 'w-36 min-w-32' },
   ],
 }))
@@ -316,7 +327,7 @@ watch(() => model.lines, (rows) => {
     seen.add(saleId)
     const row = {
       saleId,
-      invoiceDate: formatDate(invoice.date),
+      invoiceNo: invoice.invoiceNo,
       invoiceStatus: t(invoiceDeliveryStatusLabelKey(invoice.deliveryStatus)),
     }
     if (JSON.stringify(row) !== JSON.stringify(raw)) changed = true
@@ -339,8 +350,9 @@ const canSubmit = computed(() => Boolean(
 
 async function save(confirm: boolean) {
   if (!canSubmit.value || saving.value) return
-  if (confirm && !props.canConfirm) return
   if (isEdit.value && !props.canUpdate) return
+  // A single Submit: confirm when the user has the permission, else just save.
+  const doConfirm = confirm && props.canConfirm
   saving.value = true
   try {
     const first = selectedInvoices.value[0]
@@ -363,7 +375,7 @@ async function save(confirm: boolean) {
         note: String(model.note || '').trim() || null,
         lines,
       })
-      if (confirm) record = await deliveryCommands.setDeliveryStatus(String(record.id), 'confirm')
+      if (doConfirm) record = await deliveryCommands.setDeliveryStatus(String(record.id), 'confirm')
       toast.add({ title: t('app.delivery.updated'), color: 'success' })
       emit('created', record)
       return
@@ -379,7 +391,7 @@ async function save(confirm: boolean) {
       deliveryDate: String(model.deliveryDate || '').trim() || null,
       deliveryFee: Number(model.deliveryFee ?? 0) > 0 ? Number(model.deliveryFee) : null,
       note: String(model.note || '').trim() || null,
-      confirm,
+      confirm: doConfirm,
       lines,
     })
     toast.add({
@@ -416,37 +428,13 @@ async function save(confirm: boolean) {
     :pending="loading"
     :saving="saving"
     :can-save="canSubmit && canSave"
+    :confirm-save="canSave"
     :is-create="!isEdit"
     :show-tabs="false"
-    :show-save="false"
     content-wide
     :show-cancel="true"
     list-to="/delivery-notes"
     :can-export="false"
     @save="save(true)"
-  >
-    <template #actions>
-      <UButton
-        v-if="canSave"
-        color="neutral"
-        variant="soft"
-        icon="i-lucide-save"
-        size="sm"
-        :label="isEdit ? t('app.ui.save') : t('app.delivery.saveDraft')"
-        :loading="saving"
-        :disabled="!canSubmit"
-        @click="save(false)"
-      />
-      <UButton
-        v-if="canSave && canConfirm"
-        color="primary"
-        icon="i-lucide-check-circle-2"
-        size="sm"
-        :label="t('app.delivery.saveConfirm')"
-        :loading="saving"
-        :disabled="!canSubmit"
-        @click="save(true)"
-      />
-    </template>
-  </DocumentAppDocumentPage>
+  />
 </template>

@@ -251,7 +251,7 @@ async def test_only_positive_qty_expiry_tracked_lots_alert(client, db_session, a
 async def test_failed_delivery_records_nothing_and_retries(client, db_session, alert_settings):
     """No state row when nothing was delivered: the next sweep retries."""
     tag = uuid.uuid4().hex[:8]
-    await make_verified_telegram_user(db_session, tag)
+    user = await make_verified_telegram_user(db_session, tag)
     today = date.today()
     product = await make_expiry_lot(
         client, await admin_headers(client), tag=tag, sku=f"NR-{tag}",
@@ -269,7 +269,10 @@ async def test_failed_delivery_records_nothing_and_retries(client, db_session, a
     second = FakeSender()
     summary = await ExpiryAlertService(db_session).scan_and_send(sender=second, today=today)
     assert len(messages_for(second, f"NR-{tag}")) == 2
-    assert all(chat_id.startswith("100") for chat_id, _t in second.calls)
+    # Other tests leave verified recipients in the shared DB, so only assert
+    # this test's user received the alert.
+    nr_recipients = {chat_id for chat_id, text in second.calls if f"NR-{tag}" in text}
+    assert user.telegram_chat_id in nr_recipients
     assert len(await state_rows(db_session, product["id"])) == 2
     assert summary["levels"] == {1: 1, 2: 1}
 

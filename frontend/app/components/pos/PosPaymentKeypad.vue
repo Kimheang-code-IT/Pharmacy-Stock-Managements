@@ -10,11 +10,14 @@ import type { PrintPaperSize } from '~/utils/print/html'
  */
 const props = withDefaults(defineProps<{
   total: number
+  /** Delivery fee included in `total` (0 when no delivery). */
+  deliveryPrice?: number
   currency?: 'USD' | 'KHR'
   paymentMethod?: string
   busy?: boolean
   disabled?: boolean
 }>(), {
+  deliveryPrice: 0,
   currency: 'USD',
   paymentMethod: 'Cash',
   busy: false,
@@ -47,6 +50,8 @@ const amount = computed(() => {
 })
 const change = computed(() => Math.max(0, amount.value - Number(props.total || 0)))
 const outstanding = computed(() => Math.max(0, Number(props.total || 0) - amount.value))
+/** Sale amount before the delivery fee (only shown when delivery is added). */
+const subtotal = computed(() => Math.max(0, Number(props.total || 0) - Number(props.deliveryPrice || 0)))
 
 function prefill() {
   entry.value = isCredit.value ? '0' : String(Number(props.total || 0))
@@ -151,6 +156,19 @@ function confirm() {
       />
     </div>
 
+    <div
+      v-if="Number(deliveryPrice) > 0"
+      class="grid gap-1 rounded-sm bg-elevated/60 px-3 py-2 text-sm"
+    >
+      <div class="flex items-center justify-between">
+        <span class="text-muted">{{ t('app.pos.subtotal') }}</span>
+        <span class="tabular-nums">{{ money(subtotal) }}</span>
+      </div>
+      <div class="flex items-center justify-between">
+        <span class="text-muted">{{ t('app.pos.deliveryPrice') }}</span>
+        <span class="tabular-nums">{{ money(deliveryPrice) }}</span>
+      </div>
+    </div>
     <div class="flex items-center justify-between rounded-sm bg-elevated/60 px-3 py-2 text-base">
       <span class="text-muted">{{ t('app.pos.total') }}</span>
       <span class="font-semibold tabular-nums">{{ money(total) }}</span>

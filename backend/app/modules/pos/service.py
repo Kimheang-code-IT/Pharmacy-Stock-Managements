@@ -1207,6 +1207,7 @@ class POSService:
                 sale_return_id=sale_return.id,
                 sale_item_id=sale_item.id,
                 product_id=sale_item.product_id,
+                product_name=sale_item.product_name,
                 quantity=return_item.quantity,
                 refund_amount=refund,
                 restock=return_item.restock,

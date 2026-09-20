@@ -267,7 +267,10 @@ export function createMockStockQueryRepository(): StockQueryRepository {
         if (!batchNo) continue
         const qty = Number(row.quantity ?? 0)
         const date = String(row.date ?? row.createdAt ?? '').slice(0, 10)
-        const key = `${String(productId)}:${batchNo}`
+        // Batch identity = product + batch_no + expiry (a different expiry is a
+        // distinct lot), matching the backend.
+        const expiryKey = String(row.expiryDate ?? '').trim()
+        const key = `${String(productId)}:${batchNo}:${expiryKey}`
         let lot = lots.get(key)
         if (!lot) {
           lot = { batchNo, expiryDates: [], received: 0, remaining: 0, unitCost: null, supplier: '', purchaseNo: '', createdDate: date }

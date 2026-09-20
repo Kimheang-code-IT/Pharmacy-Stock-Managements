@@ -25,8 +25,12 @@ class ProductCreate(BaseModel):
         default=None, validation_alias=AliasChoices("supplier_id", "supplierId")
     )
     cost_price: Decimal = Field(default=Decimal("0.00"), ge=0)
+    # Optional on create: the SPA can create the product from the General tab
+    # alone (the Pricing tab appears once the product is opened) and set the
+    # sale price on its Pricing tab afterwards.
     selling_price: Decimal = Field(
-        gt=0,
+        default=Decimal("0.00"),
+        ge=0,
         validation_alias=AliasChoices("selling_price", "salePrice"),
     )
     # Pricing rows (spec 4.2 / §2.1.3 products); validated by the service.

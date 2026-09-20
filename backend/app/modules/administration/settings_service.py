@@ -15,7 +15,9 @@ from typing import Any
 from sqlalchemy import delete, update
 
 from app.modules.administration.service import SETTING_GROUPS, AdministrationService
-from app.modules.customers.models import CustomerDebt
+from app.modules.brands.models import Brand
+from app.modules.categories.models import Category
+from app.modules.customers.models import Customer, CustomerDebt
 from app.modules.delivery.models import DeliveryNote, DeliveryNoteItem, DeliveryNoteSale
 from app.modules.pos.models import (
     Payment,
@@ -25,8 +27,10 @@ from app.modules.pos.models import (
     SaleReturn,
     SaleReturnItem,
 )
+from app.modules.reports.models import Expense
 from app.modules.stock.models import (
     BatchStockBalance,
+    Product,
     PurchaseReturn,
     PurchaseReturnItem,
     StockBalance,
@@ -34,8 +38,16 @@ from app.modules.stock.models import (
     StockTransaction,
     StockTransactionItem,
 )
-from app.modules.suppliers.models import SupplierDebt
+from app.modules.suppliers.models import Supplier, SupplierDebt
+from app.modules.telegram.models import TelegramExpiryAlertState
+from app.modules.uoms.models import UOM
+from app.shared.audit.models import AuditLog
 from app.shared.audit.service import record_audit
+from app.shared.documents import (
+    DocumentSequence,
+    allocate_document_number,
+    ensure_default_sequences,
+)
 
 _MASK = "********"
 _DEFAULT_SHOP_NAME = "Yoeun Sokhon Pharmacy"
@@ -127,19 +139,21 @@ async def clear_transactions(service: AdministrationService, *, actor: Any) -> d
     customers, suppliers, categories, settings) and document sequences are kept.
     """
     session = service.session
-    # Children before parents so foreign keys never block the delete.
+    # Children before parents so foreign keys never block the delete. Delivery
+    # note lines reference sale_items/sales (RESTRICT), so the delivery tables
+    # must go before SaleItem/Sale.
     for model in (
         SaleItemBatch,
         SaleReturnItem,
         SaleReturn,
-        SaleItem,
-        Sale,
         DeliveryNoteItem,
         DeliveryNoteSale,
         DeliveryNote,
         Payment,
         CustomerDebt,
         SupplierDebt,
+        SaleItem,
+        Sale,
         PurchaseReturnItem,
         PurchaseReturn,
         StockMovement,
@@ -161,6 +175,77 @@ async def clear_transactions(service: AdministrationService, *, actor: Any) -> d
     )
     await session.commit()
     return {"cleared": True, "message": "Sales and purchase transactions cleared"}
+
+
+async def reset_all_data(service: AdministrationService, *, actor: Any) -> dict:
+    """Wipe every business record and re-seed the bootstrap defaults.
+
+    Deletes all transaction history plus master data (products, categories,
+    brands, customers, suppliers, expenses, audit logs) and resets the document
+    sequences. The current administrator, roles/permissions, system settings and
+    the unit-of-measure catalogue are kept so the app stays usable; the walk-in
+    customer is re-created for POS.
+    """
+    session = service.session
+    # 1. Transactions and their dependent rows (children before parents).
+    for model in (
+        SaleItemBatch,
+        SaleReturnItem,
+        SaleReturn,
+        DeliveryNoteItem,
+        DeliveryNoteSale,
+        DeliveryNote,
+        Payment,
+        CustomerDebt,
+        SupplierDebt,
+        SaleItem,
+        Sale,
+        PurchaseReturnItem,
+        PurchaseReturn,
+        StockMovement,
+        StockTransactionItem,
+        StockTransaction,
+        BatchStockBalance,
+        TelegramExpiryAlertState,
+        Expense,
+        AuditLog,
+    ):
+        await session.execute(delete(model))
+
+    # 2. Master data. Products cascade their balances / sale-price versions and
+    #    must go before suppliers/categories/brands (SET NULL) and UOMs (RESTRICT).
+    await session.execute(delete(Product))
+    await session.execute(delete(Customer))
+    await session.execute(delete(Supplier))
+    await session.execute(delete(Category))
+    await session.execute(delete(Brand))
+    # UOMs are Setup data: clear them too so only Administration data remains.
+    await session.execute(delete(UOM))
+
+    # 3. Reset the document counters, then re-seed the bootstrap rows so the
+    #    app is immediately usable again.
+    await session.execute(update(DocumentSequence).values(next_number=1))
+    await ensure_default_sequences(session)
+    session.add(
+        Customer(
+            code=await allocate_document_number(session, "CUSTOMER"),
+            name="Walk-in Customer",
+            status="ACTIVE",
+            is_walk_in=True,
+        )
+    )
+    await session.flush()
+    await record_audit(
+        session,
+        action="all_data_reset",
+        module="administration",
+        user_id=actor.id,
+        entity_type="system",
+        entity_id=actor.id,
+        new_values={"scope": "all_business_data"},
+    )
+    await session.commit()
+    return {"message": "All business data has been reset", "requiresReauth": False}
 
 
 # ------------------------------------------------------------- App Config

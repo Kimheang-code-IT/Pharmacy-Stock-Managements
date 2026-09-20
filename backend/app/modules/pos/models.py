@@ -65,8 +65,10 @@ class SaleItem(Base):
     sale_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("sales.id", ondelete="CASCADE"), nullable=False
     )
-    product_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
+    # Product link is nullable so a product can be hard-deleted while the sale
+    # history survives through the name/sku/barcode snapshots.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"), nullable=True
     )
     product_name: Mapped[str] = mapped_column(String(200), nullable=False)
     # Barcode snapshot (operational identifier); sku is legacy-optional.
@@ -115,8 +117,10 @@ class SaleItemBatch(Base):
     sale_item_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("sale_items.id", ondelete="CASCADE"), nullable=False
     )
-    batch_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("batch_stock_balances.id", ondelete="RESTRICT"), nullable=False
+    # Batch link is nullable so a product's batches can be removed on hard
+    # delete while the sale line keeps its allocation snapshot.
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("batch_stock_balances.id", ondelete="SET NULL"), nullable=True
     )
     quantity_base: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     # Cost-per-BASE-unit snapshot (6dp to match batch_stock_balances.unit_cost).
@@ -162,9 +166,10 @@ class SaleReturnItem(Base):
     sale_item_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("sale_items.id", ondelete="RESTRICT"), nullable=False
     )
-    product_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"), nullable=True
     )
+    product_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     refund_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     restock: Mapped[bool] = mapped_column(nullable=False, default=True)

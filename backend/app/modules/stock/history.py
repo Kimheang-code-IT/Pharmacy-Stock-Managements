@@ -96,7 +96,7 @@ async def product_history(
                 "type": _display_type(movement.movement_type),
                 "kind": movement_kind(movement.movement_type),
                 "qty": movement.quantity_delta,
-                "product": product.name if product else "",
+                "product": movement.product_name or (product.name if product else ""),
                 "unit": movement.uom_symbol
                 or (product.uom_ref.symbol if product and product.uom_ref else None),
                 "unit_price": movement.unit_cost,
@@ -231,13 +231,14 @@ async def product_batches(
         for tx in tx_rows.scalars().all():
             purchase_by_doc[str(tx.document_no)] = (tx.transaction_date, str(tx.currency or "USD"))
 
-    # Purchase-line UOM for each (product, batch_no) from STOCK_IN lines.
+    # Purchase-line UOM for each (product, batch_no, expiry) from STOCK_IN lines.
     batch_nos = [str(batch.batch_no) for batch, _ in batch_rows]
-    purchase_uom_by_batch: dict[str, str] = {}
+    purchase_uom_by_lot: dict[tuple[str, object], str] = {}
     if batch_nos:
         item_rows = await session.execute(
             select(
                 StockTransactionItem.batch_no,
+                StockTransactionItem.expiry_date,
                 StockTransactionItem.uom_symbol,
                 StockTransactionItem.entered_uom_symbol,
                 StockTransaction.transaction_date,
@@ -250,11 +251,11 @@ async def product_batches(
             )
             .order_by(StockTransaction.transaction_date.asc())
         )
-        for batch_no, uom_symbol, entered_uom, _tx_date in item_rows.all():
-            key = str(batch_no or "").strip()
-            if not key or key in purchase_uom_by_batch:
+        for batch_no, expiry, uom_symbol, entered_uom, _tx_date in item_rows.all():
+            key = (str(batch_no or "").strip(), expiry)
+            if not key[0] or key in purchase_uom_by_lot:
                 continue
-            purchase_uom_by_batch[key] = str(entered_uom or uom_symbol or base_uom_symbol or "")
+            purchase_uom_by_lot[key] = str(entered_uom or uom_symbol or base_uom_symbol or "")
 
     # Active sale-price versions scoped to these batches (+ general fallback).
     price_rows = await session.execute(
@@ -343,7 +344,7 @@ async def product_batches(
                 "created_at": batch.created_at,
                 "status": computed_status,
                 "purchase_date": purchase_date,
-                "purchase_uom": purchase_uom_by_batch.get(batch_key) or base_uom_symbol,
+                "purchase_uom": purchase_uom_by_lot.get((batch_key, expiry)) or base_uom_symbol,
                 "currency": currency,
                 "sale_price": sale_price,
                 "sale_price_id": sale_price_id,

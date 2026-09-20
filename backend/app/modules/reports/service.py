@@ -89,8 +89,8 @@ class ReportsService:
                 Sale.sale_date,
                 Sale.invoice_no,
                 Customer.name.label("customer_name"),
-                Product.name.label("product_name"),
-                Product.sku,
+                SaleItem.product_name.label("product_name"),
+                SaleItem.sku,
                 SaleItem.id.label("sale_item_id"),
                 SaleItem.product_id.label("product_id"),
                 SaleItem.quantity,
@@ -119,7 +119,9 @@ class ReportsService:
             )
             .select_from(SaleItem)
             .join(Sale, Sale.id == SaleItem.sale_id)
-            .join(Product, Product.id == SaleItem.product_id)
+            # Product is only needed for the category filter; a deleted product
+            # leaves the line intact via its snapshots.
+            .join(Product, Product.id == SaleItem.product_id, isouter=True)
             .join(Customer, Customer.id == Sale.customer_id)
             .join(User, User.id == Sale.cashier_id)
         )
@@ -236,7 +238,7 @@ class ReportsService:
             select(func.count())
             .select_from(SaleItem)
             .join(Sale, Sale.id == SaleItem.sale_id)
-            .join(Product, Product.id == SaleItem.product_id)
+            .join(Product, Product.id == SaleItem.product_id, isouter=True)
         )
         total = (await self.session.execute(count_stmt)).scalar_one()
 
@@ -289,8 +291,8 @@ class ReportsService:
                 StockTransaction.document_no,
                 StockTransaction.transaction_date,
                 Supplier.name.label("supplier_name"),
-                Product.name.label("product_name"),
-                Product.sku,
+                StockTransactionItem.product_name.label("product_name"),
+                StockTransactionItem.sku,
                 StockTransactionItem.id.label("stock_transaction_item_id"),
                 StockTransactionItem.product_id.label("product_id"),
                 StockTransactionItem.quantity,
@@ -307,7 +309,6 @@ class ReportsService:
             )
             .select_from(StockTransactionItem)
             .join(StockTransaction, StockTransaction.id == StockTransactionItem.stock_transaction_id)
-            .join(Product, Product.id == StockTransactionItem.product_id)
             .join(Supplier, Supplier.id == StockTransaction.supplier_id, isouter=True)
             .where(StockTransaction.transaction_type == "STOCK_IN")
         )

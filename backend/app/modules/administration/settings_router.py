@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import envelope, get_current_user, get_db_session, require_permission
 from app.core.config import settings as app_settings
-from app.core.exceptions import FeatureDisabledError
 from app.modules.administration import settings_service
 from app.modules.administration.service import AdministrationService
 from app.modules.auth.models import User
@@ -150,16 +149,15 @@ async def reset_app_info(
 
 @router.post("/reset-data")
 async def reset_all_data(
+    db: AsyncSession = Depends(get_db_session),
     actor: User = Depends(require_permission("settings.update")),
 ) -> dict:
-    """Destructive reset is intentionally unavailable through the API.
+    """Delete every business record and re-seed bootstrap defaults.
 
-    Resetting the shop must go through database maintenance / re-seed so stock,
-    debts, sequences and audit history are cleared atomically and deliberately.
+    Transactions and master data are removed; the current administrator, roles,
+    settings and the UOM catalogue are kept. The walk-in customer is re-created.
     """
-    raise FeatureDisabledError(
-        "Automated data reset is disabled. Use database maintenance and re-seed instead."
-    )
+    return envelope(await settings_service.reset_all_data(AdministrationService(db), actor=actor))
 
 
 @router.post("/clear-transactions")

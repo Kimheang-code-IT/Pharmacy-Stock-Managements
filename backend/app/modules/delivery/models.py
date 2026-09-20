@@ -121,8 +121,10 @@ class DeliveryNoteItem(Base):
     sale_item_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("sale_items.id", ondelete="RESTRICT"), nullable=False
     )
-    product_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
+    # Product link is nullable so a product can be hard-deleted while the
+    # delivery history survives through the product_name snapshot.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"), nullable=True
     )
     product_name: Mapped[str] = mapped_column(String(200), nullable=False)
     uom_symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)

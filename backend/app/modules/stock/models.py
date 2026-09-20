@@ -112,19 +112,28 @@ class StockBalance(Base):
 
 
 class BatchStockBalance(Base):
-    """Per-(product, batch_no) remaining base quantity + cost + lifecycle.
+    """Per-(product, batch_no, expiry_date) remaining base quantity + cost +
+    lifecycle.
 
     The authoritative batch state (spec: batch = physical inventory, expiry,
     cost). Written only by the canonical stock-mutation service under row
-    lock; the product's stock_balances row stays the materialized total.
+    lock; the product's stock_balances row stays the materialized total. A
+    different expiry for the same batch_no is a separate lot.
     """
 
     __tablename__ = "batch_stock_balances"
     __table_args__ = (
-        # Batch identity = product + batch_no; expiry_date is a recorded
-        # ATTRIBUTE of the lot (stamped from the purchase), not part of its
-        # identity — operations reference a batch by batch_no only.
-        UniqueConstraint("product_id", "batch_no", name="uq_batch_stock_balances"),
+        # Batch identity = product + batch_no + expiry_date: the same supplier
+        # batch number received with a different expiry is a DISTINCT lot, so a
+        # stock-in with a different expiry shows as its own batch automatically.
+        # COALESCE keeps the unique key NULL-safe for lots without an expiry.
+        Index(
+            "uq_batch_stock_balances",
+            "product_id",
+            "batch_no",
+            text("COALESCE(expiry_date, DATE '0001-01-01')"),
+            unique=True,
+        ),
         Index("ix_batch_stock_balances_product_id", "product_id"),
         Index("ix_batch_stock_balances_product_expiry", "product_id", "expiry_date"),
         Index("ix_batch_stock_balances_expiry_date", "expiry_date"),
@@ -353,9 +362,10 @@ class PurchaseReturnItem(Base):
     stock_transaction_item_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("stock_transaction_items.id", ondelete="RESTRICT"), nullable=False
     )
-    product_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"), nullable=True
     )
+    product_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     line_refund: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
@@ -373,9 +383,13 @@ class StockTransactionItem(Base):
     stock_transaction_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("stock_transactions.id", ondelete="CASCADE"), nullable=False
     )
-    product_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
+    # Product link is nullable so a product can be hard-deleted while the
+    # purchase/adjustment history survives through the name/sku snapshots.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"), nullable=True
     )
+    product_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    sku: Mapped[str | None] = mapped_column(String(100), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     system_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
@@ -414,9 +428,12 @@ class StockMovement(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    product_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
+    # Product link is nullable so a product can be hard-deleted while the
+    # movement history survives through the name snapshot.
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"), nullable=True
     )
+    product_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     movement_type: Mapped[str] = mapped_column(String(30), nullable=False)
     quantity_delta: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
@@ -430,7 +447,7 @@ class StockMovement(Base):
     # detail lives in the allocation/ledger rows).
     batch_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("batch_stock_balances.id", ondelete="RESTRICT"),
+        ForeignKey("batch_stock_balances.id", ondelete="SET NULL"),
         nullable=True,
     )
     # Line UOM symbol snapshot (display only; quantities stay in base UOM).

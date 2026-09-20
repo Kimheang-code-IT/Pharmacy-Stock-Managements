@@ -165,8 +165,8 @@ async def test_barcode_is_operational_identifier(client):
     await deactivate_then_delete(client, headers, f"/api/v1/categories/{category['id']}")
 
 
-async def test_product_delete_blocked_by_sale_history_then_deactivate(client):
-    """A product sold at least once must not be hard-deleted; deactivate instead."""
+async def test_product_delete_with_sale_history_keeps_history(client, db_session):
+    """An inactive product can be hard-deleted; the sale keeps its snapshots."""
     headers = await admin_headers(client)
     product = await make_stocked_product(
         client, headers, sku="PRDH-1", name="Product History Widget", qty="10"
@@ -183,26 +183,52 @@ async def test_product_delete_blocked_by_sale_history_then_deactivate(client):
     )
     assert sale.status_code == 201, sale.text
 
+    # Active products still cannot be deleted.
     blocked = await client.delete(f"/api/v1/products/{product['id']}", headers=headers)
     assert blocked.status_code == 409
-    assert "deactivate" in blocked.json()["detail"]["message"].lower()
 
     deactivated = await client.patch(
         f"/api/v1/products/{product['id']}", json={"status": "INACTIVE"}, headers=headers
     )
     assert deactivated.status_code == 200
-    assert deactivated.json()["data"]["status"] == "INACTIVE"
+
+    deleted = await client.delete(f"/api/v1/products/{product['id']}", headers=headers)
+    assert deleted.status_code == 200, deleted.text
+    assert (await client.get(f"/api/v1/products/{product['id']}", headers=headers)).status_code == 404
+
+    # The sale line keeps its product-name snapshot and loses the live link.
+    from app.modules.pos.models import SaleItem
+
+    sale_item = await db_session.scalar(
+        select(SaleItem).where(SaleItem.product_name == "Product History Widget")
+    )
+    assert sale_item is not None
+    assert sale_item.product_id is None
 
 
-async def test_product_delete_blocked_by_stock_in_history(client):
-    """A product with a recorded stock-in is part of stock history: no hard delete."""
+async def test_product_delete_with_stock_in_history_keeps_history(client, db_session):
+    """A product with stock-in history can be deleted; the purchase keeps its name."""
     headers = await admin_headers(client)
     product = await make_stocked_product(
         client, headers, sku="PRDS-1", name="Product Stock Widget", qty="3"
     )
-    blocked = await client.delete(f"/api/v1/products/{product['id']}", headers=headers)
-    assert blocked.status_code == 409
-    assert "deactivate" in blocked.json()["detail"]["message"].lower()
+
+    deactivated = await client.patch(
+        f"/api/v1/products/{product['id']}", json={"status": "INACTIVE"}, headers=headers
+    )
+    assert deactivated.status_code == 200
+
+    deleted = await client.delete(f"/api/v1/products/{product['id']}", headers=headers)
+    assert deleted.status_code == 200, deleted.text
+    assert (await client.get(f"/api/v1/products/{product['id']}", headers=headers)).status_code == 404
+
+    from app.modules.stock.models import StockTransactionItem
+
+    item = await db_session.scalar(
+        select(StockTransactionItem).where(StockTransactionItem.product_name == "Product Stock Widget")
+    )
+    assert item is not None
+    assert item.product_id is None
 
 
 async def test_product_default_supplier_stored_shown_and_cleared(client):

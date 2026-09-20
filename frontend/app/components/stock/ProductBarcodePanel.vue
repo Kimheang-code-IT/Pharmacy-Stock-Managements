@@ -7,7 +7,6 @@ import {
   DEFAULT_BARCODE_LABEL_SETTINGS,
   normalizeLabelSettings,
   printBarcodeLabels,
-  printBarcodeTestLabel,
   type BarcodeLabelData,
   type BarcodeLabelSettings,
 } from '~/utils/print/barcode-label'
@@ -29,8 +28,6 @@ const props = withDefaults(defineProps<{
 const { t } = useI18n()
 
 const SETTINGS_KEY = 'ui:barcode-label-settings'
-const RATE_KEY = 'ui:barcode-rate'
-const DEFAULT_RATE = 4000
 /** CSS pixel size of one millimetre on screen at the browser's 96dpi. */
 const PX_PER_MM = 96 / 25.4
 const PREVIEW_MAX_W = 300
@@ -62,28 +59,29 @@ const numericFields: Array<{
 ]
 
 const settings = reactive<BarcodeLabelSettings>({ ...DEFAULT_BARCODE_LABEL_SETTINGS })
-const rate = ref<number | undefined>(DEFAULT_RATE)
-const copies = ref(1)
 const customActive = ref(false)
 
 const labelCss = barcodeLabelCss()
 
 const barcode = computed(() => String(props.product?.barcode || '').trim())
 const name = computed(() => String(props.product?.name || ''))
-const priceUsd = computed(() => Number(props.product?.salePrice || 0))
-const priceKhr = computed(() => {
-  const value = Number(rate.value || 0)
-  return value > 0 ? priceUsd.value * value : null
-})
+
+/** Stickers never print prices — force the price rows off regardless of any
+ *  stored settings, so a label shows only the name, bars and code. */
+const labelSettings = computed<BarcodeLabelSettings>(() => ({
+  ...settings,
+  showUsd: false,
+  showKhr: false,
+}))
 
 const previewData = computed<BarcodeLabelData>(() => ({
   name: name.value,
   barcode: barcode.value,
-  priceUsd: priceUsd.value,
-  priceKhr: priceKhr.value,
+  priceUsd: 0,
+  priceKhr: null,
 }))
 
-const previewHtml = computed(() => barcodeLabelHtml(previewData.value, settings))
+const previewHtml = computed(() => barcodeLabelHtml(previewData.value, labelSettings.value))
 
 const previewScale = computed(() => {
   const width = settings.widthMm * PX_PER_MM
@@ -123,8 +121,6 @@ function loadSettings() {
   catch {
     // corrupt/legacy payload — keep defaults
   }
-  const savedRate = Number(localStorage.getItem(RATE_KEY) || 0)
-  if (savedRate > 0) rate.value = savedRate
 }
 
 watch(settings, () => {
@@ -132,31 +128,16 @@ watch(settings, () => {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...settings }))
 }, { deep: true })
 
-watch(rate, () => {
-  if (!import.meta.client) return
-  const value = Number(rate.value || 0)
-  if (value > 0) localStorage.setItem(RATE_KEY, String(value))
-})
-
 onMounted(loadSettings)
 
 function printStickers() {
   if (!barcode.value || props.disabled) return
-  const count = Math.max(1, Math.min(500, Math.floor(Number(copies.value) || 1)))
-  const labels = Array.from({ length: count }, () => ({ ...previewData.value }))
-  void printBarcodeLabels(labels, { ...settings })
-}
-
-function testPrint() {
-  if (!barcode.value || props.disabled) return
-  void printBarcodeTestLabel({ ...previewData.value }, { ...settings })
+  void printBarcodeLabels([{ ...previewData.value }], labelSettings.value)
 }
 </script>
 
 <template>
   <div class="flex min-w-0 flex-1 flex-col gap-4">
-    <p class="text-xs text-muted">{{ t('app.stock.barcodeHint') }}</p>
-
     <p v-if="!barcode" class="text-sm text-warning">{{ t('app.stock.barcodeEmpty') }}</p>
 
     <template v-else>
@@ -178,29 +159,6 @@ function testPrint() {
             </p>
           </div>
 
-          <div class="grid grid-cols-2 gap-3">
-            <label class="text-sm">
-              <span class="mb-1 block text-muted">{{ t('app.stock.barcodeCopies') }}</span>
-              <UInput
-                v-model.number="copies"
-                type="number"
-                min="1"
-                max="500"
-                class="w-full"
-              />
-            </label>
-            <label class="text-sm">
-              <span class="mb-1 block text-muted">{{ t('app.stock.barcodeRate') }}</span>
-              <UInput
-                v-model.number="rate"
-                type="number"
-                min="0"
-                step="50"
-                class="w-full"
-              />
-            </label>
-          </div>
-
           <div class="flex flex-wrap items-center gap-2">
             <UButton
               color="primary"
@@ -208,14 +166,6 @@ function testPrint() {
               :label="t('app.stock.barcodePrint')"
               :disabled="disabled"
               @click="printStickers"
-            />
-            <UButton
-              color="neutral"
-              variant="subtle"
-              icon="i-lucide-file-check-2"
-              :label="t('app.stock.barcodeTestPrint')"
-              :disabled="disabled"
-              @click="testPrint"
             />
           </div>
         </div>
@@ -275,14 +225,6 @@ function testPrint() {
             <label class="flex items-center gap-2 text-sm">
               <USwitch v-model="settings.showName" size="sm" />
               <span>{{ t('app.stock.barcodeShowName') }}</span>
-            </label>
-            <label class="flex items-center gap-2 text-sm">
-              <USwitch v-model="settings.showUsd" size="sm" />
-              <span>{{ t('app.stock.barcodeShowUsd') }}</span>
-            </label>
-            <label class="flex items-center gap-2 text-sm">
-              <USwitch v-model="settings.showKhr" size="sm" />
-              <span>{{ t('app.stock.barcodeShowKhr') }}</span>
             </label>
           </div>
         </div>

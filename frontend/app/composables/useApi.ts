@@ -199,9 +199,10 @@ export function useApi() {
 
             if (!options.suppressErrorToast) {
               const normalized = normalizeApiError(response._data, response.status)
+              // Show only the human-readable backend message (no "API Error: 422"
+              // title) so the toast is clear to the user.
               toast.add({
-                title: t('api.errorTitle', { status: response.status }),
-                description: normalized.message || t('api.somethingWentWrong'),
+                title: normalized.message || t('api.somethingWentWrong'),
                 color: 'error'
               })
             }

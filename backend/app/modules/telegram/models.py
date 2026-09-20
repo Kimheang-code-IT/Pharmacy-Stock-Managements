@@ -48,7 +48,7 @@ class TelegramExpiryAlertState(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     product_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False
     )
     batch_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
     expiry_date: Mapped[date] = mapped_column(Date, nullable=False)

@@ -55,6 +55,21 @@ function onDiscountInput(line: PosCartLine, value: unknown) {
   const percent = gross > 0 ? Math.min(100, (amount / gross) * 100) : 0
   emit('updateDiscount', line.productId, percent)
 }
+
+/** UOM selection dialog (opened from a row's settings icon). */
+const uomDialogOpen = ref(false)
+const uomLine = ref<PosCartLine | null>(null)
+
+function openUomDialog(line: PosCartLine) {
+  if (props.disabled || props.returnMode) return
+  uomLine.value = line
+  uomDialogOpen.value = true
+}
+
+function selectUom(uomId: string) {
+  if (uomLine.value) emit('changeUom', uomLine.value.productId, uomId)
+  uomDialogOpen.value = false
+}
 </script>
 
 <template>
@@ -100,7 +115,6 @@ function onDiscountInput(line: PosCartLine, value: unknown) {
       <div class="flex items-center gap-x-2 border-b border-default bg-elevated/40 px-2 text-[10px] font-semibold uppercase tracking-wide text-muted">
         <span class="size-9 shrink-0" />
         <span class="min-w-0 flex-1">{{ t('app.pos.product') }}</span>
-        <span class="w-20 shrink-0 text-right">{{ t('app.pos.uom') }}</span>
         <span class="w-32 shrink-0 text-right">{{ t('app.pos.unitPrice') }}</span>
         <span class="w-28 shrink-0 text-center">{{ t('app.pos.qty') }}</span>
         <span
@@ -108,7 +122,7 @@ function onDiscountInput(line: PosCartLine, value: unknown) {
           class="w-28 shrink-0 text-right"
         >{{ t('app.pos.discount') }}</span>
         <span class="w-28 shrink-0 text-right">{{ t('app.pos.amount') }}</span>
-        <span class="w-7 shrink-0" />
+        <span class="w-16 shrink-0" />
       </div>
 
       <!-- One row per line: image · name · UOM · unit price · qty · discount · total · remove. -->
@@ -138,19 +152,6 @@ function onDiscountInput(line: PosCartLine, value: unknown) {
         <p class="min-w-0 flex-1 truncate text-sm font-medium">
           {{ line.name }}
         </p>
-
-        <!-- UOM: direct select when the product has more than one. -->
-        <USelect
-          v-if="line.uomOptions.length > 1"
-          :model-value="line.uomId"
-          :items="line.uomOptions"
-          size="xs"
-          class="w-20 shrink-0"
-          :disabled="disabled || returnMode"
-          :aria-label="t('app.pos.uom')"
-          @update:model-value="emit('changeUom', line.productId, String($event))"
-        />
-        <span v-else class="shrink-0 text-xs text-muted">{{ line.uom }}</span>
 
         <!-- Unit price: inline direct edit. -->
         <CommonAppMoneyField
@@ -208,6 +209,19 @@ function onDiscountInput(line: PosCartLine, value: unknown) {
           {{ money(lineNet(line)) }}
         </span>
 
+        <!-- UOM selection (settings icon) — replaces the inline UOM select. -->
+        <UButton
+          size="sm"
+          color="neutral"
+          variant="ghost"
+          icon="i-lucide-settings-2"
+          square
+          class="w-7 shrink-0"
+          :disabled="disabled || returnMode"
+          :aria-label="t('app.pos.selectUom')"
+          @click="openUomDialog(line)"
+        />
+
         <!-- Remove line (end of row, red). -->
         <UButton
           size="sm"
@@ -256,5 +270,40 @@ function onDiscountInput(line: PosCartLine, value: unknown) {
         />
       </div>
     </div>
+
+    <!-- UOM selection dialog (opened from a row's settings icon). -->
+    <CommonAppDialog
+      v-model:open="uomDialogOpen"
+      :title="t('app.pos.selectUom')"
+      icon="i-lucide-settings-2"
+      size="sm"
+    >
+      <div class="grid gap-2">
+        <p class="text-sm font-medium">
+          {{ uomLine?.name }}
+        </p>
+        <UButton
+          v-for="option in uomLine?.uomOptions || []"
+          :key="option.value"
+          block
+          class="justify-between"
+          :color="option.value === uomLine?.uomId ? 'primary' : 'neutral'"
+          :variant="option.value === uomLine?.uomId ? 'solid' : 'soft'"
+          :label="option.label"
+          @click="selectUom(option.value)"
+        />
+      </div>
+
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton
+            color="neutral"
+            variant="ghost"
+            :label="t('common.cancel')"
+            @click="uomDialogOpen = false"
+          />
+        </div>
+      </template>
+    </CommonAppDialog>
   </section>
 </template>

@@ -338,6 +338,7 @@ watch(() => props.cart.length, (length) => {
           v-if="!returnMode && paying"
           v-model:paper-size="paperSizeModel"
           :total="due"
+          :delivery-price="appliedDeliveryPrice"
           :currency="saleCurrency"
           :payment-method="paymentMethod"
           :busy="completing"

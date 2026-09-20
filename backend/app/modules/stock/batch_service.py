@@ -21,6 +21,7 @@ return, which opt in with `include_expired=True`.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
@@ -58,6 +59,50 @@ def _q6(value) -> Decimal:
 
 def _batch_key(batch_no: str | None) -> str:
     return (batch_no or "").strip()
+
+
+def _bump_batch_no(base_no: str, taken: set[str]) -> str:
+    """Next free batch number after `base_no`, incrementing its trailing digits
+    (BATCH-001 → BATCH-002) or appending -1/-2 when it has no numeric suffix."""
+    match = re.match(r"^(.*?)(\d+)$", base_no)
+    if not match:
+        seq = 1
+        candidate = f"{base_no}-{seq}"
+        while candidate in taken:
+            seq += 1
+            candidate = f"{base_no}-{seq}"
+        return candidate
+    prefix, digits = match.group(1), match.group(2)
+    width = len(digits)
+    seq = int(digits)
+    candidate = base_no
+    while candidate in taken:
+        seq += 1
+        candidate = f"{prefix}{str(seq).zfill(width)}"
+    return candidate
+
+
+async def _resolve_batch_no_for_new_lot(
+    session: AsyncSession, product_id: uuid.UUID, batch_no: str | None, expiry_date
+) -> str | None:
+    """Auto-assign the next batch number when a batch_no is reused with a
+    DIFFERENT expiry, so every lot carries its own batch number (and per-lot POS
+    pricing stays unambiguous). An exact (batch_no, expiry) match, a brand-new
+    batch_no, or an empty/unbatched batch_no is returned unchanged."""
+    key = _batch_key(batch_no)
+    if not key:
+        return batch_no
+    result = await session.execute(
+        select(BatchStockBalance.batch_no, BatchStockBalance.expiry_date).where(
+            BatchStockBalance.product_id == product_id
+        )
+    )
+    rows = list(result.all())
+    if any(str(existing) == key and expiry == expiry_date for existing, expiry in rows):
+        return batch_no
+    if not any(str(existing) == key for existing, _expiry in rows):
+        return batch_no
+    return _bump_batch_no(key, {str(existing) for existing, _expiry in rows})
 
 
 def _utc_today() -> date:
@@ -121,19 +166,31 @@ def factor_for_uom(product: Product, uom_id: str | None) -> Decimal:
     )
 
 
+def _lot_conditions(product_id: uuid.UUID, batch_no: str | None, expiry_date):
+    """Exact lot key: (product_id, batch_no, expiry_date), NULL-safe on expiry."""
+    conditions = [
+        BatchStockBalance.product_id == product_id,
+        BatchStockBalance.batch_no == _batch_key(batch_no),
+    ]
+    if expiry_date is None:
+        conditions.append(BatchStockBalance.expiry_date.is_(None))
+    else:
+        conditions.append(BatchStockBalance.expiry_date == expiry_date)
+    return conditions
+
+
 async def _lock_batch(
-    session: AsyncSession, product_id: uuid.UUID, batch_no: str | None
+    session: AsyncSession,
+    product_id: uuid.UUID,
+    batch_no: str | None,
+    expiry_date=None,
 ) -> BatchStockBalance:
-    """Fetch-or-create + row-lock the batch lot (identity = product +
-    batch_no only; expiry is an attribute of the lot)."""
+    """Fetch-or-create + row-lock the batch lot (identity = product + batch_no
+    + expiry_date; a different expiry is a distinct lot)."""
     key = _batch_key(batch_no)
+    conditions = _lot_conditions(product_id, batch_no, expiry_date)
     result = await session.execute(
-        select(BatchStockBalance)
-        .where(
-            BatchStockBalance.product_id == product_id,
-            BatchStockBalance.batch_no == key,
-        )
-        .with_for_update()
+        select(BatchStockBalance).where(*conditions).with_for_update()
     )
     batch = result.scalar_one_or_none()
     if batch is not None:
@@ -141,6 +198,7 @@ async def _lock_batch(
     batch = BatchStockBalance(
         product_id=product_id,
         batch_no=key,
+        expiry_date=expiry_date,
         received_quantity=Decimal("0"),
         remaining_quantity=Decimal("0"),
         unit_cost=Decimal("0.000000"),
@@ -157,10 +215,7 @@ async def _lock_batch(
     # Re-select under lock so a concurrent creator's row wins cleanly.
     result = await session.execute(
         select(BatchStockBalance)
-        .where(
-            BatchStockBalance.product_id == product_id,
-            BatchStockBalance.batch_no == key,
-        )
+        .where(*conditions)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
@@ -223,7 +278,10 @@ async def batch_in(
     quantity = _q4(quantity_base)
     if quantity <= 0:
         raise ValidationError("Batch received quantity must be greater than zero")
-    batch = await _lock_batch(session, product_id, batch_no)
+    # A batch_no reused with a different expiry gets the next batch number so
+    # each lot is distinct (auto BATCH-001 → BATCH-002 → …).
+    batch_no = await _resolve_batch_no_for_new_lot(session, product_id, batch_no, expiry_date)
+    batch = await _lock_batch(session, product_id, batch_no, expiry_date)
     batch.remaining_quantity = _q4(batch.remaining_quantity + quantity)
     batch.received_quantity = _q4(batch.received_quantity + quantity)
     batch.unit_cost = _q6(unit_cost_per_base)
@@ -388,18 +446,60 @@ async def deduct_from_batch(
     product_id: uuid.UUID,
     batch_no: str | None,
     quantity_base,
+    expiry_date=None,
 ) -> BatchStockBalance:
-    """Deduct `quantity_base` from ONE named batch (Damage / Expiry /
-    Purchase Return on a batched line). Validates the remaining quantity."""
+    """Deduct `quantity_base` from a named batch (Damage / Expiry / Purchase
+    Return / purchase edit on a batched line).
+
+    When `expiry_date` is given the exact (product, batch_no, expiry) lot is
+    used; otherwise the batch_no's lots are drained FEFO (oldest expiry first,
+    expired included — disposals may write down expired lots). Returns the lot
+    the movement links to (the first/oldest deducted lot)."""
     quantity = _q4(quantity_base)
     if quantity <= 0:
         raise ValidationError("Batch quantity must be greater than zero")
-    batch = await _lock_batch(session, product_id, batch_no)
-    if batch.remaining_quantity < quantity:
-        raise ConflictError(
-            f"Insufficient batch stock: available {batch.remaining_quantity}, requested {quantity}"
+    if expiry_date is not None:
+        batch = await _lock_batch(session, product_id, batch_no, expiry_date)
+        if batch.remaining_quantity < quantity:
+            raise ConflictError(
+                f"Insufficient batch stock: available {batch.remaining_quantity}, requested {quantity}"
+            )
+        batch.remaining_quantity = _q4(batch.remaining_quantity - quantity)
+        refresh_batch_status(batch, await business_today(session))
+        await session.flush()
+        return batch
+
+    key = _batch_key(batch_no)
+    result = await session.execute(
+        select(BatchStockBalance)
+        .where(
+            BatchStockBalance.product_id == product_id,
+            BatchStockBalance.batch_no == key,
+            BatchStockBalance.remaining_quantity > 0,
         )
-    batch.remaining_quantity = _q4(batch.remaining_quantity - quantity)
-    refresh_batch_status(batch, await business_today(session))
+        .order_by(
+            BatchStockBalance.expiry_date.is_(None),
+            BatchStockBalance.expiry_date.asc(),
+            BatchStockBalance.created_at.asc(),
+            BatchStockBalance.id.asc(),
+        )
+        .with_for_update()
+    )
+    lots = list(result.scalars().all())
+    available = sum((lot.remaining_quantity for lot in lots), Decimal("0"))
+    if available < quantity:
+        raise ConflictError(
+            f"Insufficient batch stock: available {available}, requested {quantity}"
+        )
+    today = await business_today(session)
+    remaining = quantity
+    primary = lots[0]
+    for lot in lots:
+        if remaining <= 0:
+            break
+        take = min(lot.remaining_quantity, remaining)
+        lot.remaining_quantity = _q4(lot.remaining_quantity - take)
+        refresh_batch_status(lot, today)
+        remaining -= take
     await session.flush()
-    return batch
+    return primary

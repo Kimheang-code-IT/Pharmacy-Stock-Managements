@@ -364,37 +364,42 @@ async function save() {
       // Batch tracking, expiry tracking and FIFO are always on system-wide
       // (the Stock Costing toggles are not shown), so stamp them on save.
       payload = { ...payload, trackBatch: true, trackExpiry: true, expiryTracking: true, fifo: true }
-      // Spec §5.9 Pricing: the base UOM row's sale price is required > 0.
-      // (It lives on the product record, edited from the Pricing tab.)
-      if (!(Number(payload.salePrice ?? 0) > 0)) {
-        toast.add({ title: t('app.stock.pricePositive'), color: 'error' })
-        return
-      }
-      // Spec §2.1.3: unique Original UOMs (base row allowed, factor locked
-      // at 1), factor > 0, sale price > 0, exactly one Default sale row; a
-      // missing base row materializes so the product always keeps one
-      // sellable UOM. Empty cost prices are derived (base cost × factor).
-      const baseUom = store.list('uoms').find(uom => String(uom.id) === String(payload.uomId || ''))
-      try {
-        payload.uomConversions = normalizeUomConversions(
-          payload.uomConversions,
-          String(payload.uomId || ''),
-          {
-            baseCostPrice: payload.costPrice as number | undefined,
-            baseSalePrice: payload.salePrice as number | undefined,
-            baseUomSymbol: String(baseUom?.symbol || baseUom?.name || ''),
-          },
-        )
-      }
-      catch (error: unknown) {
-        if (!isApiErrorHandled(error)) {
-          toast.add({
-            title: t('app.stock.convInvalid'),
-            description: apiErrorMessage(error, t('app.stock.convInvalid')),
-            color: 'error',
-          })
+      // The Pricing tab (base-UOM sale price > 0 + UOM conversions) is hidden on
+      // create and appears once the product is opened, so only validate and
+      // normalize pricing when editing an existing product.
+      if (!isCreate.value) {
+        // Spec §5.9 Pricing: the base UOM row's sale price is required > 0.
+        // (It lives on the product record, edited from the Pricing tab.)
+        if (!(Number(payload.salePrice ?? 0) > 0)) {
+          toast.add({ title: t('app.stock.pricePositive'), color: 'error' })
+          return
         }
-        return
+        // Spec §2.1.3: unique Original UOMs (base row allowed, factor locked
+        // at 1), factor > 0, sale price > 0, exactly one Default sale row; a
+        // missing base row materializes so the product always keeps one
+        // sellable UOM. Empty cost prices are derived (base cost × factor).
+        const baseUom = store.list('uoms').find(uom => String(uom.id) === String(payload.uomId || ''))
+        try {
+          payload.uomConversions = normalizeUomConversions(
+            payload.uomConversions,
+            String(payload.uomId || ''),
+            {
+              baseCostPrice: payload.costPrice as number | undefined,
+              baseSalePrice: payload.salePrice as number | undefined,
+              baseUomSymbol: String(baseUom?.symbol || baseUom?.name || ''),
+            },
+          )
+        }
+        catch (error: unknown) {
+          if (!isApiErrorHandled(error)) {
+            toast.add({
+              title: t('app.stock.convInvalid'),
+              description: apiErrorMessage(error, t('app.stock.convInvalid')),
+              color: 'error',
+            })
+          }
+          return
+        }
       }
     }
     if (isCreate.value || !payload.id) {

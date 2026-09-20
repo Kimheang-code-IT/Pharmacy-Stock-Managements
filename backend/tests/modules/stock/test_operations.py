@@ -294,7 +294,13 @@ async def test_damage_and_expire_rules(client, db_session):
             "paid_amount": "26.00",
             "items": [
                 {"product_id": product["id"], "quantity": "10", "unit_cost": "1.00"},
-                {"product_id": tracked["id"], "quantity": "8", "unit_cost": "2.00", "batch_no": "B1"},
+                {
+                    "product_id": tracked["id"],
+                    "quantity": "8",
+                    "unit_cost": "2.00",
+                    "batch_no": "B1",
+                    "expiry_date": "2026-01-01",
+                },
             ],
         },
         headers=headers,
@@ -664,6 +670,48 @@ async def test_stock_in_existing_batch_restocks_same_lot(client, db_session):
         .where(BatchStockBalance.product_id == product["id"])
     )).scalar_one()
     assert total_batches == 1
+
+
+async def test_same_batch_no_different_expiry_gets_new_batch_no(client, db_session):
+    """Same supplier batch number with a DIFFERENT expiry is a distinct lot AND
+    is auto-numbered (LOT-1 → LOT-2), so per-lot pricing stays unambiguous."""
+    from sqlalchemy import select
+
+    from app.modules.stock.models import BatchStockBalance
+
+    headers = await admin_headers(client)
+    product = await _make_product(client, headers, sku="BEXP-1", name="Expiry Split Widget", expiry_tracking=True)
+
+    for expiry in ("2030-06-30", "2030-09-30"):
+        response = await client.post(
+            "/api/v1/stock/in",
+            json={
+                "paid_amount": "10.00",
+                "items": [
+                    {
+                        "product_id": product["id"],
+                        "quantity": "5",
+                        "unit_cost": "2.00",
+                        "batch_no": "LOT-1",
+                        "expiry_date": expiry,
+                    }
+                ],
+            },
+            headers=headers,
+        )
+        assert response.status_code == 201, response.text
+
+    lots = (
+        await db_session.execute(
+            select(BatchStockBalance)
+            .where(BatchStockBalance.product_id == product["id"])
+            .order_by(BatchStockBalance.expiry_date)
+        )
+    ).scalars().all()
+    assert len(lots) == 2
+    assert [lot.batch_no for lot in lots] == ["LOT-1", "LOT-2"]
+    assert [str(lot.expiry_date) for lot in lots] == ["2030-06-30", "2030-09-30"]
+    assert all(lot.remaining_quantity == Decimal("5.0000") for lot in lots)
 
 
 async def test_stock_in_new_batch_created_only_at_confirmation(client, db_session):

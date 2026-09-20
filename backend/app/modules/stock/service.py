@@ -209,24 +209,10 @@ class ProductService:
         if product is None:
             raise NotFoundError("Product not found")
         assert_inactive_for_delete(product.status, label="product")
-        referenced = (
-            await self.repo.count_movements(product.id)
-            + await self.repo.count_sale_items(product.id)
-            + await self.repo.count_transaction_items(product.id)
-            + await self.repo.count_purchase_return_items(product.id)
-            + await self.repo.count_delivery_items(product.id)
-            + await self.repo.count_batches(product.id)
-        )
-        if referenced > 0:
-            raise ConflictError(
-                "Cannot delete this product because stock, purchase, sale, return, or "
-                "delivery history exists. Deactivate it instead."
-            )
-        balance = await self.repo.ensure_balance(product.id)
-        if balance.quantity != 0:
-            raise ConflictError(
-                "Cannot delete this product because it still has stock. Deactivate it instead."
-            )
+        # Hard delete. History rows keep the product name/sku through their
+        # snapshots and their product_id is nulled by ON DELETE SET NULL, so
+        # purchase/sale/return/delivery history is preserved; stock balances,
+        # batches and sale-price versions cascade with the product.
         await self.session.delete(product)
         await self.session.commit()
 
@@ -445,6 +431,8 @@ async def apply_stock_movement(
         raise ValidationError("Stock movement quantity cannot be zero")
 
     balance = await _lock_balance(session, product_id)
+    # Snapshot the product name so the movement history survives a hard delete.
+    product_name = await session.scalar(select(Product.name).where(Product.id == product_id))
 
     if delta < 0 and not allow_negative and balance.quantity + delta < 0:
         raise ConflictError(
@@ -461,6 +449,7 @@ async def apply_stock_movement(
 
     movement = StockMovement(
         product_id=product_id,
+        product_name=product_name,
         movement_type=movement_type,
         quantity_delta=delta,
         unit_cost=Decimal(unit_cost).quantize(TWO, rounding=ROUND_HALF_UP),
@@ -621,6 +610,8 @@ class StockOperationService:
                 stock_transaction_id=transaction.id,
                 product_id=item.product_id,
                 product_ref=product,
+                product_name=product.name,
+                sku=product.sku,
                 quantity=base_quantity,
                 unit_cost=base_unit_cost,
                 batch_no=item.batch_no,
@@ -645,6 +636,9 @@ class StockOperationService:
                 supplier_id=transaction.supplier_id,
                 document_no=document_no,
             )
+            # batch_in may have auto-assigned the next batch number (a reused
+            # batch_no with a different expiry): record the lot's real number.
+            row.batch_no = batch_lot.batch_no or None
             await apply_stock_movement(
                 self.session,
                 product_id=item.product_id,
@@ -655,10 +649,10 @@ class StockOperationService:
                 reference_id=transaction.id,
                 created_by=actor.id,
                 document_no=document_no,
-                batch_no=item.batch_no,
+                batch_no=batch_lot.batch_no or None,
                 # Movement references the lot it stocked into (new or
-                # restocked — identity = product + batch_no).
-                batch_id=batch_lot.id if (item.batch_no or "").strip() else None,
+                # restocked — identity = product + batch_no + expiry).
+                batch_id=batch_lot.id if (batch_lot.batch_no or "").strip() else None,
                 expiry_date=item.expiry_date,
                 allow_negative=negative_ok,
                 uom_symbol=line_uom_symbol,
@@ -823,6 +817,7 @@ class StockOperationService:
                     product_id=row.product_id,
                     batch_no=row.batch_no,
                     quantity_base=quantity,
+                    expiry_date=row.expiry_date,
                 )
                 movement_batch_id = batch.id
                 movement_expiry = batch.expiry_date
@@ -914,6 +909,8 @@ class StockOperationService:
                 stock_transaction_id=transaction.id,
                 product_id=item.product_id,
                 product_ref=product,
+                product_name=product.name,
+                sku=product.sku,
                 quantity=base_quantity,
                 unit_cost=base_unit_cost,
                 batch_no=item.batch_no,
@@ -933,6 +930,9 @@ class StockOperationService:
                 supplier_id=transaction.supplier_id,
                 document_no=transaction.document_no,
             )
+            # batch_in may have auto-assigned the next batch number (a reused
+            # batch_no with a different expiry): record the lot's real number.
+            row.batch_no = batch_lot.batch_no or None
             await apply_stock_movement(
                 self.session,
                 product_id=item.product_id,
@@ -943,8 +943,8 @@ class StockOperationService:
                 reference_id=transaction.id,
                 created_by=actor.id,
                 document_no=transaction.document_no,
-                batch_no=item.batch_no,
-                batch_id=batch_lot.id if (item.batch_no or "").strip() else None,
+                batch_no=batch_lot.batch_no or None,
+                batch_id=batch_lot.id if (batch_lot.batch_no or "").strip() else None,
                 expiry_date=item.expiry_date,
                 allow_negative=negative_ok,
                 uom_symbol=line_uom_symbol,
@@ -1091,6 +1091,7 @@ class StockOperationService:
                 purchase_return_id=purchase_return.id,
                 stock_transaction_item_id=item.id,
                 product_id=item.product_id,
+                product_name=item.product_name,
                 quantity=_q4(line.quantity),
                 unit_cost=Decimal(item.unit_cost).quantize(TWO, rounding=ROUND_HALF_UP),
                 line_refund=refund,
@@ -1112,6 +1113,7 @@ class StockOperationService:
                     product_id=item.product_id,
                     batch_no=item.batch_no,
                     quantity_base=Decimal(line.quantity),
+                    expiry_date=item.expiry_date,
                 )
                 movement_batch_id = batch.id
                 movement_expiry = batch.expiry_date
@@ -1214,7 +1216,7 @@ class StockOperationService:
                     id=row.id,
                     stock_transaction_item_id=row.stock_transaction_item_id,
                     product_id=row.product_id,
-                    product_name=items_by_id[row.stock_transaction_item_id].product_ref.name,
+                    product_name=items_by_id[row.stock_transaction_item_id].product_name,
                     quantity=row.quantity,
                     unit_cost=row.unit_cost,
                     line_refund=row.line_refund,
@@ -1266,6 +1268,8 @@ class StockOperationService:
                     stock_transaction_id=transaction.id,
                     product_id=item.product_id,
                 product_ref=product,
+                product_name=product.name,
+                sku=product.sku,
                 quantity=difference,
                 unit_cost=unit_cost,
                 system_quantity=system_quantity,
@@ -1406,6 +1410,7 @@ class StockOperationService:
                     product_id=item.product_id,
                     batch_no=item.batch_no,
                     quantity_base=base_quantity,
+                    expiry_date=getattr(item, "expiry_date", None),
                 )
                 movement_batch_id = batch.id
             else:
@@ -1421,6 +1426,8 @@ class StockOperationService:
                     stock_transaction_id=transaction.id,
                     product_id=item.product_id,
                 product_ref=product,
+                product_name=product.name,
+                sku=product.sku,
                 quantity=base_quantity,
                 unit_cost=unit_cost,
                 batch_no=item.batch_no,
@@ -1639,7 +1646,7 @@ class StockOperationService:
                     "id": item.id,
                     "product_id": item.product_id,
                     "productId": item.product_id,
-                    "name": item.product_ref.name if item.product_ref else None,
+                    "name": item.product_name or (item.product_ref.name if item.product_ref else None),
                     "price": item.unit_cost,
                     "unit_cost": item.unit_cost,
                     "quantity": item.quantity,
@@ -1676,8 +1683,8 @@ class StockOperationService:
                 OperationItemOut(
                     id=item.id,
                     product_id=item.product_id,
-                    product_name=item.product_ref.name if item.product_ref else None,
-                    sku=item.product_ref.sku if item.product_ref else None,
+                    product_name=item.product_name or (item.product_ref.name if item.product_ref else None),
+                    sku=item.sku or (item.product_ref.sku if item.product_ref else None),
                     uom_symbol=item.uom_symbol,
                     quantity=item.quantity,
                     unit_cost=item.unit_cost,
@@ -1813,7 +1820,7 @@ def movement_to_out(
     return MovementOut(
         id=movement.id,
         product_id=movement.product_id,
-        product_name=product.name if product else None,
+        product_name=movement.product_name or (product.name if product else None),
         barcode=product.barcode if product else None,
         movement_type=movement.movement_type,
         quantity_delta=delta,

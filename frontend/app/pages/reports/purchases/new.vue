@@ -466,10 +466,22 @@ watch(() => model.lines, (rows) => {
     else if (picked === NEW_BATCH) {
       void applyNewBatch(nextRow, String(nextRow.productId || ''))
     }
-    else if (picked && tracksExpiry(product) && !String(nextRow.expiryDate || '').trim()) {
-      const lot = (batchCache.value.get(String(nextRow.productId || '')) || [])
-        .find(batch => batch.batchNo === picked)
-      if (lot?.expiryDate) nextRow.expiryDate = lot.expiryDate
+    else if (picked && picked !== NEW_BATCH) {
+      const batches = batchCache.value.get(String(nextRow.productId || '')) || []
+      const lot = batches.find(batch => batch.batchNo === picked)
+      if (lot) {
+        const lotExpiry = String(lot.expiryDate || '').trim()
+        const rowExpiry = String(nextRow.expiryDate || '').trim()
+        if (tracksExpiry(product) && !rowExpiry && lotExpiry) {
+          // Restocking the selected lot: adopt its recorded expiry.
+          nextRow.expiryDate = lotExpiry
+        }
+        else if (tracksExpiry(product) && rowExpiry && rowExpiry !== lotExpiry) {
+          // Same batch no with a different expiry is a new lot: auto-assign the
+          // next batch number (BATCH-001 → BATCH-002 → …).
+          nextRow.batchNo = generateBatchNo(batches)
+        }
+      }
     }
     if (JSON.stringify(nextRow) !== JSON.stringify(row)) return nextRow
     return row

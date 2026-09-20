@@ -289,35 +289,33 @@ class DashboardService:
 
     async def _recent_stock_activity(self) -> list[dict]:
         result = await self.session.execute(
-            select(StockMovement, Product.name)
-            .join(Product, Product.id == StockMovement.product_id)
+            select(StockMovement)
             .order_by(StockMovement.created_at.desc())
             .limit(5)
         )
         return [
             {
                 "id": movement.id,
-                "product_name": name,
+                "product_name": movement.product_name,
                 "movement_type": movement.movement_type,
                 "quantity_delta": movement.quantity_delta,
                 "document_no": movement.document_no,
                 "created_at": movement.created_at,
             }
-            for movement, name in result.all()
+            for movement in result.scalars().all()
         ]
 
     async def _top_products(self, start_at: datetime, end_at: datetime) -> list[dict]:
         result = await self.session.execute(
             select(
                 SaleItem.product_id,
-                Product.name,
+                SaleItem.product_name,
                 func.coalesce(func.sum(SaleItem.quantity), 0),
                 func.coalesce(func.sum(SaleItem.line_total), 0),
             )
             .join(Sale, Sale.id == SaleItem.sale_id)
-            .join(Product, Product.id == SaleItem.product_id)
             .where(Sale.sale_date >= start_at, Sale.sale_date < end_at)
-            .group_by(SaleItem.product_id, Product.name)
+            .group_by(SaleItem.product_id, SaleItem.product_name)
             .order_by(func.sum(SaleItem.quantity).desc())
             .limit(5)
         )

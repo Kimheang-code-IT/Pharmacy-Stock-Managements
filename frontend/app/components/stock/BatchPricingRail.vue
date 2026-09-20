@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import type { DropdownMenuItem } from '@nuxt/ui'
 import type { AppRecord } from '~/config/admin-seed'
 import type { ProductBatchRow, ProductSalePriceRow } from '~/repositories/contracts/entities'
 import { useStockQueries } from '~/repositories/index'
@@ -58,9 +57,8 @@ const cards = computed<BatchPricingCard[]>(() => {
     salePrices: salePrices.value,
     generalSalePrice: Number(props.product?.salePrice ?? 0) || null,
     generalUomPrices: generalRows,
-  }).map(card => card.key === 'general'
-    ? { ...card, label: t('app.stock.batchPricingGeneral') }
-    : card)
+  // Only stock-lot cards: the General card is hidden on this rail.
+  }).filter(card => card.scope !== 'general')
 })
 
 const selectedKey = computed(() => {
@@ -125,10 +123,6 @@ function draftUomPrices(card: BatchPricingCard): SalePriceVersionSelection['uomP
 
 function selectCard(card: BatchPricingCard) {
   if (!recordAccess?.set) return
-  if (card.scope === 'general') {
-    recordAccess.set('__salePriceSelection', null)
-    return
-  }
   if (isSelected(card)) {
     recordAccess.set('__salePriceSelection', null)
     return
@@ -149,29 +143,15 @@ function selectCard(card: BatchPricingCard) {
     editable: true,
     uomPrices,
   }))
+  // Selecting a lot also makes its price the ACTIVE one for POS.
+  if (card.priceId && !card.isPriceActive) void activateCard(card)
 }
 
-function menuItems(card: BatchPricingCard): DropdownMenuItem[][] {
-  if (card.scope === 'general') return []
-  const items: DropdownMenuItem[] = []
-  if (card.priceId && !card.isPriceActive) {
-    items.push({
-      label: t('app.stock.priceHistoryActivate'),
-      icon: 'i-lucide-check',
-      disabled: busy.value || props.disabled,
-      onSelect: () => { void activateCard(card) },
-    })
-  }
-  if (card.priceId && card.isPriceActive) {
-    items.push({
-      label: t('app.stock.batchPricingDeactivate'),
-      icon: 'i-lucide-circle-off',
-      color: 'warning' as const,
-      disabled: busy.value || props.disabled,
-      onSelect: () => { void deactivateCard(card) },
-    })
-  }
-  return items.length ? [items] : []
+/** Checkbox: make this lot's price the active one for POS (or deactivate). */
+async function toggleActive(card: BatchPricingCard, value: boolean) {
+  if (!card.priceId) return
+  if (value) await activateCard(card)
+  else await deactivateCard(card)
 }
 
 async function activateCard(card: BatchPricingCard) {
@@ -306,7 +286,6 @@ defineExpose({ saveBatchPrice, reload: load, busy })
     <header class="flex items-center justify-between gap-2 border-b border-default px-3 py-2">
       <div class="min-w-0">
         <p class="truncate text-sm font-medium text-highlighted">{{ t('app.stock.batchPricingTitle') }}</p>
-        <p class="truncate text-[11px] text-muted">{{ t('app.stock.batchPricingHint') }}</p>
       </div>
       <UButton
         v-if="selection?.scope === 'batch'"
@@ -327,22 +306,25 @@ defineExpose({ saveBatchPrice, reload: load, busy })
         <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin text-muted" />
       </div>
       <div v-else class="space-y-2">
-        <button
+        <div
           v-for="card in cards"
           :key="card.key"
-          type="button"
-          class="group flex w-full items-start gap-2 rounded-sm border px-2.5 py-2 text-left transition-colors"
+          class="group flex w-full cursor-pointer items-start gap-2 rounded-sm border px-2.5 py-2 text-left transition-colors"
           :class="[
             isSelected(card) ? 'border-primary ring-1 ring-primary/30' : 'border-default',
             card.isPriceActive ? 'bg-primary/10' : 'bg-default hover:bg-elevated',
           ]"
+          role="button"
+          tabindex="0"
           @click="selectCard(card)"
+          @keydown.enter.prevent="selectCard(card)"
+          @keydown.space.prevent="selectCard(card)"
         >
           <span
             class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full text-[10px] font-semibold"
             :class="card.isPriceActive ? 'bg-primary/20 text-primary' : 'bg-elevated text-muted'"
           >
-            <UIcon :name="card.scope === 'general' ? 'i-lucide-layers' : 'i-lucide-package'" class="size-3.5" />
+            <UIcon name="i-lucide-package" class="size-3.5" />
           </span>
           <span class="min-w-0 flex-1">
             <span class="flex items-center gap-1.5">
@@ -354,41 +336,30 @@ defineExpose({ saveBatchPrice, reload: load, busy })
                 :label="card.isPriceActive ? t('app.stock.priceHistoryActive') : t('app.stock.priceHistoryInactive')"
               />
             </span>
-            <span v-if="card.scope === 'general'" class="mt-0.5 block text-[11px] text-muted">
-              {{ t('app.stock.batchPricingGeneralHint') }}
+            <span class="mt-0.5 block text-[11px] text-muted">
+              {{ t('app.stock.expiryDateCol') }}:
+              {{ card.expiryDate ? formatDate(card.expiryDate) : '—' }}
             </span>
-            <template v-else>
-              <span class="mt-0.5 block text-[11px] text-muted">
-                {{ t('app.stock.expiryDateCol') }}:
-                {{ card.expiryDate ? formatDate(card.expiryDate) : '—' }}
-              </span>
-              <span class="block text-[11px] text-muted">
-                <template v-if="card.remainingQty != null">
-                  {{ t('app.stock.batchPricingRemaining') }}: {{ card.remainingQty }}
-                </template>
-                <template v-if="card.unitCost != null">
-                  <span v-if="card.remainingQty != null"> · </span>
-                  {{ t('app.stock.costPrice') }}: {{ formatMoney(card.unitCost) }}
-                </template>
-              </span>
-            </template>
+            <span class="block text-[11px] text-muted">
+              <template v-if="card.remainingQty != null">
+                {{ t('app.stock.batchPricingRemaining') }}: {{ card.remainingQty }}
+              </template>
+              <template v-if="card.unitCost != null">
+                <span v-if="card.remainingQty != null"> · </span>
+                {{ t('app.stock.costPrice') }}: {{ formatMoney(card.unitCost) }}
+              </template>
+            </span>
           </span>
-          <UDropdownMenu
-            v-if="menuItems(card).length"
-            :items="menuItems(card)"
-            :content="{ align: 'end' }"
-          >
-            <UButton
-              icon="i-lucide-ellipsis"
-              color="neutral"
-              variant="ghost"
-              size="xs"
-              class="shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100"
-              :aria-label="t('app.ui.actions')"
-              @click.stop
-            />
-          </UDropdownMenu>
-        </button>
+          <!-- Active-for-POS checkbox (replaces the ⋯ menu). -->
+          <UCheckbox
+            class="mt-0.5 shrink-0"
+            :model-value="card.isPriceActive"
+            :disabled="disabled || busy || !card.priceId"
+            :aria-label="t('app.stock.priceHistoryActive')"
+            @click.stop
+            @update:model-value="value => toggleActive(card, value === true)"
+          />
+        </div>
 
         <p v-if="lots.length === 0" class="px-1 pt-1 text-[11px] text-muted">
           {{ t('app.stock.batchPricingEmptyLots') }}

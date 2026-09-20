@@ -239,7 +239,7 @@ export type BatchStatus = 'Active' | 'Expired' | 'Depleted'
  *  (GET /stock/movements?productId=… grouped by batch_no). Read-only lots;
  *  pricing active/inactive comes from the batch-scoped sale-price version. */
 export interface ProductBatchRow {
-  /** Batch identity = product + batch_no (the ledger's batch key). */
+  /** Batch identity = product + batch_no + expiry (the ledger's batch key). */
   id: string
   productId: string
   batchNo: string
@@ -382,7 +382,8 @@ export interface PurchaseLineInput {
   /** Unit cost per the selected UOM. */
   unitCost?: number
   /** Batch no of the lot this line is received into (required when the
-   *  product tracks batches; identity = product + batch_no). */
+   *  product tracks batches; identity = product + batch_no + expiry, so the
+   *  same batch no with a different expiry is a separate lot). */
   batchNo?: string | null
   /** Recorded expiry date of the lot (when the product tracks expiry). */
   expiryDate?: string | null
