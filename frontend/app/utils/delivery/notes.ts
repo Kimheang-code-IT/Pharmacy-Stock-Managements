@@ -127,19 +127,20 @@ export function deliveryLines(note: AppRecord | null | undefined): AppRecord[] {
 }
 
 /** Linked invoices of a note (multi-invoice support, spec §2.1.9). */
-export function noteSales(note: AppRecord | null | undefined): Array<{ saleId: string, invoiceNo: string }> {
+export function noteSales(note: AppRecord | null | undefined): Array<{ saleId: string, invoiceNo: string, saleDate: string }> {
   const sales = Array.isArray(note?.sales) ? note.sales as AppRecord[] : []
   if (sales.length) {
     return sales.map(sale => ({
       saleId: String(sale.saleId ?? sale.id ?? ''),
       invoiceNo: String(sale.invoiceNo ?? ''),
+      saleDate: String(sale.saleDate ?? sale.sale_date ?? sale.date ?? ''),
     }))
   }
   // Legacy single-sale shape.
   const saleId = String(note?.saleId ?? '')
   const invoiceNo = String(note?.invoiceNo ?? note?.saleNo ?? '')
   if (!saleId && !invoiceNo) return []
-  return [{ saleId, invoiceNo }]
+  return [{ saleId, invoiceNo, saleDate: '' }]
 }
 
 export function isDeliveryActive(note: AppRecord): boolean {

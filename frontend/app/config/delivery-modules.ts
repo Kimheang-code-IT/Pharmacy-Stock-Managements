@@ -49,8 +49,6 @@ export const deliveryModules: ModuleConfig[] = [
       col('deliveryFee', 'Delivery Price'),
       col('createdAt', 'Date', { type: 'date' }),
       col('status', 'Status'),
-      col('note', 'Note'),
-      col('itemCount', 'Items', { type: 'number' }),
     ],
     // Metadata only — delivery data comes from POS sales; there is no
     // contact/driver/schedule form (spec §5.13: table + Delivery OK status).

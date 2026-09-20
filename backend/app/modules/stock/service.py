@@ -1740,8 +1740,7 @@ class StockOperationService:
 
         Filters: q (document no / note), product, movement type, date range.
         Sort: `field` / `-field` on createdAt | quantity_delta; newest first
-        by default. Balance before/after is derived from the immutable ledger
-        with a window function — never persisted, never editable.
+        by default. Rows are read-only.
         """
         from app.shared.pagination.params import parse_date_range
 
@@ -1782,8 +1781,7 @@ class StockOperationService:
             .limit(limit)
         )
         movements = [(movement, user_name) for movement, user_name in rows.all()]
-        balances = await _movement_balances(self.session, [movement for movement, _ in movements])
-        return [movement_to_out(m, user_name=u, balances=balances) for m, u in movements], int(total)
+        return [movement_to_out(m, user_name=u) for m, u in movements], int(total)
 
 
 def _movement_order_by(sort: str | None) -> tuple:
@@ -1805,49 +1803,14 @@ def _movement_order_by(sort: str | None) -> tuple:
     return (StockMovement.created_at.desc(), StockMovement.id.desc())
 
 
-async def _movement_balances(session: AsyncSession, movements: list[StockMovement]) -> dict:
-    """Running balance before/after for each movement, derived from the
-    immutable ledger: window sum of quantity_delta per product in ledger order
-    (created_at, id ascending), so the cumulative value includes the row
-    itself. One query per page; never writes anything."""
-    if not movements:
-        return {}
-    ledger = (
-        select(
-            StockMovement.id.label("id"),
-            func.sum(StockMovement.quantity_delta)
-            .over(
-                partition_by=StockMovement.product_id,
-                order_by=(StockMovement.created_at.asc(), StockMovement.id.asc()),
-            )
-            .label("cumulative"),
-        )
-        .where(StockMovement.product_id.in_(list({m.product_id for m in movements})))
-        .subquery()
-    )
-    rows = await session.execute(
-        select(ledger.c.id, ledger.c.cumulative).where(ledger.c.id.in_([m.id for m in movements]))
-    )
-    running = {row.id: row.cumulative for row in rows}
-    balances = {}
-    for movement in movements:
-        after = Decimal(running.get(movement.id) or 0)
-        balances[movement.id] = (after - Decimal(movement.quantity_delta), after)
-    return balances
-
-
 def movement_to_out(
     movement: StockMovement,
     *,
     user_name: str | None = None,
-    balances: dict | None = None,
 ) -> MovementOut:
     """Ledger row → MovementOut (Stock Movements page + history consumers)."""
     delta = movement.quantity_delta
-    balance_before, balance_after = (balances or {}).get(movement.id, (Decimal("0"), Decimal("0")))
     product = movement.product_ref
-    before = Decimal(balance_before).quantize(FOUR)
-    after = Decimal(balance_after).quantize(FOUR)
     return MovementOut(
         id=movement.id,
         product_id=movement.product_id,
@@ -1857,8 +1820,6 @@ def movement_to_out(
         quantity_delta=delta,
         qty_in=delta if delta > 0 else Decimal("0.0000"),
         qty_out=-delta if delta < 0 else Decimal("0.0000"),
-        balance_before=before,
-        balance_after=after,
         unit_cost=movement.unit_cost,
         reference_type=movement.reference_type,
         reference_id=movement.reference_id,

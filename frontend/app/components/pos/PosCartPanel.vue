@@ -70,11 +70,6 @@ function selectUom(uomId: string) {
   if (uomLine.value) emit('changeUom', uomLine.value.productId, uomId)
   uomDialogOpen.value = false
 }
-
-/** FEFO lot breakdown of the inspected line (empty for conversion-UOM lines). */
-const allocations = computed(() => uomLine.value?.batchAllocations || [])
-const allocationTotal = computed(() =>
-  allocations.value.reduce((sum, row) => sum + row.qty * row.unitPrice, 0))
 </script>
 
 <template>
@@ -297,36 +292,6 @@ const allocationTotal = computed(() =>
           :label="option.label"
           @click="selectUom(option.value)"
         />
-      </div>
-
-      <!-- FEFO batch allocation breakdown of this line (spec §5.8). -->
-      <div
-        v-if="allocations.length"
-        class="mt-3 border-t border-default pt-3"
-      >
-        <p class="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
-          {{ t('app.pos.batchAllocation') }}
-        </p>
-        <div class="flex items-center gap-2 text-[11px] font-semibold text-muted">
-          <span class="min-w-0 flex-1">{{ t('app.stock.batchNo') }}</span>
-          <span class="w-12 text-right">{{ t('app.pos.qty') }}</span>
-          <span class="w-20 text-right">{{ t('app.pos.unitPrice') }}</span>
-          <span class="w-20 text-right">{{ t('app.pos.amount') }}</span>
-        </div>
-        <div
-          v-for="(row, index) in allocations"
-          :key="`${row.batchNo}-${index}`"
-          class="flex items-center gap-2 py-0.5 text-xs tabular-nums"
-        >
-          <span class="min-w-0 flex-1 truncate font-medium">{{ row.batchNo || '—' }}</span>
-          <span class="w-12 text-right">{{ row.qty }}</span>
-          <span class="w-20 text-right">{{ money(row.unitPrice) }}</span>
-          <span class="w-20 text-right font-semibold">{{ money(row.qty * row.unitPrice) }}</span>
-        </div>
-        <div class="mt-1 flex items-center justify-between border-t border-default pt-1 text-xs font-bold">
-          <span>{{ t('app.pos.total') }}</span>
-          <span class="tabular-nums">{{ money(allocationTotal) }}</span>
-        </div>
       </div>
 
       <template #footer>

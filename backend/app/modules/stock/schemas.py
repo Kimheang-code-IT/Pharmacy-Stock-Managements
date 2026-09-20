@@ -377,8 +377,7 @@ class MovementOut(BaseModel):
     Quantities stay in the product base UOM (like the ledger); ``uom_symbol``
     is the line snapshot when present, else the product's base UOM symbol.
     ``qty_in``/``qty_out`` are unsigned convenience projections of the signed
-    ``quantity_delta``; ``balance_before``/``balance_after`` are derived from
-    the immutable movement ledger (never persisted).
+    ``quantity_delta``.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -391,8 +390,6 @@ class MovementOut(BaseModel):
     quantity_delta: Decimal
     qty_in: Decimal = Decimal("0")
     qty_out: Decimal = Decimal("0")
-    balance_before: Decimal = Decimal("0")
-    balance_after: Decimal = Decimal("0")
     unit_cost: Decimal
     reference_type: str
     reference_id: UUID

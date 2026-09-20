@@ -313,6 +313,10 @@ class ReportsService:
                 StockTransactionItem.returned_quantity,
                 StockTransactionItem.unit_cost,
                 StockTransactionItem.line_total,
+                # Batch traceability: the lot/expiry the line was received into.
+                # Needed so the purchase Edit form can reload the original lot.
+                StockTransactionItem.batch_no,
+                StockTransactionItem.expiry_date,
                 StockTransaction.status,
                 StockTransaction.currency,
                 StockTransaction.exchange_rate,
@@ -402,6 +406,9 @@ class ReportsService:
                     "return_amount": (returned * unit_cost).quantize(Q2),
                     "cost_price": unit_cost,
                     "total_cost": Decimal(row.line_total),
+                    # Batch traceability reloaded by the purchase Edit form.
+                    "batch_no": row.batch_no,
+                    "expiry_date": row.expiry_date,
                     "paid_amount": Decimal(row.line_total) - remaining if debt else Decimal(row.line_total),
                     "remaining_debt": remaining,
                     "status": debt.status if debt else "PAID",

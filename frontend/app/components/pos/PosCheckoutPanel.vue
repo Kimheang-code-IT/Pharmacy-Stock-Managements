@@ -203,11 +203,6 @@ const returnRestockProxy = computed({
   set: (value: boolean) => emit('update:returnRestock', value === true),
 })
 
-const includedDebtIdsProxy = computed({
-  get: () => props.includedDebtIds,
-  set: (value: string[]) => emit('update:includedDebtIds', value),
-})
-
 /** Paper size for the post-sale invoice print (A4 / A5) chosen on the keypad. */
 const paperSizeModel = computed<PrintPaperSize>({
   get: () => props.paperSize ?? 'A4',
@@ -216,12 +211,10 @@ const paperSizeModel = computed<PrintPaperSize>({
 
 const customerDebtBalance = computed(() =>
   props.debts.reduce((sum, row) => sum + Number(row.remainingAmount || 0), 0))
-/** Customer has open invoices — shows the Debt button + prior-debt amount input. */
+/** Customer has open invoices — shows the Debt history button + payback input. */
 const hasCustomerDebts = computed(() => customerDebtBalance.value > 0)
-/** Debt button is a toggle: on when the customer's invoices are included. */
-const debtActive = computed(() => props.includedDebtIds.length > 0)
 
-/** Prior-debt amount auto-fills from the selected invoices (still editable). */
+/** Prior-debt payback auto-fills to the customer's open invoices (still editable). */
 const selectedDebtTotal = computed(() => roundMoney(
   props.debts
     .filter(row => props.includedDebtIds.includes(String(row.id)))
@@ -235,16 +228,6 @@ watch(selectedDebtTotal, (total) => {
 function emitDeposit(value: unknown) {
   const amount = value == null || value === '' ? 0 : Number(value)
   emit('update:depositInput', Number.isFinite(amount) ? Math.max(0, amount) : 0)
-}
-
-/** Debt toggle: activate selects invoices (dialog), deactivate clears them. */
-function toggleDebt() {
-  if (props.disabled) return
-  if (debtActive.value) {
-    emit('update:includedDebtIds', [])
-    return
-  }
-  openDebts()
 }
 
 function onCustomerPick(value: unknown) {
@@ -339,6 +322,7 @@ watch(() => props.cart.length, (length) => {
           v-model:paper-size="paperSizeModel"
           :total="due"
           :delivery-price="appliedDeliveryPrice"
+          :existing-debt="depositInput"
           :currency="saleCurrency"
           :payment-method="paymentMethod"
           :busy="completing"
@@ -422,12 +406,12 @@ watch(() => props.cart.length, (length) => {
             <UButton
               block
               size="lg"
-              :color="debtActive ? 'error' : 'neutral'"
+              color="neutral"
               variant="solid"
               icon="i-lucide-wallet"
               :label="`${t('app.pos.debt')} · ${formatMoney(customerDebtBalance, currency)}`"
               :disabled="disabled || !customerId || saleCurrency === 'KHR' || !hasCustomerDebts"
-              @click="toggleDebt"
+              @click="openDebts"
             />
             <UButton
               block
@@ -543,7 +527,6 @@ watch(() => props.cart.length, (length) => {
 
     <PosOutstandingDebtDialog
       v-model:open="debtOpen"
-      v-model:selected-ids="includedDebtIdsProxy"
       :debts="debts"
       :currency="currency"
     />

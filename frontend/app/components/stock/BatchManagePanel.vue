@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { TableColumn } from '@nuxt/ui'
 import type { PaginationState } from '@tanstack/vue-table'
-import { UButton } from '#components'
+import { UBadge, UButton } from '#components'
 import { h } from 'vue'
 import type { AppRecord } from '~/config/admin-seed'
 import type { ProductBatchRow } from '~/repositories/contracts/entities'
@@ -41,7 +41,18 @@ const rows = ref<ProductBatchRow[]>([])
 const pagination = ref<PaginationState>({ pageIndex: 0, pageSize: 50 })
 
 const canExpire = computed(() => auth.canAccessPage('stock.expire'))
-const canUpdate = computed(() => auth.canAccessPage('product.update'))
+
+/** A lot is disabled (never sold) once its expiry date has passed. UI-only. */
+function localToday() {
+  const now = new Date()
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+const today = localToday()
+function isExpired(row: ProductBatchRow) {
+  if (row.status === 'Expired') return true
+  return Boolean(row.expiryDate) && String(row.expiryDate) < today
+}
 
 const productRecord = computed(() => {
   const id = String(props.product?.id || '')
@@ -91,36 +102,6 @@ const filteredRows = computed(() => {
 
 function bumpPricingRail() {
   recordAccess?.set?.('__batchPricingEpoch', Date.now())
-}
-
-/** Mark a lot inactive (or active): inactive lots are never sold on POS but
- *  keep their stock and historical pricing. */
-async function toggleBatchActive(row: ProductBatchRow) {
-  if (!props.product?.id || props.disabled || busyId.value) return
-  const nextActive = row.isActive === false
-  busyId.value = row.id
-  try {
-    await stockQueries.setBatchActive(String(props.product.id), row.id, nextActive)
-    toast.add({
-      title: t(nextActive ? 'core.rowActions.activate' : 'core.rowActions.deactivate'),
-      color: 'success',
-    })
-    await loadBatches()
-    void store.fetchList('products')
-    bumpPricingRail()
-  }
-  catch (error: unknown) {
-    if (!isApiErrorHandled(error)) {
-      toast.add({
-        title: t('app.ui.operationFailed'),
-        description: apiErrorMessage(error, t('app.ui.operationFailed')),
-        color: 'error',
-      })
-    }
-  }
-  finally {
-    busyId.value = ''
-  }
 }
 
 async function expireBatch(row: ProductBatchRow) {
@@ -176,6 +157,9 @@ async function expireBatch(row: ProductBatchRow) {
   }
 }
 
+const dim = (row: ProductBatchRow, base: string) =>
+  `${base}${isExpired(row) ? ' opacity-60' : ''}`
+
 const columns = computed<TableColumn<ProductBatchRow & Record<string, unknown>>[]>(() => [
   {
     accessorKey: '__no',
@@ -188,13 +172,20 @@ const columns = computed<TableColumn<ProductBatchRow & Record<string, unknown>>[
     accessorKey: 'batchNo',
     header: t('app.stock.batchNo'),
     enableSorting: false,
-    cell: ({ row }) => h('span', { class: 'font-medium text-highlighted whitespace-nowrap' }, row.original.batchNo),
+    cell: ({ row }) => h('span', {
+      class: dim(row.original, 'inline-flex items-center gap-1.5 whitespace-nowrap'),
+    }, [
+      h('span', { class: 'font-medium text-highlighted' }, row.original.batchNo),
+      ...(isExpired(row.original)
+        ? [h(UBadge, { size: 'sm', color: 'warning', variant: 'subtle' }, () => t('app.stock.batchExpired'))]
+        : []),
+    ]),
   },
   {
     accessorKey: 'purchaseDate',
     header: t('app.stock.purchaseDate'),
     enableSorting: false,
-    cell: ({ row }) => h('span', { class: 'whitespace-nowrap tabular-nums text-muted' },
+    cell: ({ row }) => h('span', { class: dim(row.original, 'whitespace-nowrap tabular-nums text-muted') },
       row.original.purchaseDate ? formatDate(row.original.purchaseDate) : '—'),
   },
   {
@@ -202,14 +193,14 @@ const columns = computed<TableColumn<ProductBatchRow & Record<string, unknown>>[
     header: t('app.stock.costPrice'),
     enableSorting: false,
     meta: { class: { td: 'text-end tabular-nums whitespace-nowrap', th: 'text-end' } },
-    cell: ({ row }) => h('span', { class: 'text-end tabular-nums' }, formatMoney(row.original.unitCost)),
+    cell: ({ row }) => h('span', { class: dim(row.original, 'text-end tabular-nums') }, formatMoney(row.original.unitCost)),
   },
   {
     accessorKey: 'salePrice',
     header: t('app.stock.salePrice'),
     enableSorting: false,
     meta: { class: { td: 'text-end tabular-nums whitespace-nowrap', th: 'text-end' } },
-    cell: ({ row }) => h('span', { class: 'text-end tabular-nums font-medium' },
+    cell: ({ row }) => h('span', { class: dim(row.original, 'text-end tabular-nums font-medium') },
       formatMoney(Number(row.original.salePrice ?? productRecord.value?.salePrice ?? 0))),
   },
   {
@@ -218,35 +209,15 @@ const columns = computed<TableColumn<ProductBatchRow & Record<string, unknown>>[
     enableSorting: false,
     meta: { class: { td: 'text-end tabular-nums whitespace-nowrap', th: 'text-end' } },
     cell: ({ row }) => h('span', {
-      class: `text-end tabular-nums font-medium ${row.original.remainingQty <= 0 ? 'text-muted' : ''}`,
+      class: `${dim(row.original, 'text-end tabular-nums font-medium')} ${row.original.remainingQty <= 0 ? 'text-muted' : ''}`,
     }, String(row.original.remainingQty)),
   },
   {
     accessorKey: 'expiryDate',
     header: t('app.stock.expiryDateCol'),
     enableSorting: false,
-    cell: ({ row }) => h('span', { class: 'whitespace-nowrap tabular-nums text-muted' },
+    cell: ({ row }) => h('span', { class: dim(row.original, 'whitespace-nowrap tabular-nums text-muted') },
       row.original.expiryDate ? formatDate(row.original.expiryDate) : '—'),
-  },
-  {
-    id: 'active',
-    header: '',
-    enableSorting: false,
-    meta: { class: { td: 'w-28 text-end whitespace-nowrap', th: 'w-28' } },
-    cell: ({ row }) => !canUpdate.value
-      ? h('span')
-      : h(UButton, {
-          size: 'xs',
-          color: row.original.isActive === false ? 'success' : 'warning',
-          variant: 'subtle',
-          icon: row.original.isActive === false ? 'i-lucide-circle-check' : 'i-lucide-circle-off',
-          label: row.original.isActive === false
-            ? t('core.rowActions.activate')
-            : t('core.rowActions.deactivate'),
-          loading: busyId.value === row.original.id,
-          disabled: props.disabled || busyId.value === row.original.id,
-          onClick: () => { void toggleBatchActive(row.original) },
-        }),
   },
   {
     id: 'actions',

@@ -56,3 +56,25 @@ export function checkoutPaidNow(paidInput: number | undefined, grandTotal: numbe
   if (!Number.isFinite(typed)) return due
   return roundMoney(Math.max(0, typed))
 }
+
+/**
+ * Split one combined tender from the payment keypad into the part that pays
+ * THIS sale and the part that pays existing debt (deposit). The keypad Total
+ * is `saleDue + debtBudget`, so cash tends the sale first and any excess (up
+ * to the debt budget) settles prior invoices. Credit tenders nothing on the
+ * sale; its tender only covers debt.
+ */
+export function checkoutTenderSplit(
+  entered: number,
+  saleDue: number,
+  debtBudget: number,
+  isCredit: boolean,
+): { paid: number, deposit: number } {
+  const total = roundMoney(Math.max(0, Number(entered) || 0))
+  const due = roundMoney(Math.max(0, Number(saleDue) || 0))
+  const budget = roundMoney(Math.max(0, Number(debtBudget) || 0))
+  if (isCredit) return { paid: 0, deposit: roundMoney(Math.min(total, budget)) }
+  const paid = roundMoney(Math.min(total, due))
+  const deposit = roundMoney(Math.min(Math.max(0, total - paid), budget))
+  return { paid, deposit }
+}

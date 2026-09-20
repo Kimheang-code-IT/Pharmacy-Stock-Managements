@@ -55,9 +55,9 @@ async def test_status_transitions_follow_the_allowed_table(client):
     assert created.status_code == 201, created.text
     note_id = created.json()["data"]["id"]
 
-    # Draft → Delivered is NOT a legal transition (§2.1.9 table).
+    # Draft → Partially delivered is NOT a legal transition (§2.1.9 table).
     jump = await client.post(
-        f"/api/v1/delivery/{note_id}/status", json={"status": "DELIVERED"}, headers=headers
+        f"/api/v1/delivery/{note_id}/status", json={"status": "PARTIALLY_DELIVERED"}, headers=headers
     )
     assert jump.status_code == 409
 
@@ -84,6 +84,37 @@ async def test_status_transitions_follow_the_allowed_table(client):
         headers=headers,
     )
     assert late_cancel.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_draft_delivery_note_can_be_completed_directly(client):
+    """The list's one-click "Mark as Completed" (Processing → Completed) works
+    on a freshly created PENDING note, without a manual confirm step."""
+    headers = await admin_headers(client)
+    tag = uuid.uuid4().hex[:6]
+    _product_a, _product_b, _customer, sale, line_a, _line_b = await _sale_two_lines(client, headers, tag)
+
+    created = await client.post(
+        "/api/v1/delivery",
+        json={
+            "deliveryPhone": "0123456789",
+            "deliveryLocation": "Phnom Penh",
+            "lines": [{"saleId": sale["id"], "saleItemId": line_a["id"], "qtyToDeliver": 5}],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    note_id = created.json()["data"]["id"]
+    assert created.json()["data"]["status"] == "PENDING"
+
+    delivered = await client.post(
+        f"/api/v1/delivery/{note_id}/status", json={"status": "DELIVERED"}, headers=headers
+    )
+    assert delivered.status_code == 200, delivered.text
+    body = delivered.json()["data"]
+    assert body["status"] == "DELIVERED"
+    assert body["delivered_at"]
+    assert all(Decimal(item["qty_delivered"]) == Decimal("5.0000") for item in body["items"])
 
 
 @pytest.mark.asyncio

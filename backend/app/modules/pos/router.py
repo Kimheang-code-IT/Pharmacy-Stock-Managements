@@ -134,7 +134,9 @@ async def create_delivery_note_from_sale(
 
     service = DeliveryNoteService(db)
     note = await service.create_from_sale(sale_id, payload, actor=actor)
-    return envelope(note_to_out(note, await service.customer_name(note)))
+    sale_ids = [link.sale_id for link in note.sales]
+    sale_dates = await service.sale_dates(sale_ids)
+    return envelope(note_to_out(note, await service.customer_name(note), None, sale_dates))
 
 
 @router.get("/sales/{sale_id}/receipt")

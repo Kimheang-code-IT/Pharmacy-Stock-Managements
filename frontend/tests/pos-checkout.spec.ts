@@ -7,6 +7,7 @@ import {
   checkoutOutstanding,
   checkoutPaidNow,
   checkoutSaleNet,
+  checkoutTenderSplit,
 } from '../app/utils/pos/checkout'
 
 describe('POS checkout totals', () => {
@@ -55,6 +56,24 @@ describe('POS checkout totals', () => {
     expect(checkoutChange(200, 95)).toBe(105)
     expect(checkoutPaidNow(undefined, 95, true)).toBe(0)
     expect(checkoutPaidNow(50, 95, true)).toBe(0)
+  })
+
+  it('splits one keypad tender into sale payment and existing-debt payment', () => {
+    // Sale 95, old debt 40 → keypad Total 135.
+    // Cash tends the sale first, then the debt up to the budget.
+    expect(checkoutTenderSplit(135, 95, 40, false)).toEqual({ paid: 95, deposit: 40 })
+    expect(checkoutTenderSplit(100, 95, 40, false)).toEqual({ paid: 95, deposit: 5 })
+    expect(checkoutTenderSplit(80, 95, 40, false)).toEqual({ paid: 80, deposit: 0 })
+    // Overpay beyond sale + debt is change, never extra debt payment.
+    expect(checkoutTenderSplit(200, 95, 40, false)).toEqual({ paid: 95, deposit: 40 })
+    // No existing debt → the whole tender pays the sale.
+    expect(checkoutTenderSplit(95, 95, 0, false)).toEqual({ paid: 95, deposit: 0 })
+  })
+
+  it('credits the sale but still settles existing debt on a combined Credit tender', () => {
+    expect(checkoutTenderSplit(40, 95, 40, true)).toEqual({ paid: 0, deposit: 40 })
+    expect(checkoutTenderSplit(10, 95, 40, true)).toEqual({ paid: 0, deposit: 10 })
+    expect(checkoutTenderSplit(0, 95, 40, true)).toEqual({ paid: 0, deposit: 0 })
   })
 
   it('keeps the same grand-total rules in KHR', () => {

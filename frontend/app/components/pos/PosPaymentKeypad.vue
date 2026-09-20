@@ -1,23 +1,29 @@
 <script setup lang="ts">
 import { formatMoney } from '~/composables/module/useModule'
+import { roundMoney } from '~/utils/pos/cart'
 import type { PrintPaperSize } from '~/utils/print/html'
 
 /**
  * POS inline payment keypad: an on-screen numeric keypad (tablet/iPad friendly)
  * that replaces the checkout summary block to enter the amount paid for this
  * invoice. Shows the total due plus the change (overpay) or outstanding balance
- * (underpay) live as digits are tapped.
+ * (underpay) live as digits are tapped. When the customer pays existing debt
+ * together with this invoice, the keypad Total becomes sale + old debt so one
+ * tender covers both.
  */
 const props = withDefaults(defineProps<{
   total: number
   /** Delivery fee included in `total` (0 when no delivery). */
   deliveryPrice?: number
+  /** Existing-debt payment collected together with this sale (0 when none). */
+  existingDebt?: number
   currency?: 'USD' | 'KHR'
   paymentMethod?: string
   busy?: boolean
   disabled?: boolean
 }>(), {
   deliveryPrice: 0,
+  existingDebt: 0,
   currency: 'USD',
   paymentMethod: 'Cash',
   busy: false,
@@ -48,13 +54,17 @@ const amount = computed(() => {
   const value = Number(entry.value)
   return Number.isFinite(value) ? Math.max(0, value) : 0
 })
-const change = computed(() => Math.max(0, amount.value - Number(props.total || 0)))
-const outstanding = computed(() => Math.max(0, Number(props.total || 0) - amount.value))
+/** Existing-debt payment folded into the keypad total (never negative). */
+const debtAmount = computed(() => roundMoney(Math.max(0, Number(props.existingDebt || 0))))
+/** The single amount to collect: this sale plus any existing-debt payment. */
+const combinedTotal = computed(() => roundMoney(Math.max(0, Number(props.total || 0)) + debtAmount.value))
+const change = computed(() => Math.max(0, amount.value - combinedTotal.value))
+const outstanding = computed(() => Math.max(0, combinedTotal.value - amount.value))
 /** Sale amount before the delivery fee (only shown when delivery is added). */
 const subtotal = computed(() => Math.max(0, Number(props.total || 0) - Number(props.deliveryPrice || 0)))
 
 function prefill() {
-  entry.value = isCredit.value ? '0' : String(Number(props.total || 0))
+  entry.value = isCredit.value ? '0' : String(combinedTotal.value)
 }
 
 function focusInput() {
@@ -169,9 +179,16 @@ function confirm() {
         <span class="tabular-nums">{{ money(deliveryPrice) }}</span>
       </div>
     </div>
+    <div
+      v-if="debtAmount > 0"
+      class="flex items-center justify-between rounded-sm bg-elevated/60 px-3 py-2 text-sm"
+    >
+      <span class="text-muted">{{ t('app.pos.depositTotal') }}</span>
+      <span class="tabular-nums">{{ money(debtAmount) }}</span>
+    </div>
     <div class="flex items-center justify-between rounded-sm bg-elevated/60 px-3 py-2 text-base">
       <span class="text-muted">{{ t('app.pos.total') }}</span>
-      <span class="font-semibold tabular-nums">{{ money(total) }}</span>
+      <span class="font-semibold tabular-nums">{{ money(combinedTotal) }}</span>
     </div>
 
     <div class="flex items-center gap-2 border-b border-default pb-2">

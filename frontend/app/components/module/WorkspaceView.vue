@@ -238,6 +238,13 @@ const uomProductCounts = computed(() => {
   return counts
 })
 
+/** Movement labels that increase stock (Stock In, returns, positive adjustments). */
+const STOCK_IN_LABELS = new Set(['Stock In', 'Sale Return', 'Adjustment Increase'])
+/** Movement labels that decrease stock (sales, purchase returns, negative adjustments). */
+const STOCK_OUT_LABELS = new Set(['Sale', 'Purchase Return', 'Adjustment Decrease'])
+/** Loss labels tracked separately from trading stock-out. */
+const DAMAGE_LABELS = new Set(['Damage', 'Expiry'])
+
 /** Per-product movement aggregates for the Stock list quantity columns. */
 const stockTotalsByProduct = computed(() => {
   const totals = new Map<string, { stockIn: number, stockOut: number, damage: number }>()
@@ -247,9 +254,9 @@ const stockTotalsByProduct = computed(() => {
     const entry = totals.get(productId) || { stockIn: 0, stockOut: 0, damage: 0 }
     const qty = Number(row.quantity || 0)
     const type = String(row.type ?? '')
-    if (type === 'Stock In' || type === 'Sale Return') entry.stockIn += qty
-    else if (type === 'Sale') entry.stockOut += Math.abs(qty)
-    else if (type === 'Damage') entry.damage += Math.abs(qty)
+    if (STOCK_IN_LABELS.has(type)) entry.stockIn += Math.abs(qty)
+    else if (STOCK_OUT_LABELS.has(type)) entry.stockOut += Math.abs(qty)
+    else if (DAMAGE_LABELS.has(type)) entry.damage += Math.abs(qty)
     totals.set(productId, entry)
   }
   return totals

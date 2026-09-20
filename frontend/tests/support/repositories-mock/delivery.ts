@@ -82,6 +82,7 @@ export function createMockDeliveryRepository(): DeliveryCommandRepository {
           id: createId('dls'),
           saleId: String(sale.id),
           invoiceNo: String(sale.invoiceNo || sale.saleNo || ''),
+          saleDate: String(sale.date ?? sale.saleDate ?? ''),
         })
         const saleItems = Array.isArray(sale.items) ? sale.items as AppRecord[] : []
         for (const line of input.lines.filter(row => String(row.saleId || input.saleId || '') === String(sale.id))) {
@@ -200,6 +201,7 @@ export function createMockDeliveryRepository(): DeliveryCommandRepository {
             id: createId('dls'),
             saleId,
             invoiceNo: String(sale.invoiceNo || sale.saleNo || ''),
+            saleDate: String(sale.date ?? sale.saleDate ?? ''),
           })
           const saleItems = Array.isArray(sale.items) ? sale.items as AppRecord[] : []
           for (const line of input.lines.filter(row => String(row.saleId || '') === saleId)) {

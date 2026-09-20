@@ -65,6 +65,10 @@ class PurchaseReportRow(BaseModel):
     return_amount: Decimal = Decimal("0")
     cost_price: Decimal
     total_cost: Decimal
+    # Batch traceability: the lot/expiry the line was received into (reloaded
+    # by the purchase Edit form so the original lot is shown again).
+    batch_no: str | None = None
+    expiry_date: date | None = None
     paid_amount: Decimal
     remaining_debt: Decimal
     status: str

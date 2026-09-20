@@ -2,7 +2,7 @@
 import type { AppRecord } from '~/config/admin-seed'
 import type { ProductBatchRow, ProductSalePriceRow } from '~/repositories/contracts/entities'
 import { useStockQueries } from '~/repositories/index'
-import { formatDate, formatMoney } from '~/utils/format/format-service'
+import { formatDate } from '~/utils/format/format-service'
 import { apiErrorMessage, isApiErrorHandled, isRequestAborted } from '~/utils/api/errors'
 import { moduleDocumentRecordKey } from '~/utils/module/document-tabs'
 import type { BatchPricingCard, SalePriceVersionSelection } from '~/utils/stock/uom-conversions'
@@ -145,8 +145,6 @@ function selectCard(card: BatchPricingCard) {
     editable: true,
     uomPrices,
   }))
-  // Selecting a lot also makes its price the ACTIVE one for POS.
-  if (card.priceId && !card.isPriceActive) void activateCard(card)
 }
 
 /** Checkbox: make this lot's price the active one for POS (or deactivate). */
@@ -290,17 +288,6 @@ defineExpose({ saveBatchPrice, reload: load, busy })
       <div class="min-w-0">
         <p class="truncate text-sm font-medium text-highlighted">{{ t('app.stock.batchPricingTitle') }}</p>
       </div>
-      <UButton
-        v-if="selection?.scope === 'batch'"
-        size="xs"
-        color="primary"
-        variant="soft"
-        icon="i-lucide-save"
-        :label="t('app.stock.batchPricingSave')"
-        :loading="busy"
-        :disabled="disabled || !product?.id"
-        @click="saveBatchPrice"
-      />
     </header>
 
     <div class="min-h-0 flex-1 overflow-y-auto p-2">
@@ -342,18 +329,6 @@ defineExpose({ saveBatchPrice, reload: load, busy })
             <span class="mt-0.5 block text-[11px] text-muted">
               {{ t('app.stock.expiryDateCol') }}:
               {{ card.expiryDate ? formatDate(card.expiryDate) : '—' }}
-            </span>
-            <span class="block text-[11px] text-muted">
-              <template v-if="card.remainingQty != null">
-                {{ t('app.stock.batchPricingRemaining') }}: {{ card.remainingQty }}
-              </template>
-              <template v-if="card.unitCost != null">
-                <span v-if="card.remainingQty != null"> · </span>
-                {{ t('app.stock.costPrice') }}: {{ formatMoney(card.unitCost) }}
-              </template>
-            </span>
-            <span v-if="card.grossValue != null" class="block text-[11px] text-muted">
-              {{ t('app.stock.batchPricingGross') }}: {{ formatMoney(card.grossValue) }}
             </span>
           </span>
           <!-- Active-for-POS checkbox (replaces the ⋯ menu). -->

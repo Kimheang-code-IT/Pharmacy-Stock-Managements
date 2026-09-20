@@ -423,7 +423,7 @@ async def list_movements(
 
     Filters: q (document no / note), product, movement type, date range,
     plus pagination and `sort` (`createdAt`/`quantity`, `-` = descending).
-    Balance before/after is derived from the ledger; rows are read-only.
+    Rows are read-only.
     """
     service = StockOperationService(db)
     movements, total = await service.list_movements(

@@ -5,7 +5,6 @@ import type { DocumentTabSchema } from '~/types/stock-pos/common'
 import { useDeliveryCommands } from '~/repositories/index'
 import { collectionOptionsEndpoint } from '~/utils/module/document-tabs'
 import {
-  invoiceDeliveryStatusLabelKey,
   normalizeDeliverableInvoice,
   noteSales,
   type DeliverableInvoice,
@@ -25,7 +24,7 @@ import { apiErrorMessage, isApiErrorHandled } from '~/utils/api/errors'
  * - "Invoices to deliver" line table: each row adds ONE invoice — the
  *   picker offers only the selected customer's deliverable invoices
  *   (same-customer rule, searchable by invoice no), auto-fills the row's
- *   Date + Status, and blocks duplicate selection. Multiple invoices of the
+ *   invoice Date, and blocks duplicate selection. Multiple invoices of the
  *   SAME customer can be added as rows. Every selected invoice expands to
  *   its deliverable item lines (full remaining qty) on submit — the item
  *   level delivery-note API contract (saleId / saleItemId / productId /
@@ -125,7 +124,7 @@ const noteInvoices = computed<DeliverableInvoice[]>(() => {
       phone: String(note.deliveryPhone || ''),
       location: String(note.deliveryLocation || note.deliveryAddress || ''),
       saleStatus: '',
-      date: '',
+      date: link.saleDate,
       deliveryStatus: 'PENDING',
       qtyRemaining: mapped.reduce((sum, item) => sum + item.qtyRemaining, 0),
       items: mapped,
@@ -153,7 +152,7 @@ function applyEditNote(note: AppRecord) {
   model.lines = noteSales(note).map(link => ({
     saleId: link.saleId,
     invoiceNo: link.invoiceNo,
-    invoiceStatus: '',
+    invoiceDate: link.saleDate,
   }))
 }
 
@@ -175,7 +174,7 @@ onMounted(async () => {
       const invoice = invoiceById.value.get(preselect)
       if (invoice) {
         model.customerId = invoice.customerId
-        model.lines = [{ saleId: preselect, invoiceNo: invoice.invoiceNo, invoiceStatus: '' }]
+        model.lines = [{ saleId: preselect, invoiceNo: invoice.invoiceNo, invoiceDate: invoice.date }]
       }
       else toast.add({ title: t('app.delivery.noDeliverableSales'), color: 'warning' })
     }
@@ -228,8 +227,8 @@ const linesTable = computed<ModuleTable>(() => ({
       width: 'w-80 min-w-64',
       optionItems: row => invoiceOptionsFor(row),
     },
-    // Auto-filled snapshot of the selected invoice (display only).
-    { key: 'invoiceStatus', label: t('app.fields.status'), type: 'text', computed: true, width: 'w-36 min-w-32' },
+    // Auto-filled snapshot of the selected invoice's date (display only).
+    { key: 'invoiceDate', label: t('app.fields.date'), type: 'date', computed: true, width: 'w-36 min-w-32' },
   ],
 }))
 
@@ -290,7 +289,7 @@ watch(() => model.customerId, (customerId) => {
 /**
  * Keep rows coherent: every selected invoice must belong to the form's
  * customer (same-customer rule), may appear on ONE row only (no duplicate
- * selection), and auto-fills the row's Date + Status from the invoice.
+ * selection), and auto-fills the row's invoice Date from the invoice.
  */
 watch(() => model.lines, (rows) => {
   if (!Array.isArray(rows)) return
@@ -328,7 +327,7 @@ watch(() => model.lines, (rows) => {
     const row = {
       saleId,
       invoiceNo: invoice.invoiceNo,
-      invoiceStatus: t(invoiceDeliveryStatusLabelKey(invoice.deliveryStatus)),
+      invoiceDate: invoice.date,
     }
     if (JSON.stringify(row) !== JSON.stringify(raw)) changed = true
     next.push(row)
@@ -430,6 +429,7 @@ async function save(confirm: boolean) {
     :can-save="canSubmit && canSave"
     :confirm-save="canSave"
     :is-create="!isEdit"
+    :read-only="isEdit && !canSave"
     :show-tabs="false"
     content-wide
     :show-cancel="true"

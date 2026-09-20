@@ -807,10 +807,6 @@ export function createMockPosRepository(): PosCommandRepository {
     extra: { uom?: string, unitCost?: number, batchNo?: string, expiryDate?: string, documentNo?: string } = {},
   ) {
     const db = useMockDb()
-    // Running balance display columns (ledger math stays in the base UOM).
-    const balanceBefore = roundQty(db.collections.stockMovements
-      .filter(row => String(row.productId ?? '') === String(productId))
-      .reduce((sum, row) => sum + Number(row.quantity ?? 0), 0))
     const product = db.collections.products.find(row => String(row.id) === String(productId))
     db.collections.stockMovements.unshift({
       id: createId('mv'),
@@ -830,8 +826,6 @@ export function createMockPosRepository(): PosCommandRepository {
       uom: extra.uom ?? String(product?.uomSymbol ?? ''),
       qtyIn: quantity > 0 ? quantity : 0,
       qtyOut: quantity < 0 ? Math.abs(quantity) : 0,
-      balanceBefore,
-      balanceAfter: roundQty(balanceBefore + quantity),
       ...(extra.unitCost != null ? { unitCost: extra.unitCost } : {}),
       ...(extra.batchNo ? { batchNo: extra.batchNo } : {}),
       ...(extra.expiryDate ? { expiryDate: extra.expiryDate } : {}),

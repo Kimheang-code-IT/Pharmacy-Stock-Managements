@@ -27,6 +27,7 @@ import {
   checkoutOutstanding,
   checkoutPaidNow,
   checkoutSaleNet,
+  checkoutTenderSplit,
   type CheckoutDebtRow,
 } from '~/utils/pos/checkout'
 import { printSaleInvoice, type SaleInvoicePrintInput } from '~/utils/print/invoice'
@@ -283,6 +284,16 @@ const openDebts = computed<CheckoutDebtRow[]>(() => {
     })
     .sort((a, b) => b.date.localeCompare(a.date))
 })
+
+// No manual selection at POS: every open invoice is eligible and the payback
+// input decides how much is settled. Oldest-first so the backend clears the
+// oldest debt first.
+const allOpenDebtIds = computed(() => [...openDebts.value]
+  .sort((a, b) => a.date.localeCompare(b.date))
+  .map(row => row.id))
+watch(allOpenDebtIds, (ids) => {
+  includedDebtIds.value = [...ids]
+}, { immediate: true })
 
 const discountTotal = computed(() => cartDiscountTotal(cart.value))
 const selectedDeposit = computed(() => checkoutDepositTotal(
@@ -548,7 +559,7 @@ watch(includedDebtIds, () => {
 }, { deep: true })
 
 watch(customerId, (id) => {
-  includedDebtIds.value = []
+  // Eligible debts repopulate from `allOpenDebtIds` when the customer changes.
   if (!id) {
     customerName.value = ''
     customerPhone.value = ''
@@ -870,9 +881,14 @@ async function saveEditSale() {
  *  `pendingDelivery` is snapshotted before the checkout reset so the delivery
  *  note is auto-created (no second form) once the sale + print finish. */
 const pendingDelivery = ref<{ saleId: string, phone: string, location: string, fee: number } | null>(null)
-/** Checkout keypad confirmed: capture the amount paid, then submit the sale. */
+/** Checkout keypad confirmed: the keypad Total is this sale + existing-debt
+ *  payment. Split the single tender into the part that pays the sale and the
+ *  part that settles prior invoices, then submit. */
 function onPaymentConfirm(amount: number) {
-  paidInput.value = Number.isFinite(amount) ? amount : undefined
+  const entered = Number.isFinite(amount) ? amount : 0
+  const split = checkoutTenderSplit(entered, due.value, depositInput.value, isCredit.value)
+  paidInput.value = isCredit.value ? 0 : split.paid
+  depositInput.value = split.deposit
   void completeSale()
 }
 

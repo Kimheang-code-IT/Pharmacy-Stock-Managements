@@ -1322,8 +1322,8 @@
           "costPrice": "តម្លៃទិញ",
           "salePrice": "តម្លៃលក់",
           "quantity": "ស្តុកបច្ចុប្បន្ន",
-          "stockInQty": "ស្តុកចូល",
-          "stockOutQty": "ស្តុកចេញ",
+          "stockInQty": "ស្តុកចូលសរុប",
+          "stockOutQty": "ស្តុកចេញសរុប",
           "damageQty": "ខូចខាត",
           "status": "ស្ថានភាព"
         }

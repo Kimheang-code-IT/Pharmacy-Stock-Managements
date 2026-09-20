@@ -29,8 +29,10 @@ from app.modules.delivery.service import (
 
 async def _note_out(service: DeliveryNoteService, note) -> dict:
     """note_to_out + derived per-invoice delivery status (delivered qtys)."""
-    statuses = await service.invoice_delivery_statuses([link.sale_id for link in note.sales])
-    return note_to_out(note, await service.customer_name(note), statuses)
+    sale_ids = [link.sale_id for link in note.sales]
+    statuses = await service.invoice_delivery_statuses(sale_ids)
+    sale_dates = await service.sale_dates(sale_ids)
+    return note_to_out(note, await service.customer_name(note), statuses, sale_dates)
 
 # Delivery Notes are fulfillment tracking only (spec section 2.1.9). No stock
 # mutation happens anywhere in this module. Routes use flat business ownership
@@ -63,6 +65,7 @@ async def list_delivery_notes(
     # Batched list page: one status computation + one customer lookup (P2 N+1).
     all_sale_ids = [link.sale_id for note in notes for link in note.sales]
     statuses = await service.invoice_delivery_statuses(all_sale_ids)
+    sale_dates = await service.sale_dates(all_sale_ids)
     customer_ids = {note.customer_id for note in notes}
     customer_names: dict = {}
     if customer_ids:
@@ -71,7 +74,8 @@ async def list_delivery_notes(
         )
         customer_names = {row_id: name for row_id, name in result.all()}
     data = [
-        note_to_out(note, customer_names.get(note.customer_id), statuses) for note in notes
+        note_to_out(note, customer_names.get(note.customer_id), statuses, sale_dates)
+        for note in notes
     ]
     return envelope(data, {"page": params.page, "limit": params.limit, "total": total})
 

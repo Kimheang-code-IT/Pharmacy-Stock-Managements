@@ -253,8 +253,12 @@ async def test_draft_edit_rules_and_status_workflow(client):
     assert patched.json()["data"]["delivery_phone"] == "012999999"
     assert patched.json()["data"]["delivery_location"] == "Siem Reap"
 
-    # Illegal transition: deliver a draft (Draft → Delivered is not allowed).
-    early = await client.post(f"/api/v1/delivery/{note['id']}/deliver", headers=headers)
+    # Illegal transition: a draft cannot jump straight to partially delivered.
+    early = await client.post(
+        f"/api/v1/delivery/{note['id']}/status",
+        json={"status": "PARTIALLY_DELIVERED"},
+        headers=headers,
+    )
     assert early.status_code == 409
 
     confirmed = await client.post(f"/api/v1/delivery/{note['id']}/confirm", headers=headers)

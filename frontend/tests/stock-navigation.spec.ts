@@ -59,8 +59,6 @@ describe('stock movements table (read-only history)', () => {
       'uomSymbol',
       'qtyIn',
       'qtyOut',
-      'balanceBefore',
-      'balanceAfter',
       'user',
     ])
   })

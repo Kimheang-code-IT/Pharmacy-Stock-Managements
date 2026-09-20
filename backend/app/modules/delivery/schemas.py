@@ -198,6 +198,9 @@ class DeliveryNoteSaleOut(BaseModel):
 
     sale_id: UUID
     invoice_no: str
+    # Invoice date snapshot (Sale.sale_date) shown on the delivery line table.
+    sale_date: datetime | None = None
+    saleDate: datetime | None = None
     # Derived from delivered quantities across all non-cancelled notes —
     # NOT_DELIVERED | PARTIALLY_DELIVERED | FULLY_DELIVERED.
     delivery_status: str = "NOT_DELIVERED"

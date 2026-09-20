@@ -1,15 +1,13 @@
 <script setup lang="ts">
 import type { TableColumn } from '@nuxt/ui'
 import type { PaginationState } from '@tanstack/vue-table'
-import { UCheckbox } from '#components'
-import { h } from 'vue'
 import { formatMoney } from '~/composables/module/useModule'
-import { appTableCheckboxMeta } from '~/utils/table/theme'
 import type { CheckoutDebtRow } from '~/utils/pos/checkout'
 
 /**
- * Open invoices for the selected POS customer. Checking a row includes that
- * remaining debt on the current checkout invoice.
+ * Read-only history of the selected POS customer's open invoices. The cashier
+ * enters how much of this debt is paid back on the checkout panel; rows are not
+ * selectable here.
  */
 
 const props = defineProps<{
@@ -18,7 +16,6 @@ const props = defineProps<{
 }>()
 
 const open = defineModel<boolean>('open', { default: false })
-const selectedIds = defineModel<string[]>('selectedIds', { default: () => [] })
 
 const { t } = useI18n()
 const money = (value: unknown) => formatMoney(value, props.currency)
@@ -27,15 +24,6 @@ const search = ref('')
 const pagination = ref<PaginationState>({ pageIndex: 0, pageSize: 20 })
 const noEmptyDescription = ' '
 
-const selectedSet = computed(() => new Set(selectedIds.value))
-
-function toggleIncluded(id: string, checked: boolean) {
-  const next = new Set(selectedIds.value)
-  if (checked) next.add(id)
-  else next.delete(id)
-  selectedIds.value = [...next]
-}
-
 watch(open, (value) => {
   if (!value) return
   search.value = ''
@@ -43,21 +31,6 @@ watch(open, (value) => {
 })
 
 const columns = computed<TableColumn<CheckoutDebtRow>[]>(() => [
-  {
-    id: 'included',
-    header: t('app.pos.includeOnInvoice'),
-    enableSorting: false,
-    meta: appTableCheckboxMeta,
-    cell: ({ row }) => h(UCheckbox, {
-      modelValue: selectedSet.value.has(String(row.original.id)),
-      size: 'sm',
-      'aria-label': t('app.pos.includeOnInvoice'),
-      onClick: (event: Event) => event.stopPropagation(),
-      'onUpdate:modelValue': (value: unknown) => {
-        toggleIncluded(String(row.original.id), value === true)
-      },
-    }),
-  },
   {
     accessorKey: 'date',
     header: t('app.fields.date'),

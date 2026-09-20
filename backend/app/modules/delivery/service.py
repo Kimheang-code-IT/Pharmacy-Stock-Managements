@@ -55,6 +55,9 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     DeliveryNote.STATUS_DRAFT: {
         DeliveryNote.STATUS_CONFIRMED,
         DeliveryNote.STATUS_OUT_FOR_DELIVERY,
+        # One-click "Mark as Completed" from the list works from a draft too
+        # (the UI collapses PENDING/PREPARING into Processing → Completed).
+        DeliveryNote.STATUS_DELIVERED,
         DeliveryNote.STATUS_CANCELLED,
     },
     DeliveryNote.STATUS_CONFIRMED: {
@@ -765,6 +768,16 @@ class DeliveryNoteService:
         customer = await self.session.get(Customer, note.customer_id)
         return customer.name if customer else None
 
+    async def sale_dates(self, sale_ids: list[uuid.UUID]) -> dict[uuid.UUID, datetime]:
+        """Invoice date (Sale.sale_date) per sale id — batched for list pages."""
+        unique = set(sale_ids)
+        if not unique:
+            return {}
+        result = await self.session.execute(
+            select(Sale.id, Sale.sale_date).where(Sale.id.in_(unique))
+        )
+        return {sale_id: sale_date for sale_id, sale_date in result.all()}
+
     async def invoice_delivery_statuses(
         self, sale_ids: list[uuid.UUID]
     ) -> dict[uuid.UUID, str]:
@@ -827,16 +840,20 @@ def note_to_out(
     note: DeliveryNote,
     customer_name: str | None = None,
     invoice_statuses: dict[uuid.UUID, str] | None = None,
+    sale_dates: dict[uuid.UUID, datetime] | None = None,
 ) -> DeliveryNoteOut:
     sales = sorted(
         (DeliveryNoteSaleOut(sale_id=link.sale_id, invoice_no=link.invoice_no) for link in note.sales),
         key=lambda link: link.invoice_no,
     )
-    if invoice_statuses:
-        for link in sales:
+    for link in sales:
+        if invoice_statuses:
             derived = invoice_statuses.get(link.sale_id, "NOT_DELIVERED")
             link.delivery_status = derived
             link.deliveryStatus = derived
+        if sale_dates:
+            link.sale_date = sale_dates.get(link.sale_id)
+            link.saleDate = link.sale_date
     invoice_nos = [link.invoice_no for link in sales]
     return DeliveryNoteOut(
         id=note.id,

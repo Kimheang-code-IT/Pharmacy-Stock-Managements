@@ -438,10 +438,11 @@ function adaptDeliveryNoteOut(row: Record<string, unknown>): Record<string, unkn
     deliveryNo: row.deliveryNo ?? row.delivery_no ?? '',
     customerId: asRecordId(row.customerId ?? row.customer_id) || null,
     customer: row.customer ?? row.customer_name ?? '',
-    // Linked invoices: [{ saleId, invoiceNo }] + joined display keys.
+    // Linked invoices: [{ saleId, invoiceNo, saleDate }] + joined display keys.
     sales: links.map(link => ({
       saleId: asRecordId(link.saleId ?? link.sale_id),
       invoiceNo: String(link.invoice_no ?? link.invoiceNo ?? ''),
+      saleDate: link.saleDate ?? link.sale_date ?? null,
     })),
     invoiceNos,
     invoiceNo: invoiceNos.join(', '),
@@ -512,8 +513,6 @@ function adaptStockMovementOut(row: Record<string, unknown>): Record<string, unk
     // Entered-UOM display (Damage / Expiry / Purchase Return lines).
     enteredUom: row.entered_uom_symbol ?? row.enteredUomSymbol ?? null,
     enteredQty: row.entered_quantity ?? row.enteredQty ?? null,
-    balanceBefore: Number(row.balance_before ?? row.balanceBefore ?? 0),
-    balanceAfter: Number(row.balance_after ?? row.balanceAfter ?? null),
     reference: row.reference ?? row.document_no ?? '',
     referenceType: row.referenceType ?? row.reference_type ?? '',
     uom: row.uom ?? row.uom_symbol ?? '',

@@ -222,18 +222,14 @@ async def test_movement_rows_expose_movements_page_columns(client):
         assert row["created_at"]
         assert row["document_no"]
 
-    # Stock-in row: qty in 10, balance 0 → 10.
+    # Stock-in row: qty in 10.
     assert Decimal(stock_in_row["qty_in"]) == Decimal("10.0000")
     assert Decimal(stock_in_row["qty_out"]) == Decimal("0.0000")
-    assert Decimal(stock_in_row["balance_before"]) == Decimal("0.0000")
-    assert Decimal(stock_in_row["balance_after"]) == Decimal("10.0000")
     assert Decimal(stock_in_row["quantity_delta"]) == Decimal("10.0000")
 
-    # Sale row: qty out 3, balance 10 → 7.
+    # Sale row: qty out 3.
     assert Decimal(sale_row["qty_out"]) == Decimal("3.0000")
     assert Decimal(sale_row["qty_in"]) == Decimal("0.0000")
-    assert Decimal(sale_row["balance_before"]) == Decimal("10.0000")
-    assert Decimal(sale_row["balance_after"]) == Decimal("7.0000")
     assert sale_row["movement_type"] == "SALE"
     # The SALE row links back to the invoice via its document number.
     assert sale_row["document_no"] == sale.json()["data"]["invoice_no"]
@@ -254,7 +250,7 @@ async def test_movement_list_filters_pagination_and_sort(client):
     product = await make_stocked_product(client, headers, sku=f"MVN-{tag}", name=f"Mvn Widget {tag}", qty="8")
     pid = product["id"]
 
-    # Build: STOCK_IN(8), SALE(2), DAMAGE(1) → balance 5.
+    # Build: STOCK_IN(8), SALE(2), DAMAGE(1).
     sale = await client.post(
         "/api/v1/pos/sales",
         json={"payment_method": "CASH", "amount_received": "50.00", "items": [{"product_id": pid, "quantity": "2"}]},
@@ -275,7 +271,6 @@ async def test_movement_list_filters_pagination_and_sort(client):
     rows = by_type.json()["data"]
     assert len(rows) == 1
     assert rows[0]["movement_type"] == "DAMAGE"
-    assert Decimal(rows[0]["balance_after"]) == Decimal("5.0000")
 
     # Unknown movement type → 422 validation envelope.
     bad_type = await client.get(

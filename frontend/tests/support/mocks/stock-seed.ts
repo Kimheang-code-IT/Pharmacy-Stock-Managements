@@ -579,18 +579,12 @@ function buildStockMovements(): AppRecord[] {
     }))
   }
 
-  // 5) Running balances per product (ledger math stays in the base UOM).
+  // 5) qtyIn/qtyOut projections per row (ledger math stays in the base UOM).
   const chronological = [...rows].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
-  const balanceByProduct = new Map<string, number>()
   for (const row of chronological) {
-    const pid = String(row.productId)
-    const before = balanceByProduct.get(pid) ?? 0
     const qty = Number(row.quantity ?? 0)
     row.qtyIn = qty > 0 ? qty : 0
     row.qtyOut = qty < 0 ? Math.abs(qty) : 0
-    row.balanceBefore = before
-    row.balanceAfter = before + qty
-    balanceByProduct.set(pid, before + qty)
   }
 
   return chronological

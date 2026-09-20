@@ -1408,8 +1408,8 @@
           "costPrice": "Cost Price",
           "salePrice": "Sale Price",
           "quantity": "Current Stock",
-          "stockInQty": "Stock In",
-          "stockOutQty": "Stock Out",
+          "stockInQty": "Total Stock In",
+          "stockOutQty": "Total Stock Out",
           "damageQty": "Damage",
           "status": "Status"
         }

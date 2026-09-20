@@ -46,8 +46,8 @@ describe('stock table (spec §2.1.5 — no SKU / product code columns)', () => {
       'brand',
       'uomSymbol',
       'quantity',
-      'costPrice',
-      'salePrice',
+      'stockInQty',
+      'stockOutQty',
       'status',
     ])
   })

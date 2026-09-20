@@ -34,6 +34,61 @@ async def _balance(client, headers, product_id) -> Decimal:
 
 
 @pytest.mark.asyncio
+async def test_purchase_report_exposes_batch_and_expiry_for_edit(client):
+    """The purchase Edit form reloads from GET /reports/purchases, so each row
+    must carry the original batch no + expiry date of the received lot."""
+    headers = await admin_headers(client)
+    category = (
+        await client.post(
+            "/api/v1/categories", json={"code": "C-PE-EXP", "name": "Cat PE-EXP"}, headers=headers
+        )
+    ).json()["data"]
+    product = (
+        await client.post(
+            "/api/v1/products",
+            json={
+                "sku": "PE-EXP-1",
+                "name": "Expiry Widget",
+                "category_id": category["id"],
+                "uom_id": str(DEFAULT_UOM_ID),
+                "selling_price": "10.00",
+                "track_batch": True,
+                "expiry_tracking": True,
+            },
+            headers=headers,
+        )
+    ).json()["data"]
+
+    created = await client.post(
+        "/api/v1/stock/in",
+        json={
+            "paid_amount": "20.00",
+            "items": [
+                {
+                    "product_id": product["id"],
+                    "quantity": "10",
+                    "unit_cost": "2.00",
+                    "batch_no": "LOT-EDIT-1",
+                    "expiry_date": "2030-06-30",
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    document_no = created.json()["data"]["document_no"]
+
+    report = await client.get(
+        "/api/v1/reports/purchases", params={"q": document_no}, headers=headers
+    )
+    assert report.status_code == 200, report.text
+    rows = report.json()["data"]
+    row = next(item for item in rows if item["document_no"] == document_no)
+    assert row["batch_no"] == "LOT-EDIT-1"
+    assert row["expiry_date"] == "2030-06-30"
+
+
+@pytest.mark.asyncio
 async def test_purchase_edit_reverses_and_reapplies(client):
     headers = await admin_headers(client)
     product = await _make_product(client, headers, "PE-1")
