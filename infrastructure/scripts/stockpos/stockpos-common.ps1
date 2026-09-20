@@ -55,6 +55,99 @@ function Assert-Docker([switch]$Quiet) {
   return $true
 }
 
+# Locate the Docker Desktop executable (per-machine or per-user install).
+# Returns the full path, or $null when Docker Desktop is not installed.
+function Get-DockerDesktopExe {
+  $candidates = New-Object System.Collections.Generic.List[string]
+  if ($env:ProgramFiles) { $candidates.Add((Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe")) }
+  if (${env:ProgramFiles(x86)}) { $candidates.Add((Join-Path ${env:ProgramFiles(x86)} "Docker\Docker\Docker Desktop.exe")) }
+  if ($env:LOCALAPPDATA) {
+    $candidates.Add((Join-Path $env:LOCALAPPDATA "Docker\Docker Desktop.exe"))
+    $candidates.Add((Join-Path $env:LOCALAPPDATA "Programs\Docker\Docker\Docker Desktop.exe"))
+  }
+  foreach ($path in $candidates) {
+    if ($path -and (Test-Path -LiteralPath $path)) { return (Resolve-Path -LiteralPath $path).Path }
+  }
+  # Fall back to the uninstall registry (covers custom install locations).
+  foreach ($root in @(
+      "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop",
+      "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop"
+    )) {
+    try {
+      $props = Get-ItemProperty -Path $root -ErrorAction Stop
+      foreach ($value in @($props.InstallLocation, $props.DisplayIcon)) {
+        if (-not $value) { continue }
+        $exe = ([string]$value).Trim().Trim('"')
+        $cut = $exe.IndexOf(".exe", [System.StringComparison]::OrdinalIgnoreCase)
+        if ($cut -ge 0) { $exe = $exe.Substring(0, $cut + 4) }
+        if ($exe -and (Test-Path -LiteralPath $exe)) { return (Resolve-Path -LiteralPath $exe).Path }
+      }
+    } catch { }
+  }
+  return $null
+}
+
+# Launch Docker Desktop so the engine starts without the user finding the icon.
+function Start-DockerDesktop([switch]$Quiet) {
+  $exe = Get-DockerDesktopExe
+  if (-not $exe) {
+    if (-not $Quiet) {
+      Write-Host "Docker Desktop was not found on this computer." -ForegroundColor Yellow
+      Write-Host "Install it from https://www.docker.com/products/docker-desktop/ and run"
+      Write-Host "install-autostart.bat again."
+    }
+    return $false
+  }
+  if (-not $Quiet) { Write-Host "Starting Docker Desktop..." -ForegroundColor Cyan }
+  try {
+    Start-Process -FilePath $exe -ArgumentList "-Autostart" -WindowStyle Minimized
+    return $true
+  } catch {
+    if (-not $Quiet) { Write-Host "Could not start Docker Desktop: $($_.Exception.Message)" -ForegroundColor Red }
+    return $false
+  }
+}
+
+# Make Docker Desktop launch automatically at Windows sign-in (no admin needed).
+# Docker Desktop normally writes its own Startup/Run entry when its in-app
+# "Start Docker Desktop when you sign in" toggle is on; this adds the entry when
+# it is missing so the whole system comes up unattended.
+function Enable-DockerAutostart {
+  $exe = Get-DockerDesktopExe
+  if (-not $exe) {
+    Write-Host "Docker Desktop is not installed - skipping Docker auto-start." -ForegroundColor Yellow
+    Write-Host "After installing Docker Desktop, run install-autostart.bat again."
+    return $false
+  }
+
+  $startup = [Environment]::GetFolderPath("Startup")
+  $ownLink = Join-Path $startup "Stock and POS (Docker Desktop).lnk"
+  $dockerLink = Join-Path $startup "Docker Desktop.lnk"
+  $runValue = $null
+  try {
+    $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    $runValue = (Get-ItemProperty -Path $runKey -Name "Docker Desktop" -ErrorAction Stop)."Docker Desktop"
+  } catch { }
+
+  if ((Test-Path -LiteralPath $dockerLink) -or $runValue) {
+    Write-Host "Docker Desktop already starts at sign-in." -ForegroundColor Green
+    return $true
+  }
+
+  $shell = New-Object -ComObject WScript.Shell
+  $shortcut = $shell.CreateShortcut($ownLink)
+  $shortcut.TargetPath = $exe
+  $shortcut.Arguments = "-Autostart"
+  $shortcut.WorkingDirectory = Split-Path -Parent $exe
+  $shortcut.WindowStyle = 7
+  $shortcut.Description = "Start Docker Desktop at sign-in for Stock & POS"
+  $icon = Join-Path $PSScriptRoot "stockpos.ico"
+  $shortcut.IconLocation = if (Test-Path -LiteralPath $icon) { "$icon,0" } else { "%SystemRoot%\System32\SHELL32.dll,13" }
+  $shortcut.Save()
+  Write-Host "Docker Desktop will now start at sign-in." -ForegroundColor Green
+  return $true
+}
+
 function Get-ComposeArgs {
   return @("-f", "docker-compose.yml")
 }
@@ -87,6 +180,45 @@ function Test-AppHealthy($Root) {
     if ($ok) { return $true }
   } catch { }
   return $false
+}
+
+# Create the Desktop + Start Menu shortcuts that open the app, and assign the
+# global keyboard hotkey to the Desktop one (Windows registers hotkeys for
+# Desktop/Start Menu shortcuts). Returns the created paths and hotkey.
+function New-StockPosShortcuts {
+  param([string]$Hotkey = "CTRL+ALT+S")
+
+  $shell = New-Object -ComObject WScript.Shell
+  $icon = Join-Path $PSScriptRoot "stockpos.ico"
+  $iconLocation = if (Test-Path -LiteralPath $icon) { "$icon,0" } else { "%SystemRoot%\System32\SHELL32.dll,13" }
+  $target = "$env:SystemRoot\System32\cmd.exe"
+  $arguments = "/c `"$PSScriptRoot\open-system.bat`""
+
+  $desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) "Yoeun Sokhon Pharmacy.lnk"
+  $desktopShortcut = $shell.CreateShortcut($desktopLink)
+  $desktopShortcut.TargetPath = $target
+  $desktopShortcut.Arguments = $arguments
+  $desktopShortcut.WorkingDirectory = $PSScriptRoot
+  $desktopShortcut.Description = "Open the Yoeun Sokhon Pharmacy stock & POS system"
+  $desktopShortcut.IconLocation = $iconLocation
+  $hotkeyValue = $Hotkey.Trim().ToUpper()
+  if ($hotkeyValue) { $desktopShortcut.Hotkey = $hotkeyValue }
+  $desktopShortcut.Save()
+
+  $startMenuLink = Join-Path ([Environment]::GetFolderPath("Programs")) "Yoeun Sokhon Pharmacy.lnk"
+  $startMenuShortcut = $shell.CreateShortcut($startMenuLink)
+  $startMenuShortcut.TargetPath = $target
+  $startMenuShortcut.Arguments = $arguments
+  $startMenuShortcut.WorkingDirectory = $PSScriptRoot
+  $startMenuShortcut.Description = "Open the Yoeun Sokhon Pharmacy stock & POS system"
+  $startMenuShortcut.IconLocation = $iconLocation
+  $startMenuShortcut.Save()
+
+  return [pscustomobject]@{
+    Desktop   = $desktopLink
+    StartMenu = $startMenuLink
+    Hotkey    = $hotkeyValue
+  }
 }
 
 function Start-Stack {

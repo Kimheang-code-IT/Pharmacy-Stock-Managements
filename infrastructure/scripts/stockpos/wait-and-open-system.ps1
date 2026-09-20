@@ -5,7 +5,8 @@
 
 .DESCRIPTION
   Used by the Windows Startup shortcut (see install-autostart.bat):
-    1. poll `docker info` until the engine answers (default 10 minutes)
+    1. start Docker Desktop when the engine is not up yet, then poll
+       `docker info` until it answers (default 10 minutes)
     2. start the stack if it is not running (no rebuild)
     3. poll GET http://localhost:<port>/health/ready every 3 seconds
        until it reports ok (default 10 minutes)
@@ -37,7 +38,12 @@ try {
 }
 
 try {
-  # 1. Wait for Docker.
+  # 1. Wait for Docker. If the engine is not up yet, start Docker Desktop
+  #    ourselves so sign-in is fully unattended (works even when the in-app
+  #    "Start Docker Desktop when you sign in" toggle is off).
+  if (-not (Assert-Docker -Quiet)) {
+    Start-DockerDesktop -Quiet | Out-Null
+  }
   $deadline = (Get-Date).AddMinutes($DockerTimeoutMinutes)
   while ((Get-Date) -lt $deadline) {
     if (Assert-Docker -Quiet) { break }

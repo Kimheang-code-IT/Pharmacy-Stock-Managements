@@ -37,15 +37,43 @@ the host at all — they stay on the internal Docker network.
 | Action | How |
 |---|---|
 | Start and open the app | double-click `Start Stock POS.bat` |
+| Open anytime (keyboard) | press **Ctrl+Alt+S** |
+| Open from shortcuts | Desktop / Start Menu → *Yoeun Sokhon Pharmacy* |
 | Stop safely | double-click `Stop Stock POS.bat` |
 | Restart | `scripts\stockpos\restart-system.bat` |
 | Start automatically at sign-in | `scripts\stockpos\install-autostart.bat` |
-| Desktop shortcut | `scripts\stockpos\install-desktop-shortcut.bat` |
+| Desktop shortcut only | `scripts\stockpos\install-desktop-shortcut.bat` |
 | Remove auto-start | `scripts\stockpos\remove-autostart.bat` |
 
 `Start Stock POS.bat` waits for Docker Desktop and for `GET /health/ready`
 (which checks PostgreSQL and Redis) before opening the browser, so it is safe
 to double-click right after logging in.
+
+### Open with a keyboard shortcut
+
+`install-desktop-shortcut.bat` (also run by `install-autostart.bat`) creates the
+*Yoeun Sokhon Pharmacy* Desktop + Start Menu shortcuts and assigns the global
+hotkey **Ctrl+Alt+S** to the Desktop shortcut, so the app can be opened from
+anywhere. Change it with e.g.:
+
+```powershell
+scripts\stockpos\install-desktop-shortcut.bat -Hotkey "CTRL+ALT+P"
+```
+
+### Start automatically when Windows signs in
+
+`scripts\stockpos\install-autostart.bat` (current user, no admin) sets up the
+whole unattended start:
+
+- Docker Desktop is enabled to **start at sign-in** (an entry is added only when
+  Docker's own *Start Docker Desktop when you sign in* toggle is off).
+- A Startup shortcut runs `wait-and-open-system.bat`, which starts Docker
+  Desktop if needed, brings the Compose stack up (`restart: unless-stopped`),
+  waits for `GET /health/ready`, then opens the browser once.
+- The Desktop/Start Menu shortcuts and the Ctrl+Alt+S hotkey are created too.
+
+No admin rights are required. Undo with `scripts\stockpos\remove-autostart.bat`.
+
 
 ## 3. Configuration (`infrastructure\.env`)
 
@@ -100,7 +128,7 @@ apply automatically and existing data is preserved.
 | Symptom | Fix |
 |---|---|
 | Browser shows a connection error | `Start Stock POS.bat`, wait ~1 minute, retry. |
-| "Docker is not available yet" | Start **Docker Desktop** and enable *Start Docker Desktop when you sign in*. |
+| "Docker is not available yet" | Wait a minute, or run `scripts\stockpos\install-autostart.bat` to make Docker Desktop start at sign-in automatically. |
 | Port 80 already in use | set `FRONTEND_PORT=8080` in `.env`, then restart. |
 | Login fails after setup | the first administrator is created on the app's **Setup** page; no credentials are seeded. |
 | Need logs | `docker compose logs -f frontend api` (run from this folder). |

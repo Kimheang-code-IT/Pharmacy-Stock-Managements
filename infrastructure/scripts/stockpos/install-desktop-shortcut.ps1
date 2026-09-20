@@ -1,32 +1,35 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  Create a desktop shortcut named "Yoeun Sokhon Pharmacy" that opens the app.
+  Create "Yoeun Sokhon Pharmacy" shortcuts that open the app, plus a global
+  keyboard shortcut.
 
 .DESCRIPTION
-  Target: open-system.bat (which opens http://localhost in the default browser).
+  - Desktop shortcut   : double-click to open http://localhost.
+  - Start Menu shortcut : same shortcut, searchable from the Start menu.
+  - Keyboard hotkey    : press Ctrl+Alt+S from anywhere to open the app
+    (Windows registers the hotkey from the Desktop shortcut; change it with
+    -Hotkey, e.g. -Hotkey "CTRL+ALT+P").
+
   Reuses stockpos.ico in this folder when present; never invents binary assets.
 #>
+
+param(
+  [string]$Hotkey = "CTRL+ALT+S"
+)
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "stockpos-common.ps1")
 
-$desktop = [Environment]::GetFolderPath("Desktop")
-$linkPath = Join-Path $desktop "Yoeun Sokhon Pharmacy.lnk"
-
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($linkPath)
-$shortcut.TargetPath = "$env:SystemRoot\System32\cmd.exe"
-$shortcut.Arguments = "/c `"$PSScriptRoot\open-system.bat`""
-$shortcut.WorkingDirectory = $PSScriptRoot
-$shortcut.Description = "Open the Yoeun Sokhon Pharmacy stock & POS system"
-$shortcut.IconLocation = Join-Path $PSScriptRoot "stockpos.ico,0"
-if (-not (Test-Path (Join-Path $PSScriptRoot "stockpos.ico"))) {
-  $shortcut.IconLocation = "%SystemRoot%\System32\SHELL32.dll,13"
-}
-$shortcut.Save()
+$created = New-StockPosShortcuts -Hotkey $Hotkey
 
 Write-Host ""
-Write-Host "Desktop shortcut created: $linkPath" -ForegroundColor Green
-Write-Host "Double-click it to open http://localhost in your browser."
+Write-Host "Shortcuts created:" -ForegroundColor Green
+Write-Host "  Desktop    : $($created.Desktop)"
+Write-Host "  Start Menu : $($created.StartMenu)"
+if ($created.Hotkey) {
+  Write-Host ""
+  Write-Host "Keyboard shortcut: press $($created.Hotkey) to open the system." -ForegroundColor Green
+  Write-Host "(You can also pin the Start Menu shortcut to the taskbar.)"
+}
 exit 0
