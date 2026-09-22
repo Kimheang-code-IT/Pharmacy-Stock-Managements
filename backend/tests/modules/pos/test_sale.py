@@ -325,3 +325,37 @@ async def test_debt_sale_creates_debt_with_partial_deposit(client):
 
     # Stock moved even though the sale is on credit.
     assert await balance_of(client, headers, product["id"]) == Decimal("9.0000")
+
+
+@pytest.mark.asyncio
+async def test_cash_sale_zero_tender_creates_full_customer_debt(client):
+    """A CASH tender of 0 is allowed: the whole total becomes the registered
+    customer's debt (full-debt sale straight from the payment keypad)."""
+    headers = await admin_headers(client)
+    product = await make_stocked_product(client, headers, sku="POS-9", name="Full Debt Widget")
+    customer = await make_customer(client, headers, code="CUS-POS-2", name="Full Debt Buyer")
+
+    response = await client.post(
+        "/api/v1/pos/sales",
+        json={
+            "payment_method": "CASH",
+            "customer_id": customer["id"],
+            "amount_received": "0",
+            "items": [{"product_id": product["id"], "quantity": "1"}],
+        },
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+    sale = response.json()["data"]
+    assert Decimal(sale["paid_amount"]) == Decimal("0.00")
+    assert Decimal(sale["debt_amount"]) == Decimal("10.00")
+    assert sale["payment_status"] == "UNPAID"
+
+    debts = await client.get(f"/api/v1/customers/{customer['id']}/debts", headers=headers)
+    assert debts.status_code == 200, debts.text
+    debt = debts.json()["data"][0]
+    assert Decimal(debt["remaining_amount"]) == Decimal("10.00")
+    assert debt["status"] == "UNPAID"
+
+    # Stock still moves even with no tender.
+    assert await balance_of(client, headers, product["id"]) == Decimal("9.0000")

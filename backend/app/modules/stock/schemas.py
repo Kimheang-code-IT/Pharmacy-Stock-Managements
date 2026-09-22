@@ -277,7 +277,9 @@ class PurchaseReturnRequest(BaseModel):
 class PurchaseReturnItemOut(BaseModel):
     id: UUID
     stock_transaction_item_id: UUID
-    product_id: UUID
+    # Null when the product was hard-deleted (purchase_return_items.product_id
+    # is SET NULL; the name snapshot survives).
+    product_id: UUID | None = None
     product_name: str | None = None
     quantity: Decimal
     unit_cost: Decimal
@@ -300,7 +302,9 @@ class OperationItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    product_id: UUID
+    # Null when the product was hard-deleted (stock_transaction_items.product_id
+    # is SET NULL; the name snapshot survives).
+    product_id: UUID | None = None
     product_name: str | None = None
     sku: str | None = None
     # Line UOM symbol snapshot (selected Pricing UOM for Stock In lines).
@@ -383,7 +387,8 @@ class MovementOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    product_id: UUID
+    # Null when the product was hard-deleted (stock_movements.product_id is SET NULL).
+    product_id: UUID | None = None
     product_name: str | None = None
     barcode: str | None = None
     movement_type: str

@@ -7,7 +7,6 @@ from uuid import UUID
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 PAYMENT_METHODS = {"CASH", "BANK_QR", "CUSTOMER_DEBT"}
-TENDER_METHODS = {"CASH", "BANK_QR"}
 
 
 def _utcnow() -> datetime:
@@ -202,8 +201,9 @@ class SaleCreateRequest(BaseModel):
             raise ValueError("payment_method must be CASH, BANK_QR or CUSTOMER_DEBT")
         if self.payment_method == "CUSTOMER_DEBT" and self.deposit_method is None:
             self.deposit_method = "CASH"
-        if self.payment_method in TENDER_METHODS and self.amount_received <= 0:
-            raise ValueError("amount_received must be greater than zero")
+        # A tender of 0 is allowed for every method: it means the whole sale is
+        # unpaid and becomes customer debt. The service still rejects a debt
+        # sale to the walk-in customer when amount_received is short.
         return self
 
 
@@ -239,7 +239,8 @@ class SaleItemOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    product_id: UUID
+    # Null when the product was hard-deleted (sale_items.product_id is SET NULL).
+    product_id: UUID | None = None
     product_name: str
     sku: str | None
     barcode: str | None
@@ -321,7 +322,8 @@ class SaleReturnRequest(BaseModel):
 class SaleReturnItemOut(BaseModel):
     id: UUID
     sale_item_id: UUID
-    product_id: UUID
+    # Null when the product was hard-deleted (sale_return_items.product_id is SET NULL).
+    product_id: UUID | None = None
     product_name: str | None = None
     quantity: Decimal
     refund_amount: Decimal

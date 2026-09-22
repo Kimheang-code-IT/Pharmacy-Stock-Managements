@@ -213,7 +213,9 @@ class DeliveryNoteItemOut(BaseModel):
     id: UUID
     sale_id: UUID
     sale_item_id: UUID
-    product_id: UUID
+    # Null when the product was hard-deleted; the line survives via the name
+    # snapshot (delivery_note_items.product_id is ON DELETE SET NULL).
+    product_id: UUID | None = None
     product_name: str
     uom_symbol: str | None
     qty_ordered: Decimal
@@ -262,7 +264,8 @@ class DeliverableItemOut(BaseModel):
     """What remains deliverable for one sale line across all delivery notes."""
 
     sale_item_id: UUID
-    product_id: UUID
+    # Null when the product was hard-deleted (sale_items.product_id is SET NULL).
+    product_id: UUID | None = None
     product_name: str
     # Legacy internal code: nullable since 0021 (barcode is operational).
     sku: str | None = None
