@@ -70,7 +70,9 @@ class RecentStockActivityOut(BaseModel):
 
 
 class TopProductOut(BaseModel):
-    product_id: UUID
+    # Null when the product was hard-deleted; the sale history survives through
+    # the name snapshot (sale_items.product_id is ON DELETE SET NULL).
+    product_id: UUID | None = None
     product_name: str
     quantity_sold: Decimal
     sales_amount: Decimal
