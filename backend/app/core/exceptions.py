@@ -50,6 +50,23 @@ class RateLimitedError(AppError):
     code = "RATE_LIMITED"
 
 
-class FeatureDisabledError(AppError):
-    status_code = status.HTTP_501_NOT_IMPLEMENTED
-    code = "FEATURE_DISABLED"
+class ServiceUnavailableError(AppError):
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    code = "SERVICE_UNAVAILABLE"
+
+
+class MaintenanceError(AppError):
+    """A destructive operation could not proceed safely (e.g. backup failed)."""
+
+    status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+    code = "MAINTENANCE_FAILED"
+
+
+class PasswordChangeRequiredError(AppError):
+    """The account must change its password before any other action."""
+
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "PASSWORD_CHANGE_REQUIRED"
+
+    def __init__(self, message: str = "You must change your password before continuing") -> None:
+        super().__init__(message)

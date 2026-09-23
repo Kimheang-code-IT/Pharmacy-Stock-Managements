@@ -51,17 +51,35 @@ class SupplierService:
         )
         self.repo.add(supplier)
         await self.repo.flush()
+        await record_audit(
+            self.session,
+            action="supplier_created",
+            module="suppliers",
+            entity_type="supplier",
+            entity_id=supplier.id,
+            new_values={"code": supplier.code, "name": supplier.name, "status": supplier.status},
+        )
         await self.session.commit()
         return supplier
 
     async def update(self, supplier_id, payload) -> Supplier:
         supplier = await self.get(supplier_id)
+        old = {"code": supplier.code, "name": supplier.name, "status": supplier.status}
         data = payload.model_dump(exclude_unset=True, exclude_none=True)
         if "location" in data:
             data["address"] = data.pop("location")
         for key, value in data.items():
             setattr(supplier, key, value)
         await self.repo.flush()
+        await record_audit(
+            self.session,
+            action="supplier_updated",
+            module="suppliers",
+            entity_type="supplier",
+            entity_id=supplier.id,
+            old_values=old,
+            new_values={"code": supplier.code, "name": supplier.name, "status": supplier.status},
+        )
         await self.session.commit()
         return supplier
 
@@ -80,7 +98,16 @@ class SupplierService:
                 "Cannot delete this supplier because purchase, debt, payment, or batch "
                 "history exists. Deactivate it instead."
             )
+        snapshot = {"code": supplier.code, "name": supplier.name}
         await self.session.delete(supplier)
+        await record_audit(
+            self.session,
+            action="supplier_deleted",
+            module="suppliers",
+            entity_type="supplier",
+            entity_id=supplier.id,
+            old_values=snapshot,
+        )
         await self.session.commit()
 
     async def list_debts(self, supplier_id) -> list[tuple[SupplierDebt, object]]:

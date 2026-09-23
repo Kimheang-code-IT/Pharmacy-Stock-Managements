@@ -44,6 +44,22 @@ class Expense(Base):
         Numeric(18, 6), nullable=False, default=Decimal("1"), server_default="1"
     )
     payment_method: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # Lifecycle: DRAFT | POSTED | VOID. Only POSTED expenses affect reports and
+    # cash flow. Posted rows are immutable; corrections use VOID + replacement.
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="POSTED", server_default="POSTED"
+    )
+    posting_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    void_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    voided_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attachment_object_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )

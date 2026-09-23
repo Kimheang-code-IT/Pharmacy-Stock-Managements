@@ -1,23 +1,18 @@
 <script setup lang="ts">
 import { useUserMenu } from '~/composables/layout/useUserMenu'
 
-const props = withDefaults(defineProps<{
+const props = defineProps<{
   collapsed?: boolean
-  placement?: 'sidebar' | 'header'
-}>(), {
-  placement: 'sidebar',
-})
+}>()
 
 const { user, items, aboutOpen, profileOpen } = useUserMenu()
 
-const menuContent = computed(() => props.placement === 'header'
-  ? { align: 'end' as const, collisionPadding: 12, side: 'bottom' as const }
-  : {
-      align: (props.collapsed ? 'end' : 'center') as 'end' | 'center',
-      collisionPadding: 12,
-      // Prefer top so the menu stays on-screen above the footer on iPad slideover.
-      side: (props.collapsed ? 'right' : 'top') as 'right' | 'top',
-    })
+const menuContent = computed(() => ({
+  align: (props.collapsed ? 'end' : 'center') as 'end' | 'center',
+  collisionPadding: 12,
+  // Prefer top so the menu stays on-screen above the footer on iPad slideover.
+  side: (props.collapsed ? 'right' : 'top') as 'right' | 'top',
+}))
 </script>
 
 <template>

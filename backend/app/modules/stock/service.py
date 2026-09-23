@@ -91,8 +91,6 @@ class ProductService:
         return product_to_out(product, grouped=grouped, pos=pos_map.get(product.id))
 
     async def create(self, payload) -> dict:
-        if payload.sku and await self.repo.get_by_sku(payload.sku):
-            raise ConflictError("A product with this SKU already exists")
         # Barcode is the operational identifier: unique, auto-issued when the
         # caller omits it (uuid-derived, collision-checked).
         barcode = payload.barcode or None
@@ -127,6 +125,18 @@ class ProductService:
         await sale_price_service.seed_initial_sale_price(
             self.session, product, actor_id=None
         )
+        await record_audit(
+            self.session,
+            action="product_created",
+            module="stock",
+            entity_type="product",
+            entity_id=product.id,
+            new_values={
+                "barcode": product.barcode,
+                "name": product.name,
+                "status": product.status,
+            },
+        )
         await self.session.commit()
         await self.session.refresh(product, attribute_names=["category_ref", "brand_ref", "uom_ref", "supplier_ref", "balance"])
         return product_to_out(product)
@@ -137,12 +147,22 @@ class ProductService:
             raise NotFoundError("Product not found")
 
         changes = payload.model_dump(exclude_unset=True, exclude_none=True)
+        old_snapshot = {
+            "barcode": product.barcode,
+            "name": product.name,
+            "status": product.status,
+            "category_id": str(product.category_id) if product.category_id else None,
+            "uom_id": str(product.uom_id) if product.uom_id else None,
+        }
         # image_object_key=None explicitly clears the product image.
         if "image_object_key" in payload.model_fields_set and payload.image_object_key is None:
             changes["image_object_key"] = None
         # supplier_id=None explicitly clears the product's default supplier.
         if "supplier_id" in payload.model_fields_set and payload.supplier_id is None:
             changes["supplier_id"] = None
+        # brand=None explicitly clears the free-text brand.
+        if "brand" in payload.model_fields_set and payload.brand is None:
+            changes["brand"] = None
         if "uom_conversions" in payload.model_fields_set:
             from app.modules.stock import sale_prices as sale_price_service
 
@@ -154,9 +174,6 @@ class ProductService:
             )
             await sale_price_service.validate_conversion_uoms(self.session, conversions)
             changes["uom_conversions"] = conversions
-        if "sku" in changes and changes["sku"] and changes["sku"] != product.sku:
-            if await self.repo.get_by_sku(changes["sku"]):
-                raise ConflictError("A product with this SKU already exists")
         if "barcode" in changes and changes["barcode"] and changes["barcode"] != product.barcode:
             if await self.repo.get_by_barcode(changes["barcode"]):
                 raise ConflictError("A product with this barcode already exists")
@@ -231,6 +248,27 @@ class ProductService:
                     "cost_price": str(product.cost_price),
                 },
             )
+        # Audit any other product edit (identity/status/pricing-table changes),
+        # not just a cost-price change.
+        audited_fields = set(changes)
+        if pricing_touched or price_only:
+            audited_fields.add("selling_price")
+        if audited_fields:
+            await record_audit(
+                self.session,
+                action="product_updated",
+                module="stock",
+                user_id=actor.id,
+                entity_type="product",
+                entity_id=product.id,
+                old_values=old_snapshot,
+                new_values={
+                    "changed_fields": sorted(audited_fields),
+                    "barcode": product.barcode,
+                    "name": product.name,
+                    "status": product.status,
+                },
+            )
         await self.session.commit()
         await self.session.refresh(product, attribute_names=["category_ref", "brand_ref", "uom_ref", "supplier_ref", "balance"])
         return product_to_out(product)
@@ -240,11 +278,20 @@ class ProductService:
         if product is None:
             raise NotFoundError("Product not found")
         assert_inactive_for_delete(product.status, label="product")
-        # Hard delete. History rows keep the product name/sku through their
+        # Hard delete. History rows keep the product name through their
         # snapshots and their product_id is nulled by ON DELETE SET NULL, so
         # purchase/sale/return/delivery history is preserved; stock balances,
         # batches and sale-price versions cascade with the product.
+        snapshot = {"barcode": product.barcode, "name": product.name}
         await self.session.delete(product)
+        await record_audit(
+            self.session,
+            action="product_deleted",
+            module="stock",
+            entity_type="product",
+            entity_id=product.id,
+            old_values=snapshot,
+        )
         await self.session.commit()
 
     async def _validate_category(self, category_id) -> None:
@@ -642,7 +689,6 @@ class StockOperationService:
                 product_id=item.product_id,
                 product_ref=product,
                 product_name=product.name,
-                sku=product.sku,
                 quantity=base_quantity,
                 unit_cost=base_unit_cost,
                 batch_no=item.batch_no,
@@ -835,59 +881,9 @@ class StockOperationService:
 
         from app.modules.stock import batch_service
 
-        # 1) Reverse the original received quantities.
-        for row in existing_items:
-            quantity = _q4(row.quantity)
-            if quantity <= 0:
-                continue
-            movement_batch_id = None
-            movement_expiry = None
-            if row.batch_no:
-                batch = await batch_service.deduct_from_batch(
-                    self.session,
-                    product_id=row.product_id,
-                    batch_no=row.batch_no,
-                    quantity_base=quantity,
-                    expiry_date=row.expiry_date,
-                )
-                movement_batch_id = batch.id
-                movement_expiry = batch.expiry_date
-            else:
-                allocations = await batch_service.allocate_fefo(
-                    self.session,
-                    product=row.product_ref,
-                    quantity_base=quantity,
-                    allow_negative=negative_ok,
-                    include_expired=True,
-                )
-                await batch_service.deduct_allocations(self.session, allocations)
-            # Reverse cost in canonical USD (the original document currency is
-            # still on the header at this point).
-            reverse_unit_cost = _usd_unit_cost(
-                row.unit_cost, transaction.currency, transaction.exchange_rate
-            )
-            await apply_stock_movement(
-                self.session,
-                product_id=row.product_id,
-                movement_type="PURCHASE_RETURN",
-                quantity_delta=-quantity,
-                unit_cost=reverse_unit_cost,
-                reference_type="stock_transaction",
-                reference_id=transaction.id,
-                created_by=actor.id,
-                document_no=transaction.document_no,
-                batch_no=row.batch_no,
-                batch_id=movement_batch_id,
-                expiry_date=movement_expiry,
-                allow_negative=negative_ok,
-                uom_symbol=row.uom_symbol,
-            )
-            await self.session.delete(row)
-        await self.session.flush()
-
-        # 2) Receive the new lines with the same rules as stock_in.
-        total = Decimal("0.00")
-        item_rows: list[StockTransactionItem] = []
+        # Resolve every requested line to base-UOM amounts (same rules as
+        # stock_in) before touching stock, so a validation failure rolls back.
+        specs: list[dict] = []
         for item in payload.items:
             product = products[item.product_id]
             if product.track_batch:
@@ -930,57 +926,200 @@ class StockOperationService:
             if base_quantity <= 0:
                 raise ValidationError("Line quantity must be greater than zero", field_errors={"items": "Invalid quantity"})
             base_unit_cost = (Decimal(item.unit_cost) / factor).quantize(TWO, rounding=ROUND_HALF_UP)
-            ledger_unit_cost = _usd_unit_cost(base_unit_cost, payload.currency, payload.exchange_rate)
-            line_total = (Decimal(item.quantity) * Decimal(item.unit_cost)).quantize(TWO, rounding=ROUND_HALF_UP)
-            line_uom_symbol = (
-                item.uom_symbol
-                or (product.uom_ref.symbol if item.uom_id is None and product.uom_ref else None)
+            specs.append({
+                "product": product,
+                "product_id": item.product_id,
+                "base_quantity": base_quantity,
+                "base_unit_cost": base_unit_cost,
+                "ledger_unit_cost": _usd_unit_cost(base_unit_cost, payload.currency, payload.exchange_rate),
+                "line_total": (Decimal(item.quantity) * Decimal(item.unit_cost)).quantize(TWO, rounding=ROUND_HALF_UP),
+                "batch_no": item.batch_no,
+                "expiry_date": item.expiry_date,
+                "uom_symbol": (
+                    item.uom_symbol
+                    or (product.uom_ref.symbol if item.uom_id is None and product.uom_ref else None)
+                ),
+            })
+
+        def _line_key(product_id, batch_no, expiry_date) -> tuple[str, str, str]:
+            return (str(product_id or ""), str(batch_no or ""), str(expiry_date or ""))
+
+        existing_by_key = {
+            _line_key(row.product_id, row.batch_no, row.expiry_date): row for row in existing_items
+        }
+
+        async def _take_back(*, product, product_id, batch_no, expiry_date, quantity, unit_cost, uom_symbol):
+            """Take `quantity` base units back out of a line's lot (edit
+            decrease / removed line), failing clearly when the stock is gone."""
+            available = await batch_service.available_quantity(
+                self.session, product_id=product_id, batch_no=batch_no, expiry_date=expiry_date
             )
-            row = StockTransactionItem(
-                stock_transaction_id=transaction.id,
-                product_id=item.product_id,
-                product_ref=product,
-                product_name=product.name,
-                sku=product.sku,
-                quantity=base_quantity,
-                unit_cost=base_unit_cost,
-                batch_no=item.batch_no,
-                expiry_date=item.expiry_date,
-                uom_symbol=line_uom_symbol,
-                line_total=line_total,
-            )
-            item_rows.append(row)
-            self.session.add(row)
-            batch_lot = await batch_service.batch_in(
-                self.session,
-                product_id=item.product_id,
-                batch_no=item.batch_no,
-                expiry_date=item.expiry_date,
-                quantity_base=base_quantity,
-                unit_cost_per_base=ledger_unit_cost,
-                supplier_id=transaction.supplier_id,
-                document_no=transaction.document_no,
-            )
-            # batch_in may have auto-assigned the next batch number (a reused
-            # batch_no with a different expiry): record the lot's real number.
-            row.batch_no = batch_lot.batch_no or None
+            if available < quantity:
+                raise ValidationError(
+                    f"Cannot reduce below what is still in stock: available {available}, requested {quantity}",
+                    field_errors={"items": "Insufficient stock"},
+                )
+            movement_batch_id = None
+            movement_expiry = None
+            if (batch_no or "").strip():
+                batch = await batch_service.deduct_from_batch(
+                    self.session,
+                    product_id=product_id,
+                    batch_no=batch_no,
+                    quantity_base=quantity,
+                    expiry_date=expiry_date,
+                )
+                movement_batch_id = batch.id
+                movement_expiry = batch.expiry_date
+            else:
+                allocations = await batch_service.allocate_fefo(
+                    self.session,
+                    product=product,
+                    quantity_base=quantity,
+                    allow_negative=negative_ok,
+                    include_expired=True,
+                )
+                await batch_service.deduct_allocations(self.session, allocations)
             await apply_stock_movement(
                 self.session,
-                product_id=item.product_id,
-                movement_type="STOCK_IN",
-                quantity_delta=base_quantity,
-                unit_cost=ledger_unit_cost,
+                product_id=product_id,
+                movement_type="PURCHASE_RETURN",
+                quantity_delta=-quantity,
+                unit_cost=unit_cost,
                 reference_type="stock_transaction",
                 reference_id=transaction.id,
                 created_by=actor.id,
                 document_no=transaction.document_no,
-                batch_no=batch_lot.batch_no or None,
-                batch_id=batch_lot.id if (batch_lot.batch_no or "").strip() else None,
-                expiry_date=item.expiry_date,
+                batch_no=batch_no,
+                batch_id=movement_batch_id,
+                expiry_date=movement_expiry,
                 allow_negative=negative_ok,
-                uom_symbol=line_uom_symbol,
+                uom_symbol=uom_symbol,
             )
-            total += line_total
+
+        # Apply the DIFFERENCE per line: price/note-only edits never move
+        # stock; an increase receives the extra; a decrease takes it back out.
+        total = Decimal("0.00")
+        item_rows: list[StockTransactionItem] = []
+        matched_ids: set[uuid.UUID] = set()
+        for spec in specs:
+            existing = existing_by_key.get(
+                _line_key(spec["product_id"], spec["batch_no"], spec["expiry_date"])
+            )
+            if existing is not None:
+                matched_ids.add(existing.id)
+                delta = _q4(spec["base_quantity"] - _q4(existing.quantity))
+                if delta > 0:
+                    batch_lot = await batch_service.batch_in(
+                        self.session,
+                        product_id=spec["product_id"],
+                        batch_no=spec["batch_no"],
+                        expiry_date=spec["expiry_date"],
+                        quantity_base=delta,
+                        unit_cost_per_base=spec["ledger_unit_cost"],
+                        supplier_id=transaction.supplier_id,
+                        document_no=transaction.document_no,
+                    )
+                    await apply_stock_movement(
+                        self.session,
+                        product_id=spec["product_id"],
+                        movement_type="STOCK_IN",
+                        quantity_delta=delta,
+                        unit_cost=spec["ledger_unit_cost"],
+                        reference_type="stock_transaction",
+                        reference_id=transaction.id,
+                        created_by=actor.id,
+                        document_no=transaction.document_no,
+                        batch_no=batch_lot.batch_no or None,
+                        batch_id=batch_lot.id if (batch_lot.batch_no or "").strip() else None,
+                        expiry_date=spec["expiry_date"],
+                        allow_negative=negative_ok,
+                        uom_symbol=spec["uom_symbol"],
+                    )
+                elif delta < 0:
+                    await _take_back(
+                        product=spec["product"],
+                        product_id=spec["product_id"],
+                        batch_no=spec["batch_no"],
+                        expiry_date=spec["expiry_date"],
+                        quantity=-delta,
+                        unit_cost=spec["ledger_unit_cost"],
+                        uom_symbol=spec["uom_symbol"],
+                    )
+                existing.product_name = spec["product"].name
+                existing.quantity = spec["base_quantity"]
+                existing.unit_cost = spec["base_unit_cost"]
+                existing.batch_no = spec["batch_no"]
+                existing.expiry_date = spec["expiry_date"]
+                existing.uom_symbol = spec["uom_symbol"]
+                existing.line_total = spec["line_total"]
+                item_rows.append(existing)
+                total += spec["line_total"]
+            else:
+                row = StockTransactionItem(
+                    stock_transaction_id=transaction.id,
+                    product_id=spec["product_id"],
+                    product_ref=spec["product"],
+                    product_name=spec["product"].name,
+                    quantity=spec["base_quantity"],
+                    unit_cost=spec["base_unit_cost"],
+                    batch_no=spec["batch_no"],
+                    expiry_date=spec["expiry_date"],
+                    uom_symbol=spec["uom_symbol"],
+                    line_total=spec["line_total"],
+                )
+                item_rows.append(row)
+                self.session.add(row)
+                batch_lot = await batch_service.batch_in(
+                    self.session,
+                    product_id=spec["product_id"],
+                    batch_no=spec["batch_no"],
+                    expiry_date=spec["expiry_date"],
+                    quantity_base=spec["base_quantity"],
+                    unit_cost_per_base=spec["ledger_unit_cost"],
+                    supplier_id=transaction.supplier_id,
+                    document_no=transaction.document_no,
+                )
+                # batch_in may have auto-assigned the next batch number (a
+                # reused batch_no with a different expiry): record the real one.
+                row.batch_no = batch_lot.batch_no or None
+                await apply_stock_movement(
+                    self.session,
+                    product_id=spec["product_id"],
+                    movement_type="STOCK_IN",
+                    quantity_delta=spec["base_quantity"],
+                    unit_cost=spec["ledger_unit_cost"],
+                    reference_type="stock_transaction",
+                    reference_id=transaction.id,
+                    created_by=actor.id,
+                    document_no=transaction.document_no,
+                    batch_no=batch_lot.batch_no or None,
+                    batch_id=batch_lot.id if (batch_lot.batch_no or "").strip() else None,
+                    expiry_date=spec["expiry_date"],
+                    allow_negative=negative_ok,
+                    uom_symbol=spec["uom_symbol"],
+                )
+                total += spec["line_total"]
+
+        # Lines dropped from the purchase: take the original quantity back out.
+        for existing in existing_items:
+            if existing.id in matched_ids:
+                continue
+            quantity = _q4(existing.quantity)
+            if quantity > 0 and existing.product_id is not None:
+                await _take_back(
+                    product=existing.product_ref,
+                    product_id=existing.product_id,
+                    batch_no=existing.batch_no,
+                    expiry_date=existing.expiry_date,
+                    quantity=quantity,
+                    unit_cost=_usd_unit_cost(
+                        existing.unit_cost, transaction.currency, transaction.exchange_rate
+                    ),
+                    uom_symbol=existing.uom_symbol,
+                )
+            await self.session.delete(existing)
+        await self.session.flush()
 
         subtotal = total.quantize(TWO, rounding=ROUND_HALF_UP)
         discount = _q2(payload.discount_amount or 0)
@@ -1090,6 +1229,8 @@ class StockOperationService:
             requested[line.stock_transaction_item_id] = (
                 requested.get(line.stock_transaction_item_id, Decimal("0")) + Decimal(line.quantity)
             )
+        from app.modules.stock import batch_service
+
         for item_id, total_quantity in requested.items():
             item = items_by_id[item_id]
             returnable = Decimal(item.quantity) - Decimal(item.returned_quantity)
@@ -1098,6 +1239,20 @@ class StockOperationService:
                     f"Cannot return more than the returnable quantity ({returnable})",
                     field_errors={"lines": "Return quantity exceeds returnable"},
                 )
+            # Only stock still physically on hand can be returned to the
+            # supplier — a lot that was already sold/disposed cannot.
+            if item.product_id is not None:
+                available = await batch_service.available_quantity(
+                    self.session,
+                    product_id=item.product_id,
+                    batch_no=item.batch_no,
+                    expiry_date=item.expiry_date,
+                )
+                if total_quantity > available:
+                    raise ValidationError(
+                        f"Return quantity exceeds the quantity in stock ({available})",
+                        field_errors={"lines": "Return quantity exceeds in-stock quantity"},
+                    )
 
         negative_ok = await allow_negative_stock(self.session)
         return_no = await allocate_document_number(self.session, "PURCHASE_RETURN")
@@ -1300,7 +1455,6 @@ class StockOperationService:
                     product_id=item.product_id,
                 product_ref=product,
                 product_name=product.name,
-                sku=product.sku,
                 quantity=difference,
                 unit_cost=unit_cost,
                 system_quantity=system_quantity,
@@ -1458,7 +1612,6 @@ class StockOperationService:
                     product_id=item.product_id,
                 product_ref=product,
                 product_name=product.name,
-                sku=product.sku,
                 quantity=base_quantity,
                 unit_cost=unit_cost,
                 batch_no=item.batch_no,
@@ -1715,10 +1868,10 @@ class StockOperationService:
                     id=item.id,
                     product_id=item.product_id,
                     product_name=item.product_name or (item.product_ref.name if item.product_ref else None),
-                    sku=item.sku or (item.product_ref.sku if item.product_ref else None),
                     uom_symbol=item.uom_symbol,
                     quantity=item.quantity,
                     unit_cost=item.unit_cost,
+                    returned_quantity=item.returned_quantity,
                     system_quantity=item.system_quantity,
                     actual_quantity=item.actual_quantity,
                     batch_no=item.batch_no,
@@ -1838,9 +1991,14 @@ def movement_to_out(
 
 
 async def list_stock_in_transactions_for_supplier(session: AsyncSession, supplier_id, page: int, limit: int):
-    """Public interface: supplier purchase/stock-in history."""
+    """Public interface: supplier purchase/stock-in history.
+
+    Each row carries the user who created the document and the paid/remaining
+    amounts so the supplier History tab can mirror the Purchase Report."""
     stmt = (
-        select(StockTransaction)
+        select(StockTransaction, User.full_name, SupplierDebt)
+        .join(User, User.id == StockTransaction.created_by, isouter=True)
+        .outerjoin(SupplierDebt, SupplierDebt.stock_transaction_id == StockTransaction.id)
         .where(StockTransaction.supplier_id == supplier_id, StockTransaction.transaction_type == "STOCK_IN")
         .order_by(StockTransaction.transaction_date.desc())
     )
@@ -1851,15 +2009,26 @@ async def list_stock_in_transactions_for_supplier(session: AsyncSession, supplie
     )
     total = (await session.execute(count_stmt)).scalar_one()
     rows = await session.execute(stmt.offset((page - 1) * limit).limit(limit))
-    return [
-        {
-            "id": str(t.id),
-            "document_no": t.document_no,
-            "transaction_date": t.transaction_date.isoformat(),
-            "reference_no": t.reference_no,
-            "note": t.note,
-            "status": t.status,
-            "total": str(sum((item.line_total for item in t.items), Decimal("0")).quantize(TWO)),
-        }
-        for t in rows.scalars().all()
-    ], int(total)
+    data = []
+    for transaction, user_name, debt in rows.all():
+        line_total = sum(
+            (item.line_total for item in transaction.items), Decimal("0")
+        ).quantize(TWO)
+        remaining = Decimal(debt.remaining_amount) if debt else Decimal("0.00")
+        paid = (line_total - remaining) if debt else line_total
+        data.append(
+            {
+                "id": str(transaction.id),
+                "document_no": transaction.document_no,
+                "transaction_date": transaction.transaction_date.isoformat(),
+                "reference_no": transaction.reference_no,
+                "note": transaction.note,
+                "status": debt.status if debt else "PAID",
+                "total": str(line_total),
+                "paid_amount": str(paid),
+                "remaining_amount": str(remaining),
+                "currency": transaction.currency,
+                "user_name": user_name,
+            }
+        )
+    return data, int(total)

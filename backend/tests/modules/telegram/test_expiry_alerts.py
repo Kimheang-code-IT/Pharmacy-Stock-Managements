@@ -92,9 +92,10 @@ async def state_rows(db_session, product_id) -> list[TelegramExpiryAlertState]:
     return list(result.scalars().all())
 
 
-def messages_for(sender: FakeSender, sku: str) -> list[str]:
+def messages_for(sender: FakeSender, tag: str) -> list[str]:
     # One text per (lot, alert level); every recipient gets a copy, so dedupe.
-    return sorted({text for _chat, text in sender.calls if sku in text})
+    # SKU is no longer stored: match on the product-name tag instead.
+    return sorted({text for _chat, text in sender.calls if tag in text})
 
 
 @pytest.fixture
@@ -120,17 +121,17 @@ async def test_both_levels_fire_once_per_lot(client, db_session, alert_settings)
     assert summary["enabled"] is True
 
     # Expiry in 5 days is within both windows (90 and 7): both levels fire.
-    level1 = [t for t in messages_for(first, f"EXP-{tag}") if "Alert 1" in t]
-    level2 = [t for t in messages_for(first, f"EXP-{tag}") if "Alert 2" in t]
+    level1 = [t for t in messages_for(first, tag) if "Alert 1" in t]
+    level2 = [t for t in messages_for(first, tag) if "Alert 2" in t]
     assert len(level1) == 1
     assert len(level2) == 1
     rows = await state_rows(db_session, product["id"])
     assert {(r.alert_level) for r in rows} == {1, 2}
 
-    # Message content: name, sku, batch, expiry date, qty, level.
+    # Message content: name, barcode, batch, expiry date, qty, level.
     text = level1[0]
     assert f"Expiry Widget {tag}" in text
-    assert f"EXP-{tag}" in text
+    assert product["barcode"] in text
     assert "Batch: B-EXP" in text
     assert (today + timedelta(days=5)).isoformat() in text
     assert "5" in text  # remaining qty
@@ -138,7 +139,7 @@ async def test_both_levels_fire_once_per_lot(client, db_session, alert_settings)
     # Second run on the same day: dedupe — no new sends.
     second = FakeSender()
     summary2 = await ExpiryAlertService(db_session).scan_and_send(sender=second, today=today)
-    assert messages_for(second, f"EXP-{tag}") == []
+    assert messages_for(second, tag) == []
     assert summary2["sent"] == 0
     assert len(await state_rows(db_session, product["id"])) == 2
 
@@ -157,8 +158,8 @@ async def test_alert_levels_are_independent_windows(client, db_session, alert_se
     await ExpiryAlertService(db_session).scan_and_send(sender=first, today=today)
 
     # 60 days out: inside Alert 1 (90), outside Alert 2 (7). Unbatched lot dedupes too.
-    assert len(messages_for(first, f"WIN-{tag}")) == 1
-    assert "Alert 1" in messages_for(first, f"WIN-{tag}")[0]
+    assert len(messages_for(first, tag)) == 1
+    assert "Alert 1" in messages_for(first, tag)[0]
     rows = await state_rows(db_session, product["id"])
     assert [r.alert_level for r in rows] == [1]
     assert rows[0].batch_no is None
@@ -167,7 +168,7 @@ async def test_alert_levels_are_independent_windows(client, db_session, alert_se
     await set_setting(db_session, "stock", "expiry_alert_2_days", 70)
     second = FakeSender()
     await ExpiryAlertService(db_session).scan_and_send(sender=second, today=today)
-    win_messages = messages_for(second, f"WIN-{tag}")
+    win_messages = messages_for(second, tag)
     assert len(win_messages) == 1
     assert "Alert 2" in win_messages[0]
     assert len(await state_rows(db_session, product["id"])) == 2
@@ -195,7 +196,7 @@ async def test_disabled_setting_skips_send(client, db_session, alert_settings):
     enabled_sender = FakeSender()
     summary = await ExpiryAlertService(db_session).scan_and_send(sender=enabled_sender, today=today)
     assert summary["enabled"] is True
-    assert len(messages_for(enabled_sender, f"DIS-{tag}")) == 2  # both levels
+    assert len(messages_for(enabled_sender, tag)) == 2  # both levels
 
 
 @pytest.mark.asyncio
@@ -239,9 +240,9 @@ async def test_only_positive_qty_expiry_tracked_lots_alert(client, db_session, a
     sender = FakeSender()
     await ExpiryAlertService(db_session).scan_and_send(sender=sender, today=today)
 
-    assert len(messages_for(sender, f"POS-{tag}")) == 2  # both levels
-    assert messages_for(sender, f"EMP-{tag}") == []
-    assert messages_for(sender, f"UNT-{tag}") == []
+    assert len(messages_for(sender, tag + "a")) == 2  # both levels
+    assert messages_for(sender, tag + "b") == []
+    assert messages_for(sender, tag + "c") == []
     assert await state_rows(db_session, in_stock["id"])
     assert await state_rows(db_session, emptied["id"]) == []
     assert await state_rows(db_session, untracked["id"]) == []
@@ -268,10 +269,10 @@ async def test_failed_delivery_records_nothing_and_retries(client, db_session, a
     # A healthy sender on the next sweep delivers both levels and records state.
     second = FakeSender()
     summary = await ExpiryAlertService(db_session).scan_and_send(sender=second, today=today)
-    assert len(messages_for(second, f"NR-{tag}")) == 2
+    assert len(messages_for(second, tag)) == 2
     # Other tests leave verified recipients in the shared DB, so only assert
     # this test's user received the alert.
-    nr_recipients = {chat_id for chat_id, text in second.calls if f"NR-{tag}" in text}
+    nr_recipients = {chat_id for chat_id, text in second.calls if tag in text}
     assert user.telegram_chat_id in nr_recipients
     assert len(await state_rows(db_session, product["id"])) == 2
     assert summary["levels"] == {1: 1, 2: 1}

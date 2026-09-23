@@ -7,7 +7,7 @@ from tests.modules.pos.helpers import make_stocked_product
 from tests.utils import DEFAULT_UOM_ID, admin_headers, deactivate_then_delete
 
 
-async def test_product_crud_sku_conflict_and_price_audit(client, db_session):
+async def test_product_crud_and_price_audit(client, db_session):
     headers = await admin_headers(client)
     category = (
         await client.post("/api/v1/categories", json={"code": "GEN", "name": "General"}, headers=headers)
@@ -16,7 +16,6 @@ async def test_product_crud_sku_conflict_and_price_audit(client, db_session):
     created = await client.post(
         "/api/v1/products",
         json={
-            "sku": "SKU-0001",
             "barcode": "1234567890",
             "name": "Coffee 500g",
             "category_id": category["id"],
@@ -32,17 +31,9 @@ async def test_product_crud_sku_conflict_and_price_audit(client, db_session):
     assert float(product["quantity"]) == 0.0
     assert product["category_name"] == "General"
 
-    dup_sku = await client.post(
-        "/api/v1/products",
-        json={"sku": "SKU-0001", "name": "Dup", "category_id": category["id"], "uom_id": str(DEFAULT_UOM_ID), "selling_price": "1"},
-        headers=headers,
-    )
-    assert dup_sku.status_code == 409
-
     dup_barcode = await client.post(
         "/api/v1/products",
         json={
-            "sku": "SKU-0002",
             "barcode": "1234567890",
             "name": "Dup",
             "category_id": category["id"],
@@ -94,13 +85,13 @@ async def test_product_crud_sku_conflict_and_price_audit(client, db_session):
     await deactivate_then_delete(client, headers, f"/api/v1/categories/{category['id']}")
 
 async def test_barcode_is_operational_identifier(client):
-    """Barcode-first: sku optional, barcode unique+required, fast lookup."""
+    """Barcode-first: barcode unique+required, fast lookup."""
     headers = await admin_headers(client)
     category = (
         await client.post("/api/v1/categories", json={"code": "BAR", "name": "Barcode"}, headers=headers)
     ).json()["data"]
 
-    # 1. Create without sku and without barcode: barcode is auto-issued.
+    # 1. Create without barcode: barcode is auto-issued.
     no_ids = await client.post(
         "/api/v1/products",
         json={
@@ -116,7 +107,6 @@ async def test_barcode_is_operational_identifier(client):
     assert auto["barcode"]
     assert auto["barcode"].isdigit()
     assert len(auto["barcode"]) == 13
-    assert auto["sku"] is None
 
     # 2. Barcode lookup returns the product (POS operational path).
     found = await client.get(f"/api/v1/pos/products/barcode/{auto['barcode']}", headers=headers)
@@ -149,14 +139,7 @@ async def test_barcode_is_operational_identifier(client):
     results = searched.json()["data"]
     assert [row["id"] for row in results] == [auto["id"]]
 
-    # 6. sku can be added later and stays unique.
-    patched = await client.patch(
-        f"/api/v1/products/{auto['id']}", json={"sku": "LEGACY-1"}, headers=headers
-    )
-    assert patched.status_code == 200
-    assert patched.json()["data"]["sku"] == "LEGACY-1"
-
-    # 7. Product list search matches barcode.
+    # 6. Product list search matches barcode.
     listing = await client.get(f"/api/v1/products?q={auto['barcode']}", headers=headers)
     assert listing.status_code == 200
     assert any(row["id"] == auto["id"] for row in listing.json()["data"])

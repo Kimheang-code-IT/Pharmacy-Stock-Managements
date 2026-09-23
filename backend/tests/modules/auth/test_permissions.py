@@ -19,16 +19,20 @@ def test_permission_catalog_matches_spec():
         "stock": {"view", "in", "adjust", "damage", "expire"},
         "product": {"create", "update", "delete"},
         "supplier": {"view", "create", "update", "delete", "debt.pay"},
-        "pos": {"access", "discount", "debt_sale", "print"},
+        "pos": {"access", "discount", "debt_sale", "print", "sale_edit", "return", "refund"},
         "customer": {"view", "create", "update", "delete", "debt.pay"},
         "delivery": {"view", "create", "update", "confirm", "deliver", "cancel"},
-        "report": {"sales", "purchase", "customer_debt", "supplier_debt", "finance"},
-        "expense": {"create"},  # Add Expense on Finance Report only (no Expense page)
+        "report": {
+            "sales", "purchase", "customer_debt", "supplier_debt", "finance",
+            "stock_valuation", "expense",
+        },
+        "expense": {"view", "create", "approve", "void"},
         "user": {"view", "create", "update", "delete"},
         "role": {"view", "create", "update", "delete"},
         "sequence": {"view", "create", "update", "delete"},
         "audit": {"view"},
         "settings": {"view", "update"},
+        "system": {"maintenance", "data_reset", "backup", "restore"},
     }
     assert {module: set(actions) for module, actions in PERMISSION_CATALOG.items()} == expected
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { apiErrorMessage, isApiErrorHandled } from '~/utils/api/errors'
+import { useFormErrors } from '~/composables/useFormErrors'
 
 /**
  * Quick customer creation from the POS checkout "Add new customer" button
@@ -24,6 +25,10 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const toast = useToast()
 const store = useAppDataStore()
+const { errorFor, clear, claim } = useFormErrors()
+claim('name')
+claim('phone')
+claim('location')
 const fieldUi = { base: 'text-base' }
 
 const saving = ref(false)
@@ -43,6 +48,7 @@ const canSave = computed(() => Boolean(name.value.trim()))
 async function submit() {
   const customerName = name.value.trim()
   if (!customerName || saving.value || props.disabled) return
+  clear()
   saving.value = true
   try {
     const record = await store.createRemote('customers', {
@@ -82,6 +88,7 @@ async function submit() {
         :label="t('app.pos.customerName')"
         size="md"
         required
+        :error="errorFor('name')"
       >
         <UInput
           v-model="name"
@@ -96,6 +103,7 @@ async function submit() {
       <UFormField
         :label="t('app.pos.customerPhone')"
         size="md"
+        :error="errorFor('phone')"
       >
         <UInput
           v-model="phone"
@@ -109,6 +117,7 @@ async function submit() {
       <UFormField
         :label="t('app.pos.location')"
         size="md"
+        :error="errorFor('location')"
       >
         <UInput
           v-model="location"

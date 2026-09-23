@@ -336,7 +336,6 @@ export function createMockDeliveryRepository(): DeliveryCommandRepository {
             saleItemId: String(item.id ?? ''),
             productId: String(item.productId ?? ''),
             product: String(item.name ?? ''),
-            sku: '',
             uomSymbol: String(item.uom ?? ''),
             qtyOrdered: Number(item.quantity ?? 0),
             qtyRemaining: Math.max(0, Number(item.quantity || 0)

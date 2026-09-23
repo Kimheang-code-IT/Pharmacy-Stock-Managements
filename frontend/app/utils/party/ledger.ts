@@ -14,6 +14,10 @@ export interface PartyHistory {
   paidAmount: number
   debtAmount: number
   status: string
+  /** Document currency snapshot (amounts render in their own currency). */
+  currency: string
+  /** Staff user who created the sale / stock-in (audit tracking). */
+  user: string
 }
 
 function asNumber(value: unknown): number {
@@ -40,7 +44,10 @@ export function normalizePartyHistory(
     date: asText(row.sale_date ?? row.transaction_date) || null,
     total: asNumber(kind === 'customer' ? row.grand_total : row.total),
     paidAmount: asNumber(row.paid_amount),
-    debtAmount: asNumber(row.debt_amount),
+    // Customer rows carry the invoice debt; supplier rows the remaining debt.
+    debtAmount: asNumber(kind === 'customer' ? row.debt_amount : row.remaining_amount),
     status: asText(kind === 'customer' ? row.payment_status || row.sale_status : row.status),
+    currency: asText(row.currency) || 'USD',
+    user: asText(kind === 'customer' ? row.cashier_name : row.user_name),
   }
 }

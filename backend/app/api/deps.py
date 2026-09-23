@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import SessionFactory, get_session
-from app.core.exceptions import AccessDeniedError, AuthRequiredError
+from app.core.exceptions import AccessDeniedError, AuthRequiredError, PasswordChangeRequiredError
 from app.core.permissions import user_has_permission
 from app.core.redis import get_redis
 from app.core.security import decode_token
@@ -70,7 +70,24 @@ async def get_current_user(
         raise AccessDeniedError("This account is disabled")
     if payload.get("ver") != user.token_version:
         raise AuthRequiredError()
+    # A forced/expired password change blocks every action except the change
+    # flow itself (and reading the profile / logging out).
+    if getattr(user, "must_change_password", False):
+        allowed = {
+            "/api/v1/auth/change-password",
+            "/api/v1/auth/me",
+            "/api/v1/auth/logout",
+        }
+        if request.url.path not in allowed:
+            raise PasswordChangeRequiredError()
+    from app.shared.audit.service import set_audit_actor
+
     request.state.user = user
+    set_audit_actor(
+        user.id,
+        user.email,
+        user.role_ref.name if getattr(user, "role_ref", None) else None,
+    )
     return user
 
 

@@ -62,5 +62,4 @@ Docker (run from `infrastructure/`, where `.env` lives): `docker compose up -d -
 
 - Single `main` branch; commits are short freeform messages (e.g. `update pos version 2.0`).
 - Production safety: bind frontend/db/redis to loopback by default; never commit `infrastructure/.env`.
-- `ruff` reads no config (the `[tool:ruff]` block in `pytest.ini` is not recognized and there is no
-  `pyproject.toml`), so it uses defaults; `ruff check app` currently passes.
+- `ruff` reads no config (there is no `pyproject.toml`), so it uses defaults; `ruff check app` passes.

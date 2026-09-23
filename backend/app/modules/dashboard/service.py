@@ -30,7 +30,7 @@ from app.core.permissions import user_has_permission
 from app.modules.auth.models import User
 from app.modules.customers.models import Customer, CustomerDebt
 from app.modules.delivery.models import DeliveryNote
-from app.modules.pos.models import Sale, SaleItem, SaleReturn, SaleReturnItem
+from app.modules.pos.models import Sale, SaleItem, SaleItemBatch, SaleReturn, SaleReturnItem
 from app.modules.reports.models import Expense
 from app.modules.stock.models import (
     Product,
@@ -121,6 +121,7 @@ class DashboardService:
         Dashboard and Finance Report agree (spec 2.1.10)."""
         result = await self.session.execute(
             select(func.coalesce(func.sum(_usd(Expense.amount, Expense.currency, Expense.exchange_rate)), 0)).where(
+                Expense.status == "POSTED",
                 Expense.expense_date >= start_at.date(),
                 Expense.expense_date < end_at.date(),
             )
@@ -163,19 +164,53 @@ class DashboardService:
         return Decimal(result.scalar_one())
 
     async def _cogs(self, start_at: datetime, end_at: datetime) -> Decimal:
-        """Sold cost for sales in the period, minus cost of restocked returns."""
+        """Sold cost for sales in the period, minus cost of restocked returns.
+
+        Uses the exact per-batch cost snapshot (sale_item_batches) when present,
+        falling back to the sale-item unit cost — the SAME rule as the Finance
+        Report, so Dashboard and Finance gross profit always reconcile."""
+        batch_costs = (
+            select(
+                SaleItemBatch.sale_item_id.label("sale_item_id"),
+                func.sum(SaleItemBatch.quantity_base * SaleItemBatch.cost_per_base).label("batch_cost"),
+            )
+            .group_by(SaleItemBatch.sale_item_id)
+            .subquery()
+        )
         sold = await self.session.execute(
-            select(func.coalesce(func.sum(SaleItem.unit_cost * SaleItem.quantity * SaleItem.factor_to_base), 0))
+            select(
+                func.coalesce(
+                    func.sum(
+                        func.coalesce(
+                            batch_costs.c.batch_cost,
+                            SaleItem.unit_cost * SaleItem.quantity * SaleItem.factor_to_base,
+                        )
+                    ),
+                    0,
+                )
+            )
             .select_from(SaleItem)
             .join(Sale, Sale.id == SaleItem.sale_id)
+            .join(batch_costs, batch_costs.c.sale_item_id == SaleItem.id, isouter=True)
             .where(Sale.sale_date >= start_at, Sale.sale_date < end_at)
         )
         restocked = await self.session.execute(
-            select(func.coalesce(func.sum(SaleReturnItem.quantity * SaleItem.unit_cost * SaleItem.factor_to_base), 0))
+            select(
+                func.coalesce(
+                    func.sum(
+                        func.coalesce(
+                            batch_costs.c.batch_cost * SaleReturnItem.quantity / SaleItem.quantity,
+                            SaleReturnItem.quantity * SaleItem.unit_cost * SaleItem.factor_to_base,
+                        )
+                    ),
+                    0,
+                )
+            )
             .select_from(SaleReturnItem)
             .join(SaleItem, SaleItem.id == SaleReturnItem.sale_item_id)
             .join(SaleReturn, SaleReturn.id == SaleReturnItem.sale_return_id)
             .join(Sale, Sale.id == SaleItem.sale_id)
+            .join(batch_costs, batch_costs.c.sale_item_id == SaleItem.id, isouter=True)
             .where(
                 SaleReturnItem.restock.is_(True),
                 SaleReturn.return_date >= start_at,
@@ -213,6 +248,7 @@ class DashboardService:
                 func.coalesce(func.sum(_usd(Expense.amount, Expense.currency, Expense.exchange_rate)), 0),
             )
             .where(
+                Expense.status == "POSTED",
                 Expense.expense_date >= start_at.date(),
                 Expense.expense_date < end_at.date(),
             )

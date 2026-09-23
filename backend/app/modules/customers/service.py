@@ -50,6 +50,14 @@ class CustomerService:
         )
         self.repo.add(customer)
         await self.repo.flush()
+        await record_audit(
+            self.session,
+            action="customer_created",
+            module="customers",
+            entity_type="customer",
+            entity_id=customer.id,
+            new_values={"code": customer.code, "name": customer.name, "status": customer.status},
+        )
         await self.session.commit()
         return customer
 
@@ -57,12 +65,22 @@ class CustomerService:
         customer = await self.get(customer_id)
         if customer.is_walk_in:
             raise ConflictError("The walk-in customer is a system record and cannot be edited")
+        old = {"code": customer.code, "name": customer.name, "status": customer.status}
         data = payload.model_dump(exclude_unset=True, exclude_none=True)
         if "location" in data:
             data["address"] = data.pop("location")
         for key, value in data.items():
             setattr(customer, key, value)
         await self.repo.flush()
+        await record_audit(
+            self.session,
+            action="customer_updated",
+            module="customers",
+            entity_type="customer",
+            entity_id=customer.id,
+            old_values=old,
+            new_values={"code": customer.code, "name": customer.name, "status": customer.status},
+        )
         await self.session.commit()
         return customer
 
@@ -82,7 +100,16 @@ class CustomerService:
                 "Cannot delete this customer because sales, debt, delivery, or payment "
                 "history exists. Deactivate it instead."
             )
+        snapshot = {"code": customer.code, "name": customer.name}
         await self.session.delete(customer)
+        await record_audit(
+            self.session,
+            action="customer_deleted",
+            module="customers",
+            entity_type="customer",
+            entity_id=customer.id,
+            old_values=snapshot,
+        )
         await self.session.commit()
 
     # ------------------------------------------------------------- debts
@@ -111,7 +138,8 @@ class CustomerService:
         )
         total = (await self.session.execute(count_stmt)).scalar_one()
         stmt = (
-            select(Sale)
+            select(Sale, User.full_name)
+            .join(User, User.id == Sale.cashier_id, isouter=True)
             .where(Sale.customer_id == customer.id)
             .order_by(Sale.sale_date.desc())
             .offset((page - 1) * limit)
@@ -128,8 +156,10 @@ class CustomerService:
                 "debt_amount": str(sale.debt_amount),
                 "payment_status": sale.payment_status,
                 "sale_status": sale.sale_status,
+                "cashier_name": user_name,
+                "currency": sale.currency,
             }
-            for sale in rows.scalars().all()
+            for sale, user_name in rows.all()
         ], int(total)
 
     async def pay_debt(self, customer_id, debt_id, payload, *, actor: User) -> Payment:

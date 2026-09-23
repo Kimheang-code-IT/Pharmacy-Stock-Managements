@@ -1,4 +1,4 @@
-import type { AppConfigRepository, AppInfoRepository, StorageRepository } from '~/repositories/contracts/settings'
+import type { AppConfigRepository, AppInfoRepository, BackupRepository, StorageRepository } from '~/repositories/contracts/settings'
 import type {
   DeliveryCommandRepository,
   EntityRepository,
@@ -8,6 +8,7 @@ import type {
   StockQueryRepository,
 } from '~/repositories/contracts/entities'
 import { createHttpAppConfigRepository, createHttpAppInfoRepository } from '~/repositories/http/settings'
+import { createHttpBackupRepository } from '~/repositories/http/backup'
 import { createHttpStorageRepository } from '~/repositories/http/settings-storage'
 import { createHttpDeliveryRepository } from '~/repositories/http/delivery'
 import {
@@ -20,6 +21,7 @@ import {
 
 let appInfoRepo: AppInfoRepository
 let appConfigRepo: AppConfigRepository
+let backupRepo: BackupRepository
 let storageRepo: StorageRepository
 let entityRepo: EntityRepository
 let stockQueryRepo: StockQueryRepository
@@ -34,6 +36,7 @@ function ensureRepositories() {
   initialized = true
   appInfoRepo = createHttpAppInfoRepository()
   appConfigRepo = createHttpAppConfigRepository()
+  backupRepo = createHttpBackupRepository()
   storageRepo = createHttpStorageRepository()
   entityRepo = createHttpEntityRepository()
   stockQueryRepo = createHttpStockQueryRepository()
@@ -46,6 +49,11 @@ function ensureRepositories() {
 export function useSettingsRepositories() {
   ensureRepositories()
   return { appInfo: appInfoRepo!, appConfig: appConfigRepo!, storage: storageRepo! }
+}
+
+export function useBackupRepository(): BackupRepository {
+  ensureRepositories()
+  return backupRepo!
 }
 
 export function useEntityRepository(): EntityRepository {

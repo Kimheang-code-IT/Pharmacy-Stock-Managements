@@ -219,7 +219,19 @@ const rows = computed({
 
 const tableRows = computed(() => rows.value.map((row, index) => ({ ...row, _rowIndex: index })))
 
+/** Per-column maximum for a number cell (static or resolved from the row). */
+function columnMax(column: ModuleLineColumn, row: Record<string, unknown>): number | undefined {
+  const raw = typeof column.max === 'function' ? column.max(row) : column.max
+  const value = Number(raw)
+  return Number.isFinite(value) ? value : undefined
+}
+
 function updateCell(index: number, key: string, value: unknown) {
+  const column = props.table.columns.find(item => item.key === key)
+  if (column && typeof value === 'number') {
+    const max = columnMax(column, rows.value[index] || {})
+    if (max !== undefined && value > max) value = max
+  }
   const next = rows.value.map((row, i) => i === index ? { ...row, [key]: value } : row)
   if (props.table.key === 'otherCharges') {
     const row = next[index]
@@ -409,6 +421,8 @@ const columns = computed<TableColumn<Record<string, unknown>>[]>(() => {
             inputProps.increment = false
             inputProps.decrement = false
             inputProps.ui = { base: 'text-right tabular-nums' }
+            const max = columnMax(column, row.original)
+            if (max !== undefined) inputProps.max = max
           }
           return h(Input, inputProps)
         }

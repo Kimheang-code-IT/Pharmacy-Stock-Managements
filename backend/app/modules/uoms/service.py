@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ConflictError, NotFoundError
 from app.modules.uoms.models import DEFAULT_UOMS, UOM
 from app.modules.uoms.repository import UOMRepository
+from app.shared.audit.service import record_audit
 from app.shared.lifecycle import assert_inactive_for_delete
 
 
@@ -51,12 +52,21 @@ class UOMService:
         )
         self.repo.add(uom)
         await self.repo.flush()
+        await record_audit(
+            self.session,
+            action="uom_created",
+            module="uoms",
+            entity_type="uom",
+            entity_id=uom.id,
+            new_values={"code": uom.code, "name": uom.name, "status": uom.status},
+        )
         await self.session.commit()
         await self.session.refresh(uom)
         return uom
 
     async def update(self, uom_id: uuid.UUID, payload) -> UOM:
         uom = await self.get(uom_id)
+        old = {"code": uom.code, "name": uom.name, "status": uom.status}
         if payload.code is not None:
             code = payload.code.strip()
             if code and code != uom.code:
@@ -72,6 +82,15 @@ class UOMService:
         if payload.status is not None:
             uom.status = payload.status
         await self.repo.flush()
+        await record_audit(
+            self.session,
+            action="uom_updated",
+            module="uoms",
+            entity_type="uom",
+            entity_id=uom.id,
+            old_values=old,
+            new_values={"code": uom.code, "name": uom.name, "status": uom.status},
+        )
         await self.session.commit()
         await self.session.refresh(uom)
         return uom
@@ -84,5 +103,14 @@ class UOMService:
                 "Cannot delete this unit of measure because products or pricing history "
                 "reference it. Deactivate it instead."
             )
+        snapshot = {"code": uom.code, "name": uom.name}
         await self.session.delete(uom)
+        await record_audit(
+            self.session,
+            action="uom_deleted",
+            module="uoms",
+            entity_type="uom",
+            entity_id=uom.id,
+            old_values=snapshot,
+        )
         await self.session.commit()

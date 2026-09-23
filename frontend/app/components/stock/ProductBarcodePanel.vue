@@ -52,7 +52,6 @@ const numericFields: Array<{
   { key: 'gapYMm', label: 'barcodeGapYMm', min: 0, max: 50, step: 0.5 },
   { key: 'marginTopMm', label: 'barcodeMarginTop', min: 0, max: 80, step: 1 },
   { key: 'marginLeftMm', label: 'barcodeMarginLeft', min: 0, max: 80, step: 1 },
-  { key: 'barcodeHeightMm', label: 'barcodeBarcodeHeight', min: 3, max: 120, step: 0.5 },
   { key: 'barcodeScale', label: 'barcodeWidthScale', min: 30, max: 100, step: 5 },
   { key: 'fontSizePt', label: 'barcodeFontSize', min: 4, max: 24, step: 0.5 },
   { key: 'labelsPerRow', label: 'barcodeLabelsPerRow', min: 1, max: 20, step: 1 },
@@ -66,18 +65,14 @@ const labelCss = barcodeLabelCss()
 const barcode = computed(() => String(props.product?.barcode || '').trim())
 const name = computed(() => String(props.product?.name || ''))
 
-/** Stickers never print prices — force the price rows off regardless of any
- *  stored settings, so a label shows only the name, bars and code. */
-const labelSettings = computed<BarcodeLabelSettings>(() => ({
-  ...settings,
-  showUsd: false,
-  showKhr: false,
-}))
+/** The sticker uses the user's settings as-is (name / price / bars / code). */
+const labelSettings = computed<BarcodeLabelSettings>(() => ({ ...settings }))
 
+/** Product sale price (USD) printed on the sticker when "Show price" is on. */
 const previewData = computed<BarcodeLabelData>(() => ({
   name: name.value,
   barcode: barcode.value,
-  priceUsd: 0,
+  priceUsd: Number(props.product?.salePrice ?? 0),
   priceKhr: null,
 }))
 
@@ -226,7 +221,18 @@ function printStickers() {
               <USwitch v-model="settings.showName" size="sm" />
               <span>{{ t('app.stock.barcodeShowName') }}</span>
             </label>
+            <label class="flex items-center gap-2 text-sm">
+              <USwitch v-model="settings.showUsd" size="sm" />
+              <span>{{ t('app.stock.barcodeShowUsd') }}</span>
+            </label>
+            <label class="flex items-center gap-2 text-sm">
+              <USwitch v-model="settings.showKhr" size="sm" />
+              <span>{{ t('app.stock.barcodeShowKhr') }}</span>
+            </label>
           </div>
+          <p class="text-[11px] text-muted">
+            {{ t('app.stock.barcodeAutoFitHint') }}
+          </p>
         </div>
       </div>
     </template>

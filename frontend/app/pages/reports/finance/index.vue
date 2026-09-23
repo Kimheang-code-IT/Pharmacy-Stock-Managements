@@ -12,7 +12,7 @@ import { downloadTableExport, type ExportTableColumn } from '~/utils/export/tabl
 import type { ExportRequest } from '~/types/stock-pos/export'
 import { apiErrorMessage, isApiErrorHandled } from '~/utils/api/errors'
 import { useFinanceRepository } from '~/repositories/index'
-import type { FinanceEntry, FinanceEntryType } from '~/repositories/contracts/entities'
+import type { FinanceEntry, FinanceEntryType, FinanceSummary } from '~/repositories/contracts/entities'
 
 definePageMeta({ titleKey: 'app.pages.financeReport', permission: 'report.finance' })
 
@@ -50,7 +50,7 @@ const money = (value: unknown) => formatMoney(value, preferences.currency)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const entries = ref<FinanceEntry[]>([])
-const outstanding = ref(0)
+const summary = ref<FinanceSummary | null>(null)
 
 /* ------------------------------ filters (table toolbar) --------------- */
 
@@ -85,28 +85,33 @@ const tableRows = computed<FinanceRow[]>(() =>
 const filtersActive = computed(() => typeFilter.value.length > 0)
 
 /* ------------------------------ summary cards ------------------------- */
+/*
+ * Two explicit, never-confused views (spec: separate P&L from cash flow):
+ * - Profit & Loss is the accounting view; supplier payments never appear here
+ *   because inventory cost is already recognized through COGS.
+ * - Cash Flow counts only money that actually moved (paid sales, collections,
+ *   paid refunds, supplier payments, expenses).
+ */
 
-const totals = computed(() => {
-  let income = 0
-  let expense = 0
-  for (const row of entries.value) {
-    // Rows keep their document currency; summarize normalized to USD.
-    const rate = Number(row.exchangeRate || 1) || 1
-    const amount = String(row.currency || 'USD') === 'KHR'
-      ? Number(row.amount || 0) / rate
-      : Number(row.amount || 0)
-    if (row.type === 'income') income += amount
-    else expense += amount
-  }
-  return { income, expense, net: income - expense }
+const plCards = computed(() => {
+  const pl = summary.value?.profitAndLoss
+  return [
+    { key: 'netSales', label: t('app.finance.netSales'), value: money(pl?.netSales ?? 0) },
+    { key: 'cogs', label: t('app.finance.costOfGoodsSold'), value: money(pl?.costOfGoodsSold ?? 0) },
+    { key: 'grossProfit', label: t('app.finance.grossProfit'), value: money(pl?.grossProfit ?? 0) },
+    { key: 'operatingProfit', label: t('app.finance.operatingProfit'), value: money(pl?.operatingProfit ?? 0) },
+  ]
 })
 
-const cards = computed(() => [
-  { key: 'income', label: t('app.finance.income'), value: money(totals.value.income) },
-  { key: 'expense', label: t('app.finance.expense'), value: money(totals.value.expense) },
-  { key: 'net', label: t('app.finance.net'), value: money(totals.value.net) },
-  { key: 'outstanding', label: t('app.finance.outstanding'), value: money(outstanding.value) },
-])
+const cashCards = computed(() => {
+  const cf = summary.value?.cashFlow
+  return [
+    { key: 'cashIn', label: t('app.finance.cashIn'), value: money(cf?.totalInflow ?? 0) },
+    { key: 'cashOut', label: t('app.finance.cashOut'), value: money(cf?.totalOutflow ?? 0) },
+    { key: 'netCashFlow', label: t('app.finance.netCashFlow'), value: money(cf?.netCashFlow ?? 0) },
+    { key: 'outstanding', label: t('app.finance.outstanding'), value: money(summary.value?.outstanding ?? 0) },
+  ]
+})
 
 /* ------------------------------ data loading -------------------------- */
 
@@ -114,12 +119,12 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const [rows, summary] = await Promise.all([
+    const [rows, summaryData] = await Promise.all([
       financeRepository.entries(dateStart.value, dateEnd.value),
       financeRepository.financeSummary(dateStart.value, dateEnd.value),
     ])
     entries.value = rows
-    outstanding.value = Number(summary.outstanding || 0)
+    summary.value = summaryData
   }
   catch (err: unknown) {
     error.value = err instanceof Error ? err.message : String(err)
@@ -363,15 +368,32 @@ async function submitExpense() {
       @export="onExport"
     />
 
-    <div class="flex flex-col gap-2 px-3 pt-2">
+    <div class="flex flex-col gap-3 px-3 pt-2">
       <p v-if="error" class="text-sm text-error">{{ error }}</p>
 
-      <div class="grid grid-cols-2 gap-2 lg:grid-cols-4">
-        <UCard v-for="card in cards" :key="card.key" :ui="{ body: 'p-3 sm:p-3' }">
-          <p class="text-xs text-muted">{{ card.label }}</p>
-          <p class="mt-1 text-lg font-semibold tabular-nums">{{ card.value }}</p>
-        </UCard>
-      </div>
+      <section class="space-y-1.5">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">
+          {{ t('app.finance.profitAndLoss') }}
+        </h3>
+        <div class="grid grid-cols-2 gap-2 lg:grid-cols-4">
+          <UCard v-for="card in plCards" :key="card.key" :ui="{ body: 'p-3 sm:p-3' }">
+            <p class="text-xs text-muted">{{ card.label }}</p>
+            <p class="mt-1 text-lg font-semibold tabular-nums">{{ card.value }}</p>
+          </UCard>
+        </div>
+      </section>
+
+      <section class="space-y-1.5">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-muted">
+          {{ t('app.finance.cashFlow') }}
+        </h3>
+        <div class="grid grid-cols-2 gap-2 lg:grid-cols-4">
+          <UCard v-for="card in cashCards" :key="card.key" :ui="{ body: 'p-3 sm:p-3' }">
+            <p class="text-xs text-muted">{{ card.label }}</p>
+            <p class="mt-1 text-lg font-semibold text-default tabular-nums">{{ card.value }}</p>
+          </UCard>
+        </div>
+      </section>
     </div>
 
     <TableAppListTable

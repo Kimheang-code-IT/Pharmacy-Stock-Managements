@@ -97,12 +97,12 @@ async def test_create_expense_persists_decimal_amount_and_audits(client, db_sess
     # Audit entry is required for the create.
     audit = await db_session.execute(
         select(AuditLog)
-        .where(AuditLog.entity_type == "Expense", AuditLog.entity_id == expense.id)
+        .where(AuditLog.entity_type == "expense", AuditLog.entity_id == expense.id)
         .order_by(AuditLog.created_at.desc())
     )
     entry = audit.scalars().first()
     assert entry is not None
-    assert entry.action == "CREATE"
+    assert entry.action == "expense_created"
     assert entry.new_values["amount"] == "120.50"
 
 
@@ -129,16 +129,18 @@ async def test_finance_summary_includes_operating_expenses_in_net_result(client,
     data = (await client.get("/api/v1/reports/finance", headers=headers)).json()["data"]
     delta_expense = Decimal(data["total_expense"]) - Decimal(finance_baseline["total_expense"])
     assert delta_expense == Decimal("100.00")
-    # Total Expense = operating expenses + cash paid to suppliers.
+    # Total Expense is the combined cash view (operating + supplier payments).
     assert Decimal(data["operating_expenses"]) + Decimal(data["supplier_payments"]) == Decimal(data["total_expense"])
-    # Net Result = Gross Profit - Damage Loss - Expire Loss - Total Expense.
+    # P&L Net Result = Gross Profit - Damage - Expiry - OPERATING expenses
+    # (supplier payments are cash flow, never a P&L expense).
     expected = (
         Decimal(data["gross_profit"])
         - Decimal(data["stock_damage_loss"])
         - Decimal(data["stock_expire_loss"])
-        - Decimal(data["total_expense"])
+        - Decimal(data["operating_expenses"])
     )
     assert Decimal(data["net_result"]) == expected
+    assert Decimal(data["profit_and_loss"]["operating_profit"]) == expected
     # The expense reduced net result by exactly its amount.
     assert Decimal(finance_baseline["net_result"]) - Decimal(data["net_result"]) == Decimal("100.00")
 
@@ -408,8 +410,19 @@ async def test_finance_records_supplier_payments_as_expense(client, finance_base
     # 20 (full purchase) + 2 (partial at receipt) + 8 (repayment) = 30.
     assert Decimal(data["supplier_payments"]) - Decimal(finance_baseline["supplier_payments"]) == Decimal("30.00")
     assert Decimal(data["total_expense"]) - Decimal(finance_baseline["total_expense"]) == Decimal("30.00")
-    # No sales in this test, so the whole supplier cash-out reduces Net Result.
-    assert Decimal(data["net_result"]) - Decimal(finance_baseline["net_result"]) == Decimal("-30.00")
+    # Supplier payments do NOT reduce P&L (inventory cost is recognized through
+    # COGS only) — they appear as cash-flow outflow instead.
+    assert Decimal(data["net_result"]) - Decimal(finance_baseline["net_result"]) == Decimal("0.00")
+    assert (
+        Decimal(data["cash_flow"]["supplier_payments"])
+        - Decimal(finance_baseline["cash_flow"]["supplier_payments"])
+        == Decimal("30.00")
+    )
+    assert (
+        Decimal(data["cash_flow"]["net_cash_flow"])
+        - Decimal(finance_baseline["cash_flow"]["net_cash_flow"])
+        == Decimal("-30.00")
+    )
 
     # The combined ledger exposes each cash-out as an expense row.
     entries = (

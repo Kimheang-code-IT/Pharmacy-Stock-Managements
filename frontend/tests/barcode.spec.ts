@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { barcodeSvg, encodeCode128B } from '../app/utils/barcode/code128'
 import {
+  barcodeLabelCss,
   buildBarcodeSheetHtml,
   normalizeLabelSettings,
   printBarcodeLabels,
@@ -47,6 +48,7 @@ describe('barcode label settings', () => {
     expect(defaults.showName).toBe(true)
     expect(defaults.showUsd).toBe(true)
     expect(defaults.showKhr).toBe(true)
+    expect(defaults.barcodeAutoFit).toBe(true)
     expect(normalizeLabelSettings({ showName: false }).showName).toBe(false)
   })
 })
@@ -80,11 +82,32 @@ describe('barcode sticker sheet', () => {
   })
 
   it('writes the exact custom millimetre values into the layout', () => {
-    const html = buildBarcodeSheetHtml([label], { widthMm: 45, heightMm: 25, barcodeHeightMm: 9, fontSizePt: 8 })
+    const html = buildBarcodeSheetHtml([label], {
+      widthMm: 45,
+      heightMm: 25,
+      barcodeHeightMm: 9,
+      barcodeAutoFit: false,
+      fontSizePt: 8,
+    })
     expect(html).toContain('width:45mm')
     expect(html).toContain('height:25mm')
     expect(html).toContain('height:9mm')
     expect(html).toContain('font-size:8pt')
+  })
+
+  it('auto-fits the barcode height by default (no fixed barcode height)', () => {
+    const html = buildBarcodeSheetHtml([label], {})
+    // The label keeps its own size, but the barcode box has no fixed height.
+    expect(html).toContain('class="bc-bc"')
+    expect(html).not.toMatch(/class="bc-bc" style="[^"]*height:/)
+    // The shared stylesheet makes the barcode box fill the remaining height.
+    expect(barcodeLabelCss()).toContain('flex: 1 1 auto')
+  })
+
+  it('prints the product price when enabled', () => {
+    const html = buildBarcodeSheetHtml([label], { showUsd: true, showKhr: false })
+    expect(html).toContain('0.80')
+    expect(html).toContain('bc-prices')
   })
 
   it('lays out one label per requested copy', () => {

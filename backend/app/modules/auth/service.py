@@ -1,8 +1,10 @@
 import json
 import logging
 import secrets
+from datetime import timedelta, timezone
 from uuid import UUID
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -25,6 +27,7 @@ from app.core.security import (
     hash_password,
     hash_token,
     utcnow,
+    validate_password_strength,
     verify_password,
 )
 from app.modules.administration import get_setting_value
@@ -64,6 +67,7 @@ def user_to_out(user: User) -> UserOut:
         permissions=effective_permissions(user),
         last_login_at=user.last_login_at,
         avatar=user.avatar,
+        must_change_password=bool(getattr(user, "must_change_password", False)),
     )
 
 
@@ -92,6 +96,11 @@ class AuthService:
         if admin_role is None:
             raise ConflictError("Administrator role could not be created")
 
+        try:
+            validate_password_strength(payload.password)
+        except ValueError as exc:
+            raise ValidationError(str(exc), field_errors={"password": str(exc)})
+
         user = User(
             full_name=payload.full_name.strip(),
             email=payload.email.lower(),
@@ -100,6 +109,7 @@ class AuthService:
             telegram_verified=False,
             role_id=admin_role.id,
             status="ACTIVE",
+            password_changed_at=utcnow(),
         )
         await self.users.create(user)
         await record_audit(
@@ -128,19 +138,22 @@ class AuthService:
         except RateLimited:
             raise RateLimitedError("Too many login attempts. Try again later.")
 
-        await self._ensure_not_locked(payload.email)
         user = await self.users.get_by_email(payload.email)
+        await self._ensure_not_locked(user, payload.email)
         if user is None or not verify_password(user.password_hash, payload.password):
             await self._audit_failed_login(payload.email, ip_address, user_agent)
-            await self._register_failed_login(payload.email)
+            await self._register_failed_login(user, payload.email)
             raise AuthRequiredError("Invalid email or password")
         if user.status != "ACTIVE":
             # Audit disabled-account attempts like any other failed login.
             await self._audit_failed_login(payload.email, ip_address, user_agent)
             raise AccessDeniedError("This account is disabled")
 
+        # Forced / expired password change (blocks other actions until done).
+        await self._evaluate_password_change(user)
+
         tokens = await self._issue_tokens(user)
-        await self._clear_failed_login(payload.email)
+        await self._clear_failed_login(user)
         await self.users.set_last_login(user)
         await record_audit(
             self.session,
@@ -178,7 +191,15 @@ class AuthService:
         except (TypeError, ValueError):
             return default
 
-    async def _ensure_not_locked(self, email: str) -> None:
+    async def _ensure_not_locked(self, user: User | None, email: str) -> None:
+        # DB-backed lockout (authoritative; survives Redis being unavailable).
+        if user is not None and user.locked_until is not None:
+            locked_until = user.locked_until
+            if locked_until.tzinfo is None:
+                locked_until = locked_until.replace(tzinfo=timezone.utc)
+            if locked_until > utcnow():
+                raise RateLimitedError("Account temporarily locked. Try again later.")
+        # Redis fallback also covers unknown emails.
         client = get_redis()
         try:
             if await client.exists(f"loginlock:{email.lower()}"):
@@ -188,11 +209,24 @@ class AuthService:
         except Exception:
             return
 
-    async def _register_failed_login(self, email: str) -> None:
+    async def _register_failed_login(self, user: User | None, email: str) -> None:
         max_attempts = await self._security_int("max_login_attempts", 5)
         if max_attempts <= 0:
             return
         lock_minutes = await self._security_int("account_lock_minutes", 15)
+        if user is not None:
+            # Never lock the final active Administrator out of the system.
+            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+            if user.failed_login_attempts >= max_attempts:
+                if not await self._is_last_active_admin(user):
+                    user.locked_until = utcnow() + timedelta(minutes=max(1, lock_minutes))
+                user.failed_login_attempts = 0
+            await self.session.flush()
+            # Persist the counter/lock: the caller raises, so commit here.
+            await self.session.commit()
+            return
+        # Unknown email: Redis-only counting (the account does not exist, so a
+        # DB lockout is meaningless).
         client = get_redis()
         key = f"loginfail:{email.lower()}"
         window = max(60, lock_minutes * 60)
@@ -206,12 +240,57 @@ class AuthService:
         except Exception:
             return
 
-    async def _clear_failed_login(self, email: str) -> None:
+    async def _clear_failed_login(self, user: User | None) -> None:
+        if user is not None and ((user.failed_login_attempts or 0) or user.locked_until):
+            user.failed_login_attempts = 0
+            user.locked_until = None
+            await self.session.flush()
+        if user is None:
+            return
         client = get_redis()
         try:
-            await client.delete(f"loginfail:{email.lower()}")
+            await client.delete(f"loginfail:{user.email.lower()}")
         except Exception:
             pass
+
+    async def _is_last_active_admin(self, user: User) -> bool:
+        from app.modules.auth.models import Role
+
+        if user.role_ref is None or user.role_ref.name != SUPER_ADMIN_ROLE or user.status != "ACTIVE":
+            return False
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(User)
+            .join(Role, Role.id == User.role_id)
+            .where(
+                Role.name == SUPER_ADMIN_ROLE,
+                User.status == "ACTIVE",
+                User.id != user.id,
+            )
+        )
+        return int(result.scalar_one()) == 0
+
+    async def _evaluate_password_change(self, user: User) -> bool:
+        """Mark the account as requiring a password change when forced/expired."""
+        if getattr(user, "must_change_password", False):
+            return True
+        require_change = bool(
+            await get_setting_value(self.session, "security", "require_password_change", False)
+        )
+        if require_change and user.password_changed_at is None:
+            user.must_change_password = True
+            await self.session.flush()
+            return True
+        expiry_days = await self._security_int("password_expiry_days", 0)
+        if expiry_days > 0 and user.password_changed_at is not None:
+            changed = user.password_changed_at
+            if changed.tzinfo is None:
+                changed = changed.replace(tzinfo=timezone.utc)
+            if (utcnow() - changed).days >= expiry_days:
+                user.must_change_password = True
+                await self.session.flush()
+                return True
+        return False
 
     async def _issue_tokens(self, user: User) -> tuple[str, str]:
         refresh_days = await self._security_int("jwt_refresh_token_days", settings.refresh_token_expire_days)
@@ -236,9 +315,12 @@ class AuthService:
         if user is None or user.status != "ACTIVE" or payload.get("ver") != user.token_version:
             raise AuthRequiredError("Invalid or expired refresh token")
 
-        await self._revoke(payload["jti"], settings.refresh_token_expire_days * 86400)
-        access, _, _ = create_access_token(user.id, {"ver": user.token_version})
+        # Revocation TTL must cover the full configurable refresh lifetime,
+        # otherwise a rotated JTI could be replayed after the denylist entry
+        # expires but before the token itself expires.
         refresh_days = await self._security_int("jwt_refresh_token_days", settings.refresh_token_expire_days)
+        await self._revoke(payload["jti"], refresh_days * 86400)
+        access, _, _ = create_access_token(user.id, {"ver": user.token_version})
         new_refresh, _, _, _ = create_refresh_token(
             user.id, extra_claims={"ver": user.token_version}, expire_days=refresh_days
         )
@@ -262,7 +344,10 @@ class AuthService:
                         # the client still ends its session.
                         already_revoked = True
                     if not already_revoked:
-                        await self._revoke(payload["jti"], settings.refresh_token_expire_days * 86400)
+                        refresh_days = await self._security_int(
+                            "jwt_refresh_token_days", settings.refresh_token_expire_days
+                        )
+                        await self._revoke(payload["jti"], refresh_days * 86400)
             except Exception:
                 pass
         await self.session.commit()
@@ -411,7 +496,15 @@ class AuthService:
         if state.get("code_hash") != payload.get("ch"):
             raise ValidationError("Invalid or expired reset token")
 
+        try:
+            validate_password_strength(new_password)
+        except ValueError as exc:
+            raise ValidationError(str(exc), field_errors={"new_password": str(exc)})
         user.password_hash = hash_password(new_password)
+        user.password_changed_at = utcnow()
+        user.must_change_password = False
+        user.failed_login_attempts = 0
+        user.locked_until = None
         await self.users.bump_token_version(user)
         await self._mark_reset_state_used(user.id)
         await record_audit(
@@ -499,7 +592,15 @@ class AuthService:
             )
         if current_password == new_password:
             raise ValidationError("New password must differ from the current password")
+        try:
+            validate_password_strength(new_password)
+        except ValueError as exc:
+            raise ValidationError(str(exc), field_errors={"new_password": str(exc)})
         user.password_hash = hash_password(new_password)
+        user.password_changed_at = utcnow()
+        user.must_change_password = False
+        user.failed_login_attempts = 0
+        user.locked_until = None
         await self.users.bump_token_version(user)
         await record_audit(
             self.session,

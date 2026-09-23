@@ -20,6 +20,12 @@ export interface BarcodeLabelSettings {
   barcodeHeightMm: number
   /** Barcode width as a percentage (30…100) of the label's inner width. */
   barcodeScale: number
+  /**
+   * When true (default) the barcode fills whatever vertical space the label
+   * leaves, so tall labels grow the bars automatically — no manual height.
+   * `barcodeHeightMm` is only used when this is false.
+   */
+  barcodeAutoFit: boolean
   /** Text size in points. */
   fontSizePt: number
   labelsPerRow: number
@@ -38,6 +44,7 @@ export const DEFAULT_BARCODE_LABEL_SETTINGS: BarcodeLabelSettings = {
   marginLeftMm: 8,
   barcodeHeightMm: 8,
   barcodeScale: 100,
+  barcodeAutoFit: true,
   fontSizePt: 7,
   labelsPerRow: 4,
   pageMode: 'A4',
@@ -85,6 +92,7 @@ export function normalizeLabelSettings(input: Partial<BarcodeLabelSettings> = {}
     marginLeftMm: clamp(merged.marginLeftMm, 0, 80, DEFAULT_BARCODE_LABEL_SETTINGS.marginLeftMm),
     barcodeHeightMm: clamp(merged.barcodeHeightMm, 3, 120, DEFAULT_BARCODE_LABEL_SETTINGS.barcodeHeightMm),
     barcodeScale: clamp(merged.barcodeScale, 30, 100, DEFAULT_BARCODE_LABEL_SETTINGS.barcodeScale),
+    barcodeAutoFit: merged.barcodeAutoFit !== false,
     fontSizePt: clamp(merged.fontSizePt, 4, 24, DEFAULT_BARCODE_LABEL_SETTINGS.fontSizePt),
     labelsPerRow: Math.round(clamp(merged.labelsPerRow, 1, 20, DEFAULT_BARCODE_LABEL_SETTINGS.labelsPerRow)),
     pageMode: merged.pageMode === 'label' ? 'label' : 'A4',
@@ -120,10 +128,12 @@ export function barcodeLabelCss(): string {
 }
 .bc-label .bc-prices .bc-khr { font-size: 0.62em; font-weight: 700; }
 .bc-label .bc-bc {
-  flex: 0 1 auto;
+  /* Auto-fit: fill whatever vertical space the name/price/code rows leave. */
+  flex: 1 1 auto;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
+  align-self: center;
   max-width: 100%;
   min-height: 3mm;
 }
@@ -166,12 +176,16 @@ export function barcodeLabelHtml(
     prices.push(`<span class="bc-khr">${escapeHtml(khr)}៛</span>`)
   }
 
+  // Auto-fit lets the barcode stretch to fill the remaining label height; a
+  // fixed height is only applied when auto-fit is turned off.
+  const barcodeStyle = s.barcodeAutoFit
+    ? `width:${s.barcodeScale}%`
+    : `width:${s.barcodeScale}%;height:${s.barcodeHeightMm}mm;flex:0 0 auto`
+
   const rows: string[] = []
   if (s.showName) rows.push(`<div class="bc-name">${escapeHtml(label.name)}</div>`)
   if (prices.length) rows.push(`<div class="bc-prices">${prices.join('')}</div>`)
-  rows.push(
-    `<div class="bc-bc" style="width:${s.barcodeScale}%;height:${s.barcodeHeightMm}mm">${svg || '&nbsp;'}</div>`,
-  )
+  rows.push(`<div class="bc-bc" style="${barcodeStyle}">${svg || '&nbsp;'}</div>`)
   rows.push(`<div class="bc-code">${escapeHtml(label.barcode)}</div>`)
 
   return `<div class="bc-label" style="width:${s.widthMm}mm;height:${s.heightMm}mm;font-size:${s.fontSizePt}pt">${rows.join('')}</div>`

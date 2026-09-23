@@ -391,7 +391,7 @@ function applyDefaultSupplier(product: Record<string, unknown> | null) {
 
 /** Products not already on ANOTHER line (one line per product; the backend
  *  rejects duplicates on the same stock-in document). The picker shows the
- *  product NAME only and searches it (barcode/SKU stay out of the dropdown).
+ *  product NAME only and searches it (barcode stays out of the dropdown).
  *  The row's own product stays in the list so its name still resolves — the
  *  table passes a copy of the row, so identity checks would drop it. */
 function availableProductOptions(row: Record<string, unknown>) {
@@ -509,6 +509,9 @@ const linesTable = computed<ModuleTable>(() => {
           type: 'number',
           computed: viewMode.value,
           required: returnMode.value,
+          // Return is capped at what is still in stock (returnableQuantity is
+          // already min(received−returned, available)).
+          max: returnMode.value ? (row => Number(row.returnableQuantity || 0)) : undefined,
           width: 'w-28 min-w-24',
         },
         { key: 'amount', label: t('app.fields.lineTotal'), type: 'number', computed: true },

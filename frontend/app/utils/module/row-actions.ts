@@ -13,7 +13,6 @@
 export const HARD_DELETE_COLLECTIONS = new Set<string>([
   'categories',
   'uoms',
-  'brands',
   'products',
   'suppliers',
   'customers',
@@ -25,7 +24,6 @@ export const HARD_DELETE_COLLECTIONS = new Set<string>([
 export const STATUS_TOGGLE_COLLECTIONS = new Set<string>([
   'categories',
   'uoms',
-  'brands',
   'products',
   'suppliers',
   'customers',

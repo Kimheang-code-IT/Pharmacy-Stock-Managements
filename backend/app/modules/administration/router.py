@@ -176,7 +176,9 @@ async def update_sequence(
     actor: User = Depends(require_permission("sequence.update")),
 ) -> dict:
     service = AdministrationService(db)
-    return envelope(SequenceOut.model_validate(await service.update_sequence(sequence_id, payload)))
+    return envelope(
+        SequenceOut.model_validate(await service.update_sequence(sequence_id, payload, actor=actor))
+    )
 
 
 @router.delete("/document-sequences/{sequence_id}")
@@ -237,6 +239,9 @@ async def list_audit_logs(
             "old_values": log.old_values,
             "new_values": log.new_values,
             "ip_address": log.ip_address,
+            "user_agent": log.user_agent,
+            "request_id": log.request_id,
+            "result": log.result,
             "created_at": log.created_at.isoformat(),
         }
         for log in logs

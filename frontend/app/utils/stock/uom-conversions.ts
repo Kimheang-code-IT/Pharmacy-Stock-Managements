@@ -101,6 +101,38 @@ export function convertToBase(qty: unknown, factorToBase: unknown): number {
   return multiplyDecimalSafe(qty, factorToBase)
 }
 
+/**
+ * Value to show for a stored `factorToBase` in the chosen entry direction.
+ *
+ * Forward = "1 Original = N Convert" (the stored factor itself); reverse =
+ * "1 Convert = N Original" (its reciprocal). The stored factor is unchanged —
+ * direction is a Pricing-tab input/display convenience only.
+ */
+export function factorForDirection(factorToBase: unknown, reverse: boolean): number {
+  return reverse ? divideDecimalSafe(1, factorToBase) : roundQty(factorToBase)
+}
+
+/** Stored `factorToBase` for a value typed in the chosen entry direction. */
+export function factorFromDirection(value: unknown, reverse: boolean): number {
+  if (!reverse) return roundQty(value)
+  const typed = Number(value)
+  if (!Number.isFinite(typed) || typed <= 0) return 0
+  return divideDecimalSafe(1, typed)
+}
+
+/**
+ * Round a conversion factor for display: a reciprocal like `1/0.083333`
+ * becomes `12` instead of `12.000048`, and other values keep at most 4
+ * decimals. Stored factors are never changed by this.
+ */
+export function cleanConversionFactor(value: unknown): number {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 0
+  const rounded = Math.round(n * 10000) / 10000
+  const nearest = Math.round(rounded)
+  return Math.abs(rounded - nearest) < 1e-3 ? nearest : rounded
+}
+
 function asConversionRow(row: Record<string, unknown>): UomConversion {
   return {
     uomId: String(row.uomId ?? '').trim(),
@@ -190,6 +222,75 @@ export function normalizeUomConversions(
     })
   }
   return out
+}
+
+/** Whole "big" units + leftover in the smallest UOM (e.g. 5 + 10 pieces). */
+export interface StockBreakdown {
+  whole: number
+  leftover: number
+  smallSymbol: string
+  bigSymbol: string
+}
+
+/**
+ * Express a base-UOM stock quantity as whole "big" units plus the leftover in
+ * the smallest configured UOM. Works in both directions:
+ * - base is the big UOM (e.g. 5.83 units, 1 unit = 12 pcs) → `5 + 10 pcs`
+ * - base is the small UOM (e.g. 70 pcs, 1 box = 12 pcs) → `5 + 10 pcs`
+ *
+ * Returns null when the product has fewer than two distinct UOMs (nothing to
+ * break down), so callers fall back to the plain quantity.
+ */
+export function stockBreakdown(
+  baseStock: unknown,
+  product: Record<string, unknown> | null | undefined,
+): StockBreakdown | null {
+  const rows = pricingRowsFor(product)
+  if (!rows.length) return null
+  const baseId = String(product?.uomId ?? '')
+  const candidates = [
+    { factor: 1, symbol: String(product?.uomSymbol ?? '') },
+    ...rows
+      .filter(row => row.uomId && row.uomId !== baseId)
+      .map(row => ({ factor: Number(row.factorToBase) || 1, symbol: String(row.uomSymbol || '') })),
+  ].filter(item => item.factor > 0)
+  if (candidates.length < 2) return null
+  const small = candidates.reduce((a, b) => (b.factor < a.factor ? b : a))
+  const big = candidates.reduce((a, b) => (b.factor > a.factor ? b : a))
+  if (small.factor === big.factor) return null
+
+  const total = Number(baseStock) || 0
+  const ratio = big.factor / small.factor
+  let whole = Math.floor(total / big.factor)
+  const leftoverBase = total - whole * big.factor
+  let leftover = Math.round(leftoverBase / small.factor)
+  // A rounded remainder that fills a whole big unit carries over.
+  if (leftover >= ratio - 1e-9) {
+    whole += 1
+    leftover = 0
+  }
+  return { whole, leftover, smallSymbol: small.symbol, bigSymbol: big.symbol }
+}
+
+/** Trim long fractions (5.8333 → 5.83) for compact stock labels. */
+export function formatStockQuantity(value: unknown): string {
+  const rounded = Math.round((Number(value) || 0) * 100) / 100
+  return String(rounded)
+}
+
+/**
+ * Stock label used everywhere a product quantity is shown: the
+ * whole-units + leftover breakdown when a UOM conversion exists (e.g.
+ * `5 + 10 បន្ទះ`), else the cleaned quantity.
+ */
+export function stockBreakdownLabel(
+  baseStock: unknown,
+  product: Record<string, unknown> | null | undefined,
+): string {
+  const parts = stockBreakdown(baseStock, product)
+  if (!parts) return formatStockQuantity(baseStock)
+  if (parts.leftover <= 0) return String(parts.whole)
+  return `${parts.whole} + ${parts.leftover} ${parts.smallSymbol}`.trim()
 }
 
 /** All Pricing rows of a product (empty for products without pricing). */

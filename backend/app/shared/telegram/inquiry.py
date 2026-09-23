@@ -20,6 +20,7 @@ from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.modules.administration.service import get_setting_value
 from app.modules.auth.models import User
@@ -41,6 +42,12 @@ UNLINKED_REPLY = (
     "{chat_id}"
 )
 DISABLED_REPLY = "Stock inquiry is currently disabled in the shop settings."
+# Same authorization the HTTP stock API enforces: a linked chat is not enough,
+# the account must hold `stock.view`.
+NO_PERMISSION_REPLY = (
+    "Your account does not have permission to view stock. "
+    "Ask an administrator to grant the Stock View permission."
+)
 
 # --------------------------------------------------------- callback routing
 #
@@ -113,7 +120,11 @@ async def resolve_access(session: AsyncSession, chat_id: str) -> tuple[User | No
     if not enabled:
         return None, DISABLED_REPLY
     result = await session.execute(
-        select(User).where(
+        select(User)
+        # Eager-load the role so permission checks (summary sections) never
+        # trigger an async lazy-load outside the session's await context.
+        .options(selectinload(User.role_ref))
+        .where(
             User.telegram_chat_id.is_not(None),
             User.telegram_chat_id != "",
             User.telegram_chat_id == str(chat_id),
@@ -125,6 +136,26 @@ async def resolve_access(session: AsyncSession, chat_id: str) -> tuple[User | No
     if user is None:
         return None, UNLINKED_REPLY.format(chat_id=chat_id)
     return user, None
+
+
+# Per-tool role requirements — the SAME permissions the authenticated HTTP
+# endpoints enforce. A verified chat is not enough to read stock/sales data.
+TOOL_PERMISSIONS: dict[str, str] = {
+    "current_stock": "stock.view",
+    "low_stock": "stock.view",
+    "expiring": "stock.view",
+    "sales": "report.sales",
+}
+
+
+def check_tool_permission(user, tool: str) -> bool:
+    """True when `user` may run `tool` (mirrors the HTTP authorization)."""
+    required = TOOL_PERMISSIONS.get(tool)
+    if required is None:
+        return False
+    from app.core.permissions import user_has_permission
+
+    return user_has_permission(user, required)
 
 
 # ------------------------------------------------------------------ periods
@@ -162,7 +193,7 @@ async def _uom_codes(session: AsyncSession, product_ids: list) -> dict:
 async def current_stock_rows(session: AsyncSession, page: int, page_size: int = PAGE_SIZE):
     """Paged current stock (product, qty, UOM) from the canonical balance."""
     base = (
-        select(Product.name, Product.sku, StockBalance.quantity, UOM.code.label("uom"))
+        select(Product.name, Product.barcode, StockBalance.quantity, UOM.code.label("uom"))
         .select_from(Product)
         .join(StockBalance, StockBalance.product_id == Product.id)
         .join(UOM, UOM.id == Product.uom_id)
@@ -172,7 +203,7 @@ async def current_stock_rows(session: AsyncSession, page: int, page_size: int = 
         await session.execute(select(func.count()).select_from(base.subquery()))
     ).scalar_one()
     rows = await session.execute(
-        base.order_by(Product.name, Product.sku)
+        base.order_by(Product.name, Product.barcode)
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
@@ -186,7 +217,7 @@ async def low_stock_rows(session: AsyncSession, page: int, page_size: int = PAGE
     LOW; quantity <= 0 is OUT.
     """
     base = (
-        select(Product.name, Product.sku, StockBalance.quantity, Product.minimum_stock, UOM.code.label("uom"))
+        select(Product.name, Product.barcode, StockBalance.quantity, Product.minimum_stock, UOM.code.label("uom"))
         .select_from(Product)
         .join(StockBalance, StockBalance.product_id == Product.id)
         .join(UOM, UOM.id == Product.uom_id)
@@ -276,12 +307,18 @@ def render_page(title: str, lines: list[str], page: int, total: int, page_size: 
     return text, total_pages
 
 
-async def run_tool(session: AsyncSession, action: InquiryAction) -> tuple[str, int]:
-    """Execute a whitelisted read-only tool. Returns (text, total_pages)."""
+async def run_tool(session: AsyncSession, action: InquiryAction, *, user=None) -> tuple[str, int]:
+    """Execute a whitelisted read-only tool. Returns (text, total_pages).
+
+    When `user` is supplied the tool's role permission is enforced (the same
+    authorization as the HTTP endpoints); callers without it are refused.
+    """
+    if user is not None and not check_tool_permission(user, action.tool):
+        raise PermissionError(NO_PERMISSION_REPLY)
     page = max(1, action.page)
     if action.tool == "current_stock":
         rows, total = await current_stock_rows(session, page)
-        lines = [f"{r['name']} ({r['sku']}) — {_fmt_qty(r['quantity'])} {r['uom']}" for r in rows]
+        lines = [f"{r['name']} ({r['barcode']}) — {_fmt_qty(r['quantity'])} {r['uom']}" for r in rows]
         return render_page("Current Stock", lines, page, total)
     if action.tool == "low_stock":
         rows, total = await low_stock_rows(session, page)
@@ -289,7 +326,7 @@ async def run_tool(session: AsyncSession, action: InquiryAction) -> tuple[str, i
         for r in rows:
             level = "OUT" if r["quantity"] <= 0 else "LOW"
             lines.append(
-                f"[{level}] {r['name']} ({r['sku']}) — {_fmt_qty(r['quantity'])}/{_fmt_qty(r['minimum_stock'])} {r['uom']}"
+                f"[{level}] {r['name']} ({r['barcode']}) — {_fmt_qty(r['quantity'])}/{_fmt_qty(r['minimum_stock'])} {r['uom']}"
             )
         return render_page("Low Stock", lines, page, total)
     if action.tool == "expiring":
@@ -299,7 +336,7 @@ async def run_tool(session: AsyncSession, action: InquiryAction) -> tuple[str, i
             level = "ALERT 2" if lot["expiry_date"] <= lot["cutoff2"] else "ALERT 1"
             batch = f", batch {lot['batch_no']}" if lot["batch_no"] else ""
             lines.append(
-                f"[{level}] {lot['product_name']} ({lot['sku']}) — {_fmt_qty(lot['remaining_qty'])} {lot['uom']}, exp {lot['expiry_date'].isoformat()}{batch}"
+                f"[{level}] {lot['product_name']} ({lot['barcode']}) — {_fmt_qty(lot['remaining_qty'])} {lot['uom']}, exp {lot['expiry_date'].isoformat()}{batch}"
             )
         return render_page(f"Expiring Soon (Alert 1 = {alert1}d, Alert 2 = {alert2}d)", lines, page, total)
     if action.tool == "sales":
@@ -319,8 +356,9 @@ async def run_tool(session: AsyncSession, action: InquiryAction) -> tuple[str, i
 
 HELP_TEXT = (
     "Stock & POS inquiry bot (view only).\n"
-    "Tools: Current Stock, Low Stock, Expiring Soon, Sales Summary.\n"
-    "Sales Summary asks for a period (Today / Last 7 days / This month).\n"
-    "Long lists are paginated — use Next / Prev.\n"
+    "Use the buttons below: Summary, Current Stock, Low Stock, Expiring Soon, Help.\n"
+    "Summary asks for a period (Today / Last 7 Days / This Month / Custom Date Range).\n"
+    "Custom Date Range: send a start and end date as YYYY-MM-DD (e.g. 2026-09-30).\n"
+    "Long stock lists are paginated — use Previous / Next.\n"
     "This bot cannot create, edit, or delete anything."
 )

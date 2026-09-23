@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { formatMoney } from '~/composables/module/useModule'
 import { productImageUrl } from '~/utils/pos/cart'
+import { stockBreakdownLabel } from '~/utils/stock/uom-conversions'
 
 const props = defineProps<{
   product: Record<string, unknown>
@@ -18,6 +19,12 @@ const image = computed(() => productImageUrl(props.product))
 const stock = computed(() => Number(props.product.sellableStock ?? props.product.quantity ?? 0))
 const outOfStock = computed(() => stock.value <= 0)
 const lowStock = computed(() => stock.value > 0 && stock.value <= 10)
+/**
+ * With a UOM conversion, show whole "big" units + the leftover in the small
+ * UOM (e.g. 5.83 units → "5 + 10 បន្ទះ") instead of a raw decimal. Products
+ * with a single UOM keep the plain (cleaned) quantity.
+ */
+const stockLabel = computed(() => stockBreakdownLabel(stock.value, props.product))
 /** FEFO lot price when the backend computed it, else the product mirror. */
 const price = computed(() => Number(props.product.posPrice ?? props.product.salePrice ?? 0))
 const priceConfigured = computed(() => props.product.priceConfigured !== false)
@@ -56,7 +63,7 @@ class="size-6 opacity-40" />
             ? 'bg-warning text-white'
             : 'bg-default/90 text-toned shadow-sm'"
       >
-        {{ t('app.pos.stock') }}: {{ stock }}
+        {{ t('app.pos.stock') }}: {{ stockLabel }}
       </span>
     </div>
 

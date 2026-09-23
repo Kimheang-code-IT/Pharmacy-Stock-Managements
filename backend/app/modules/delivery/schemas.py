@@ -267,8 +267,6 @@ class DeliverableItemOut(BaseModel):
     # Null when the product was hard-deleted (sale_items.product_id is SET NULL).
     product_id: UUID | None = None
     product_name: str
-    # Legacy internal code: nullable since 0021 (barcode is operational).
-    sku: str | None = None
     uom_symbol: str | None
     qty_ordered: Decimal
     qty_returned: Decimal

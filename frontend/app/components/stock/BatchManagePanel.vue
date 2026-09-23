@@ -10,6 +10,7 @@ import { useConfirm } from '~/composables/common/useConfirm'
 import { apiErrorMessage, isApiErrorHandled, isRequestAborted } from '~/utils/api/errors'
 import { formatDate, formatMoney } from '~/utils/format/format-service'
 import { moduleDocumentRecordKey } from '~/utils/module/document-tabs'
+import { stockBreakdownLabel } from '~/utils/stock/uom-conversions'
 
 /**
  * Product document **Batches** tab — read-only stock lots created by Stock In.
@@ -210,7 +211,7 @@ const columns = computed<TableColumn<ProductBatchRow & Record<string, unknown>>[
     meta: { class: { td: 'text-end tabular-nums whitespace-nowrap', th: 'text-end' } },
     cell: ({ row }) => h('span', {
       class: `${dim(row.original, 'text-end tabular-nums font-medium')} ${row.original.remainingQty <= 0 ? 'text-muted' : ''}`,
-    }, String(row.original.remainingQty)),
+    }, stockBreakdownLabel(row.original.remainingQty, productRecord.value)),
   },
   {
     accessorKey: 'expiryDate',

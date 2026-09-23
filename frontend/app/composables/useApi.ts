@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import type { TableQueryParams } from '~/types/api'
 import { compactQuery } from '~/utils/api/query'
 import { markApiErrorHandled, normalizeApiError, isRequestAborted } from '~/utils/api/errors'
+import { hasActiveFieldErrorSink, hasUnclaimedFieldError, publishFieldErrors } from '~/composables/useFormErrors'
 import { getAccessToken, getRefreshToken, setAccessToken, setRefreshToken } from '~/utils/auth/tokens'
 import { createAuthRefresher } from '~/utils/api/auth-refresher'
 import { isAutoApiBase, isSameOriginApiBase, resolveApiBase } from '~/utils/api/base-url'
@@ -199,12 +200,20 @@ export function useApi() {
 
             if (!options.suppressErrorToast) {
               const normalized = normalizeApiError(response._data, response.status)
-              // Show only the human-readable backend message (no "API Error: 422"
-              // title) so the toast is clear to the user.
-              toast.add({
-                title: normalized.message || t('api.somethingWentWrong'),
-                color: 'error'
-              })
+              const hasFieldErrors = Object.keys(normalized.fieldErrors).length > 0
+              const renderedInline = hasFieldErrors && hasActiveFieldErrorSink()
+              if (renderedInline) publishFieldErrors(normalized.fieldErrors)
+              // Suppress the toast only when every field error maps to a field a
+              // mounted form can render. Anything unmapped still toasts so no
+              // message is silently lost.
+              if (!renderedInline || hasUnclaimedFieldError(normalized.fieldErrors)) {
+                // Show only the human-readable backend message (no "API Error:
+                // 422" title) so the toast is clear to the user.
+                toast.add({
+                  title: normalized.message || t('api.somethingWentWrong'),
+                  color: 'error'
+                })
+              }
             }
           }
         })

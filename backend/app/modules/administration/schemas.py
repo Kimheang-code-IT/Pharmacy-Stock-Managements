@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 # ---------------------------------------------------------------- users
@@ -134,3 +134,46 @@ class SettingsPatch(BaseModel):
 
 class SettingsOut(BaseModel):
     groups: dict[str, dict[str, object]]
+
+
+# ----------------------------------------------------- maintenance / reset
+
+
+class MaintenanceReauthRequest(BaseModel):
+    """POST /settings/maintenance/reauth � verify the password, mint a token."""
+
+    password: str = Field(min_length=1, max_length=128)
+    action: str = Field(min_length=1, max_length=40)
+
+
+class MaintenanceReauthResponse(BaseModel):
+    confirmation_token: str
+    confirmationToken: str = ""
+    expires_in: int = 0
+    expiresIn: int = 0
+    phrase: str = ""
+
+    @model_validator(mode="after")
+    def _sync_aliases(self):
+        if not self.confirmationToken:
+            self.confirmationToken = self.confirmation_token
+        if not self.expiresIn:
+            self.expiresIn = self.expires_in
+        return self
+
+
+class DestructiveActionRequest(BaseModel):
+    """Body for a guarded destructive action (reset-data / clear-transactions)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    confirmation_token: str = Field(
+        min_length=1,
+        max_length=256,
+        validation_alias=AliasChoices("confirmation_token", "confirmationToken"),
+    )
+    confirmation_phrase: str = Field(
+        min_length=1,
+        max_length=80,
+        validation_alias=AliasChoices("confirmation_phrase", "confirmationPhrase"),
+    )

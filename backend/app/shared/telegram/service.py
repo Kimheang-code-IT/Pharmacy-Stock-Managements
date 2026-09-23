@@ -45,6 +45,7 @@ _EMOJI = {
     "supplier_payment": "💸",
     "daily": "📊",
     "test": "✅",
+    "backup": "💾",
 }
 
 _LABELS: dict[str, dict[str, str]] = {
@@ -81,6 +82,16 @@ _LABELS: dict[str, dict[str, str]] = {
         "delivered": "Delivered",
         "pending_deliveries": "Pending deliveries",
         "out_of_stock": "Out-of-stock products",
+        "backup": "Google Sheets Backup",
+        "backup_ok": "Backup completed",
+        "backup_partial": "Backup completed with errors",
+        "backup_failed": "Backup failed",
+        "backup_tables": "Tables",
+        "backup_new": "New rows",
+        "backup_updated": "Updated rows",
+        "backup_skipped": "Skipped",
+        "backup_failed_tables": "Failed tables",
+        "backup_sheet": "Google Sheet",
     },
     "km": {
         "sale": "ការលក់បានសម្រេច",
@@ -115,6 +126,16 @@ _LABELS: dict[str, dict[str, str]] = {
         "delivered": "បានដឹកជញ្ជូន",
         "pending_deliveries": "ការដឹកជញ្ជូនកំពុងរង់ចាំ",
         "out_of_stock": "ទំនិញអស់ស្តុក",
+        "backup": "ការបម្រុងទុក Google Sheets",
+        "backup_ok": "ការបម្រុងទុកបានសម្រេច",
+        "backup_partial": "ការបម្រុងទុកបានសម្រេចដោយមានបញ្ហា",
+        "backup_failed": "ការបម្រុងទុកបានបរាជ័យ",
+        "backup_tables": "តារាង",
+        "backup_new": "ជួរថ្មី",
+        "backup_updated": "ជួរដែលបានកែ",
+        "backup_skipped": "បានរំលង",
+        "backup_failed_tables": "តារាងដែលបរាជ័យ",
+        "backup_sheet": "Google Sheet",
     },
 }
 
@@ -617,11 +638,13 @@ async def daily_summary_totals(session: AsyncSession, *, day: date | None = None
     from app.modules.stock.models import Product, StockBalance, StockTransaction, StockTransactionItem
     from app.modules.suppliers.models import SupplierDebt
 
-    day = day or _local_today(
-        str(await get_setting_value(session, "system", "timezone", "UTC") or "UTC")
-    )
-    day_start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
-    day_end = datetime(day.year, day.month, day.day + 1, tzinfo=timezone.utc)
+    timezone_name = str(await get_setting_value(session, "system", "timezone", "UTC") or "UTC")
+    day = day or _local_today(timezone_name)
+    # Shop-local day boundaries → UTC [start, end). Using the timezone (rather
+    # than a UTC calendar date) keeps "today" correct for the operator.
+    from app.shared.telegram.summary import shop_timezone, utc_window
+
+    day_start, day_end = utc_window(day, day, shop_timezone(timezone_name))
 
     async def currency_totals(stmt_model, date_col, total_expr=None):
         rows = await session.execute(
@@ -689,9 +712,13 @@ async def daily_summary_totals(session: AsyncSession, *, day: date | None = None
         ).scalar_one()
     )
 
+    # Delivery notes CREATED in the selected local day (classified by their
+    # current status) — not an all-time snapshot.
     deliveries = (
         await session.execute(
-            select(DeliveryNote.status, func.count()).group_by(DeliveryNote.status)
+            select(DeliveryNote.status, func.count())
+            .where(DeliveryNote.created_at >= day_start, DeliveryNote.created_at < day_end)
+            .group_by(DeliveryNote.status)
         )
     ).all()
     delivery_counts = {str(status): int(count) for status, count in deliveries}
@@ -770,3 +797,52 @@ async def send_daily_summary(session: AsyncSession, *, sender=None, day: date | 
     except Exception:
         logger.exception("Telegram daily summary failed")
         return {"enabled": False, "sent": 0, "error": True}
+
+
+# --------------------------------------------------------------------- backup
+
+
+def format_backup_text(job, *, lang: str = "en", spreadsheet: str = "") -> str:
+    """Compact Google Sheets backup result card (success / partial / failed)."""
+    lang = normalize_language(lang)
+    label = _LABELS[lang]
+    status = str(getattr(job, "status", "") or "")
+    title_key = {
+        "success": "backup_ok",
+        "partial": "backup_partial",
+        "failed": "backup_failed",
+    }.get(status, "backup_failed")
+    lines = [f"{_EMOJI['backup']} <b>{label['backup']}</b>", "", f"<b>{label[title_key]}</b>"]
+    if spreadsheet:
+        lines.append(f"{label['backup_sheet']}: {_esc(spreadsheet)}")
+    lines.append(
+        f"{label['backup_tables']}: {int(getattr(job, 'tables_succeeded', 0) or 0)}/"
+        f"{int(getattr(job, 'tables_total', 0) or 0)}"
+    )
+    lines.append(f"{label['backup_new']}: {int(getattr(job, 'rows_appended', 0) or 0)}")
+    lines.append(f"{label['backup_updated']}: {int(getattr(job, 'rows_updated', 0) or 0)}")
+    lines.append(f"{label['backup_skipped']}: {int(getattr(job, 'rows_skipped', 0) or 0)}")
+    failed = int(getattr(job, "tables_failed", 0) or 0)
+    if failed:
+        lines.append(f"{label['backup_failed_tables']}: {failed}")
+    if getattr(job, "error_message", None):
+        lines.append(_esc(str(job.error_message)[:300]))
+    finished = getattr(job, "finished_at", None)
+    if finished is not None:
+        lines.append("")
+        lines.append(f"{label['date']}: {_esc(finished.isoformat(timespec='seconds'))}")
+    return "\n".join(lines)
+
+
+async def notify_backup_result(session: AsyncSession, *, job, spreadsheet: str = "", sender=None) -> int:
+    """Broadcast a backup result. Never raises into the backup run."""
+    try:
+        if not await telegram_enabled(session):
+            return 0
+        text = format_backup_text(
+            job, lang=await notification_language(session), spreadsheet=spreadsheet
+        )
+        return await _broadcast(session, text, sender=sender)
+    except Exception:
+        logger.exception("Telegram backup notification failed")
+        return 0

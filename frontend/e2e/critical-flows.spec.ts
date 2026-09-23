@@ -39,7 +39,6 @@ test('every approved top-level page is reachable without a permission denial', a
     '/delivery-notes',
     '/setup/categories',
     '/setup/uoms',
-    '/setup/brands',
     '/setup/suppliers',
     '/setup/customers',
     '/reports/sales',

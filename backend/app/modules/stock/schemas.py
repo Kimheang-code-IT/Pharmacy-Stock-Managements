@@ -10,14 +10,13 @@ def _utcnow() -> datetime:
 class ProductCreate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    # Legacy internal code: optional. Barcode is the operational identifier.
-    sku: str | None = Field(default=None, max_length=100)
     barcode: str | None = Field(
         default=None,
         max_length=100,
         description="Operational product identifier. Auto-issued when omitted.",
     )
     name: str = Field(min_length=1, max_length=200)
+    brand: str | None = Field(default=None, max_length=200)
     category_id: UUID
     uom_id: UUID
     brand_id: UUID | None = None
@@ -49,7 +48,7 @@ class ProductCreate(BaseModel):
     status: str = Field(default="ACTIVE", pattern="^(ACTIVE|INACTIVE)$")
     note: str | None = None
 
-    @field_validator("sku", "barcode", "name")
+    @field_validator("barcode", "name", "brand")
     @classmethod
     def strip_text(cls, value):
         return value.strip() if isinstance(value, str) else value
@@ -57,9 +56,9 @@ class ProductCreate(BaseModel):
 class ProductUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    sku: str | None = Field(default=None, max_length=100)
     barcode: str | None = Field(default=None, max_length=100)
     name: str | None = Field(default=None, min_length=1, max_length=200)
+    brand: str | None = Field(default=None, max_length=200)
     category_id: UUID | None = None
     uom_id: UUID | None = None
     brand_id: UUID | None = None
@@ -85,7 +84,7 @@ class ProductUpdate(BaseModel):
     status: str | None = Field(default=None, pattern="^(ACTIVE|INACTIVE)$")
     note: str | None = None
 
-    @field_validator("sku", "name")
+    @field_validator("name", "brand")
     @classmethod
     def strip_text(cls, value):
         return value.strip() if isinstance(value, str) else value
@@ -306,11 +305,12 @@ class OperationItemOut(BaseModel):
     # is SET NULL; the name snapshot survives).
     product_id: UUID | None = None
     product_name: str | None = None
-    sku: str | None = None
     # Line UOM symbol snapshot (selected Pricing UOM for Stock In lines).
     uom_symbol: str | None = None
     quantity: Decimal
     unit_cost: Decimal
+    # Cumulative quantity already returned to the supplier (purchase return).
+    returned_quantity: Decimal | None = None
     system_quantity: Decimal | None
     actual_quantity: Decimal | None
     batch_no: str | None
@@ -508,3 +508,5 @@ class BatchActiveUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     is_active: bool = Field(validation_alias=AliasChoices("is_active", "isActive"))
+
+

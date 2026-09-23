@@ -189,6 +189,63 @@ export interface AppConfig {
   updatedAt: string
 }
 
+/** Google Sheets backup configuration + run state (Settings → Backup). */
+export interface BackupConfig {
+  enabled: boolean
+  sheetId: string
+  /** Whether a service-account key is stored (the key itself is never returned). */
+  serviceAccountConfigured: boolean
+  /** Masked in the UI; never log or display the plaintext key. */
+  serviceAccountJson: string
+  frequencyHours: number
+  frequencyOptions: number[]
+  backupNewRecords: boolean
+  backupChangedRecords: boolean
+  autoRetry: boolean
+  retryAttempts: number
+  telegramNotify: boolean
+  configured: boolean
+  lastSuccessAt: string | null
+  nextRunAt: string | null
+  lastJobStatus: string | null
+  lastError: string | null
+}
+
+export interface BackupJobTable {
+  tableName: string
+  status: string
+  rowsAppended: number
+  rowsUpdated: number
+  rowsSkipped: number
+  durationMs: number
+  errorMessage: string | null
+}
+
+export interface BackupJob {
+  id: string
+  trigger: string
+  status: string
+  startedAt: string
+  finishedAt: string | null
+  tablesTotal: number
+  tablesSucceeded: number
+  tablesFailed: number
+  rowsAppended: number
+  rowsUpdated: number
+  rowsSkipped: number
+  errorMessage: string | null
+  createdBy: string | null
+  tables?: BackupJobTable[]
+}
+
+export interface BackupTableState {
+  tableName: string
+  columnCount: number
+  headerVersion: number
+  lastBackupAt: string | null
+  lastRowCount: number
+}
+
 export interface StorageProvider {
   id: string
   name: string

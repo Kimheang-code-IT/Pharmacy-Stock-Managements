@@ -46,12 +46,11 @@ ALERT_LEVEL_LABELS = {ALERT_LEVEL_1: "Alert 1 (early warning)", ALERT_LEVEL_2: "
 
 
 def format_expiry_alert_text(lot: dict, *, alert_level: int, days_until_expiry: int) -> str:
-    """Plain-text alert: product name, SKU/barcode, batch, expiry, qty, level."""
+    """Plain-text alert: product name, barcode, batch, expiry, qty, level."""
     lines = [
         "Stock & POS — Product Expiry Alert",
         f"Level: {ALERT_LEVEL_LABELS.get(alert_level, f'Alert {alert_level}')}",
         f"Product: {lot.get('product_name', '-')}",
-        f"SKU: {lot.get('sku', '-')}",
     ]
     if lot.get("barcode"):
         lines.append(f"Barcode: {lot['barcode']}")

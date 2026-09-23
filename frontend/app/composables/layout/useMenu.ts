@@ -75,7 +75,6 @@ export function useMenu() {
       group('setup', t('app.nav.setup'), 'i-lucide-settings-2', [
         pageLink(t('app.nav.categories'), '/setup/categories'),
         pageLink(t('app.nav.uoms'), '/setup/uoms'),
-        pageLink(t('app.nav.brands'), '/setup/brands'),
         pageLink(t('app.nav.suppliers'), '/setup/suppliers'),
         pageLink(t('app.nav.customers'), '/setup/customers'),
       ]),

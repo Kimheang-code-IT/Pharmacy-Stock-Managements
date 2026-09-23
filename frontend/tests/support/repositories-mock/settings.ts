@@ -181,9 +181,14 @@ export function createMockAppConfigRepository(): AppConfigRepository {
       config = next
       return structuredClone(config)
     },
+    requestMaintenanceConfirmation: async (_password, action) => mockLatency({
+      confirmationToken: `mock-${action.toLowerCase()}-token`,
+      phrase: action === 'RESET_ALL_DATA' ? 'RESET ALL DATA' : 'CLEAR TRANSACTIONS',
+      expiresIn: 120,
+    }),
     resetAllData: async (): Promise<ResetAllDataResult> => mockLatency({
       message: 'Mock mode: data reset is a no-op.',
-      requiresReauth: false,
+      requiresReauth: true,
     }),
     clearTransactions: async (): Promise<ClearTransactionsResult> => mockLatency({
       cleared: true,

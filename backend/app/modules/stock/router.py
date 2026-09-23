@@ -545,3 +545,5 @@ async def movement_invoice(
     from app.modules.stock.history import movement_invoice as fetch_movement_invoice
 
     return envelope(await fetch_movement_invoice(db, movement_id))
+
+

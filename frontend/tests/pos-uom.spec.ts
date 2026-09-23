@@ -5,10 +5,15 @@ import {
   uomOptionsFor,
 } from '../app/utils/pos/cart'
 import {
+  cleanConversionFactor,
   conversionForUom,
   divideDecimalSafe,
+  factorForDirection,
+  factorFromDirection,
   normalizeUomConversions,
   salePriceForUom,
+  stockBreakdown,
+  stockBreakdownLabel,
 } from '../app/utils/stock/uom-conversions'
 
 const BASE_UOM = 'uom3'
@@ -178,5 +183,100 @@ describe('POS cart UOM select (spec §2.1.3 / §5.11)', () => {
     expect(availableStockInUom(24, 1)).toBe(24)
     expect(availableStockInUom(24, 12)).toBe(2)
     expect(availableStockInUom(25, '1.5')).toBeCloseTo(16.666667, 5)
+  })
+})
+
+describe('pricing conversion direction', () => {
+  it('forward shows the stored factor unchanged', () => {
+    expect(factorForDirection(12, false)).toBe(12)
+    expect(factorFromDirection(12, false)).toBe(12)
+  })
+
+  it('reverse shows and accepts the reciprocal (1 Convert = N Original)', () => {
+    // 1 box = 12 pcs → reverse is "1 pcs = 0.083333 box".
+    expect(factorForDirection(12, true)).toBeCloseTo(0.083333, 6)
+    expect(factorFromDirection(0.083333, true)).toBeCloseTo(12, 4)
+  })
+
+  it('round-trips a forward factor through reverse input', () => {
+    const stored = factorFromDirection(factorForDirection(8, true), true)
+    expect(stored).toBeCloseTo(8, 6)
+  })
+
+  it('rejects a non-positive reverse input', () => {
+    expect(factorFromDirection(0, true)).toBe(0)
+    expect(factorFromDirection(-4, true)).toBe(0)
+  })
+
+  it('cleans a reciprocal for display (12.000048 → 12)', () => {
+    expect(cleanConversionFactor(factorForDirection(1 / 12, true))).toBe(12)
+    expect(cleanConversionFactor(12)).toBe(12)
+    expect(cleanConversionFactor(0.5)).toBe(0.5)
+    expect(cleanConversionFactor(12.0482)).toBe(12.0482)
+  })
+})
+
+describe('stock breakdown (whole units + leftover small UOM)', () => {
+  it('base is the small UOM: 70 pcs with 1 box = 12 pcs → 5 + 10 pcs', () => {
+    const product = productWith([baseRow, packRow])
+    expect(stockBreakdown(70, product)).toEqual({
+      whole: 5,
+      leftover: 10,
+      smallSymbol: 'pcs',
+      bigSymbol: 'box',
+    })
+  })
+
+  it('base is the big UOM: 5.83 units with 1 unit = 12 pcs → 5 + 10 pcs', () => {
+    const bigBase = {
+      uomId: 'unit',
+      uomSymbol: 'unit',
+      convertUomId: 'unit',
+      convertUomSymbol: 'unit',
+      factorToBase: 1,
+      costPrice: null,
+      salePrice: 15,
+      isDefaultSale: true,
+    }
+    const pieceRow = {
+      uomId: 'pcs',
+      uomSymbol: 'បន្ទះ',
+      convertUomId: 'unit',
+      convertUomSymbol: 'unit',
+      factorToBase: 1 / 12,
+      costPrice: null,
+      salePrice: 1.25,
+      isDefaultSale: false,
+    }
+    const product = { id: 'p', uomId: 'unit', uomSymbol: 'unit', quantity: 5.83, uomConversions: [bigBase, pieceRow] }
+    expect(stockBreakdown(5.83, product)).toEqual({
+      whole: 5,
+      leftover: 10,
+      smallSymbol: 'បន្ទះ',
+      bigSymbol: 'unit',
+    })
+  })
+
+  it('carries a rounded remainder into the whole units', () => {
+    // 1 unit = 4 pcs; 5.99 units → leftover 0.99 → rounds to a full 4 pcs.
+    const bigBase = { uomId: 'unit', uomSymbol: 'unit', factorToBase: 1, costPrice: null, salePrice: 15 }
+    const pieceRow = { uomId: 'pcs', uomSymbol: 'pcs', factorToBase: 0.25, costPrice: null, salePrice: 1 }
+    const product = { id: 'p', uomId: 'unit', uomSymbol: 'unit', uomConversions: [bigBase, pieceRow] }
+    expect(stockBreakdown(5.99, product)).toEqual({
+      whole: 6,
+      leftover: 0,
+      smallSymbol: 'pcs',
+      bigSymbol: 'unit',
+    })
+  })
+
+  it('returns null for a single-UOM product', () => {
+    expect(stockBreakdown(24, productWith([baseRow]))).toBeNull()
+    expect(stockBreakdown(24, productWith([]))).toBeNull()
+  })
+
+  it('labels with the breakdown, or the cleaned quantity without a conversion', () => {
+    expect(stockBreakdownLabel(70, productWith([baseRow, packRow]))).toBe('5 + 10 pcs')
+    expect(stockBreakdownLabel(5.8333, productWith([baseRow]))).toBe('5.83')
   })
 })

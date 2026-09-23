@@ -46,7 +46,6 @@ function saleLine(overrides: Record<string, unknown> = {}): Record<string, unkno
     invoice_no: 'INV-000015',
     customer_name: 'Walk-in',
     product_name: 'Product A',
-    sku: null,
     quantity: '1.0000',
     returned_quantity: '0',
     returnable_quantity: '1',

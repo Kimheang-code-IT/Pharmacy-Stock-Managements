@@ -37,6 +37,7 @@ import { fetchAllListRows } from '~/utils/export/fetch-all'
 import type { ExportFieldOption, ExportRequest } from '~/types/stock-pos/export'
 import { useDeliveryCommands, useEntityRepository, usePosCommands } from '~/repositories/index'
 import { productImageUrl } from '~/utils/pos/cart'
+import { stockBreakdownLabel } from '~/utils/stock/uom-conversions'
 import { STOCK_OPERATION_META, STOCK_OPERATION_PERMISSIONS, STOCK_OPERATION_TYPES, type StockHistoryKind, type StockOperationType } from '~/config/pos-options'
 import type { DebtPaymentKind } from '~/components/reports/DebtPaymentDialog.vue'
 
@@ -136,7 +137,10 @@ const canOperate = computed(() => Boolean(
 // Editing a sale reuses the POS screen (PATCH /pos/sales/{id}); editing a
 // purchase reuses the purchase entry screen (PATCH /stock/in/{id}).
 const canEditSale = computed(() =>
-  auth.canAccessPage('pos.access'),
+  auth.canAccessPage('pos.sale_edit'),
+)
+const canReturnSale = computed(() =>
+  auth.canAccessPage('pos.return'),
 )
 const canEditPurchase = computed(() =>
   auth.canAccessPage('stock.in'),
@@ -181,14 +185,7 @@ const result = computed(() => {
       damageQty: stockTotalsByProduct.value.get(String(row.id))?.damage ?? 0,
       uom: String(row.uom || uomLookup.value.get(String(row.uomId))?.name || ''),
       uomSymbol: String(row.uomSymbol || uomLookup.value.get(String(row.uomId))?.symbol || ''),
-      brand: String(row.brand || brandLookup.value.get(String(row.brandId))?.name || ''),
-    }))
-    return { rows: all, total: queried.total, all }
-  }
-  if (current.value.collection === 'brands') {
-    const all = queried.all.map(row => ({
-      ...row,
-      productCount: brandProductCounts.value.get(String(row.id)) ?? 0,
+      brand: String(row.brand || ''),
     }))
     return { rows: all, total: queried.total, all }
   }
@@ -211,21 +208,6 @@ const result = computed(() => {
 /** UOM lookup for product display enrichment (O(1) — was O(n) per row). */
 const uomLookup = computed(() =>
   new Map(store.list('uoms').map(uom => [String(uom.id), uom])))
-
-/** Brand lookup for product display enrichment (O(1) — was O(n) per row). */
-const brandLookup = computed(() =>
-  new Map(store.list('brands').map(brand => [String(brand.id), brand])))
-
-/** Products linked to each brand â€” used to keep the brand list informative. */
-const brandProductCounts = computed(() => {
-  const counts = new Map<string, number>()
-  for (const row of store.list('products')) {
-    const brandId = String(row.brandId ?? '')
-    if (!brandId) continue
-    counts.set(brandId, (counts.get(brandId) || 0) + 1)
-  }
-  return counts
-})
 
 /** Products linked to each UOM â€” used to keep the UOM list informative. */
 const uomProductCounts = computed(() => {
@@ -269,6 +251,9 @@ const STOCK_QTY_KIND: Record<string, StockHistoryKind> = {
   stockOutQty: 'stock_out',
   damageQty: 'damage',
 }
+
+/** Product list quantity columns rendered as the UOM breakdown. */
+const PRODUCT_STOCK_QTY_KEYS = new Set(['quantity', 'stockInQty', 'stockOutQty'])
 
 const stockHistoryOpen = ref(false)
 const stockHistoryProduct = ref<AppRecord | null>(null)
@@ -357,10 +342,8 @@ function reloadModuleData() {
   if (current.value.collection === 'products') {
     void store.fetchList('stockMovements')
     void store.fetchList('uoms')
-    void store.fetchList('brands')
   }
   if (current.value.collection === 'uoms') void store.fetchList('products')
-  if (current.value.collection === 'brands') void store.fetchList('products')
   // Debt reports: the export dialog needs the party/user option lists. These
   // follow the module permission; a missing grant silently yields no options.
   if (current.value.collection === 'customerDebts' && auth.canAccessPage('customer.view')) {
@@ -401,6 +384,10 @@ function cellText(row: Record<string, unknown>, key: string) {
     const code = String(source[key] || '')
     const label = documentSequenceTypeLabel(code)
     return label === code ? code : `${label} (${code})`
+  }
+  // Products: stock quantity columns show the UOM breakdown (e.g. "5 + 10 បន្ទះ").
+  if (current.value?.collection === 'products' && PRODUCT_STOCK_QTY_KEYS.has(key)) {
+    return stockBreakdownLabel(source[key], source)
   }
   return formatModuleCell(
     source[key],
@@ -608,25 +595,31 @@ async function onExport(request: ExportRequest) {
 function rowMenuItems(row: Record<string, unknown>): DropdownMenuItem[][] {
   const collection = current.value?.collection
   if (collection === 'sales') {
-    if (!canEditSale.value) return []
-    return [[{
-      label: t('app.reports.edit'),
-      icon: 'i-lucide-pencil',
-      color: 'primary',
-      // Edit reuses the POS screen with the invoice loaded (PATCH on save).
-      onSelect: () => {
-        void navigateTo(`/pos?editSaleId=${encodeURIComponent(String(row.id || ''))}`)
-      },
-    }, {
-      // Customer cancels the invoice: load it into the POS return flow with
-      // every line and restock enabled, so all items go back to stock.
-      label: t('app.reports.returnAll'),
-      icon: 'i-lucide-undo-2',
-      color: 'warning',
-      onSelect: () => {
-        void navigateTo(`/pos?returnSaleId=${encodeURIComponent(String(row.id || ''))}`)
-      },
-    }]]
+    const items: DropdownMenuItem[] = []
+    if (canEditSale.value) {
+      items.push({
+        label: t('app.reports.edit'),
+        icon: 'i-lucide-pencil',
+        color: 'primary',
+        // Edit reuses the POS screen with the invoice loaded (PATCH on save).
+        onSelect: () => {
+          void navigateTo(`/pos?editSaleId=${encodeURIComponent(String(row.id || ''))}`)
+        },
+      })
+    }
+    if (canReturnSale.value) {
+      items.push({
+        // Customer cancels the invoice: load it into the POS return flow with
+        // every line and restock enabled, so all items go back to stock.
+        label: t('app.reports.returnAll'),
+        icon: 'i-lucide-undo-2',
+        color: 'warning',
+        onSelect: () => {
+          void navigateTo(`/pos?returnSaleId=${encodeURIComponent(String(row.id || ''))}`)
+        },
+      })
+    }
+    return items.length ? [items] : []
   }
   if (collection === 'stockIns') {
     if (!canEditPurchase.value) return []
@@ -1096,7 +1089,7 @@ function refresh() {
 /* ------------------------- Stock operations ------------------------- */
 
 const productOptions = computed(() => store.list('products').map(product => ({
-  label: `${product.code} Â· ${product.name}`,
+  label: `${product.name}`,
   value: String(product.id),
 })))
 

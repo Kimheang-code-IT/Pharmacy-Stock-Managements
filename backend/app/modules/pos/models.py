@@ -66,13 +66,12 @@ class SaleItem(Base):
         UUID(as_uuid=True), ForeignKey("sales.id", ondelete="CASCADE"), nullable=False
     )
     # Product link is nullable so a product can be hard-deleted while the sale
-    # history survives through the name/sku/barcode snapshots.
+    # history survives through the name/barcode snapshots.
     product_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"), nullable=True
     )
     product_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    # Barcode snapshot (operational identifier); sku is legacy-optional.
-    sku: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Barcode snapshot (operational identifier).
     barcode: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # UOM snapshot at transaction time (display on POS/invoice; spec section 2.1.3).
     uom_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
@@ -151,6 +150,38 @@ class SaleReturn(Base):
     return_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     refund_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # Lifecycle: COMPLETED | VOID. Return documents are immutable; corrections
+    # use a VOID status row rather than editing/deleting history.
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="COMPLETED", server_default="COMPLETED"
+    )
+    # Refund disposition: CASH_REFUND | BANK_QR_REFUND | STORE_CREDIT |
+    # CUSTOMER_CREDIT | DEBT_REDUCTION | NO_REFUND. Nullable on legacy rows.
+    refund_disposition: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    refund_method: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # Amount actually paid back in cash/bank (0 for debt/credit settlements).
+    refund_paid_amount: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False, default=Decimal("0.00"), server_default="0"
+    )
+    # Portion settled as store/customer credit rather than cash.
+    credit_amount: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False, default=Decimal("0.00"), server_default="0"
+    )
+    # Portion that reduced an outstanding customer debt.
+    debt_reduction: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False, default=Decimal("0.00"), server_default="0"
+    )
+    refund_reference: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    refund_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    processed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Document-currency snapshot (refunds are never normalized with a later rate).
+    currency: Mapped[str] = mapped_column(String(10), nullable=False, default="USD", server_default="USD")
+    exchange_rate: Mapped[Decimal] = mapped_column(
+        Numeric(18, 6), nullable=False, default=Decimal("1"), server_default="1"
+    )
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
@@ -199,6 +230,10 @@ class Payment(Base):
     payment_no: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     sale_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("sales.id", ondelete="SET NULL"), nullable=True
+    )
+    # Refund payout rows (payment_type=SALE_REFUND) link back to the return doc.
+    sale_return_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("sale_returns.id", ondelete="SET NULL"), nullable=True
     )
     customer_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("customers.id", ondelete="SET NULL"), nullable=True

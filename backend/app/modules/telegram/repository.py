@@ -30,7 +30,6 @@ class ExpiryAlertRepository:
             select(
                 Product.id.label("product_id"),
                 Product.name.label("product_name"),
-                Product.sku.label("sku"),
                 Product.barcode.label("barcode"),
                 StockMovement.batch_no.label("batch_no"),
                 StockMovement.expiry_date.label("expiry_date"),
@@ -45,7 +44,6 @@ class ExpiryAlertRepository:
             .group_by(
                 Product.id,
                 Product.name,
-                Product.sku,
                 Product.barcode,
                 StockMovement.batch_no,
                 StockMovement.expiry_date,
@@ -57,7 +55,6 @@ class ExpiryAlertRepository:
             {
                 "product_id": row.product_id,
                 "product_name": row.product_name,
-                "sku": row.sku,
                 "barcode": row.barcode,
                 "batch_no": row.batch_no,
                 "expiry_date": row.expiry_date,

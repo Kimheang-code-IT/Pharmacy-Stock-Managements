@@ -49,3 +49,8 @@ Thumbs.db
 # Docker / data volumes (never commit)
 data/
 *.sql.gz
+
+# Database / media backups (never commit)
+infrastructure/backups/
+backups/
+*.dump

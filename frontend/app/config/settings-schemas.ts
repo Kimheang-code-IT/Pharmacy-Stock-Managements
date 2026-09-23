@@ -296,18 +296,70 @@ const SETTINGS_FIELD_HELP: Record<string, string> = {
 }
 
 /** Administration system settings — Localization, Stock, Telegram, Security only. */
-export const systemSettingsTabs: DocumentTabSchema[] = appConfigTabs
-  .filter(tab => SYSTEM_SETTINGS_TAB_IDS.has(tab.id))
-  .map(tab => ({
-    ...tab,
-    sections: tab.sections.map(section => ({
-      ...section,
-      fields: section.fields.map(field => ({
-        ...field,
-        helpKey: field.helpKey || SETTINGS_FIELD_HELP[field.key],
+export const systemSettingsTabs: DocumentTabSchema[] = [
+  ...appConfigTabs
+    .filter(tab => SYSTEM_SETTINGS_TAB_IDS.has(tab.id))
+    .map(tab => ({
+      ...tab,
+      sections: tab.sections.map(section => ({
+        ...section,
+        fields: section.fields.map(field => ({
+          ...field,
+          helpKey: field.helpKey || SETTINGS_FIELD_HELP[field.key],
+        })),
       })),
     })),
-  }))
+  // Backup tab: standard settings form (same layout as Localization). The
+  // run/test/history/restore actions live in the page header; `frequencyHours`
+  // options are filled at runtime from the loaded config.
+  {
+    id: 'backup',
+    labelKey: 'core.settings.tabs.backup',
+    sections: [
+      {
+        id: 'backup-connection',
+        titleKey: 'core.settings.backupConnection',
+        fields: [
+          {
+            key: 'backup.sheetId',
+            labelKey: 'core.settings.backupSheetId',
+            type: 'text',
+            helpKey: 'core.fieldHelp.backupSheetId',
+            placeholderKey: 'core.settings.backupSheetIdPlaceholder',
+          },
+          {
+            key: 'backup.serviceAccountJson',
+            labelKey: 'core.settings.backupServiceAccount',
+            type: 'textarea',
+            colSpan: 2,
+            helpKey: 'core.fieldHelp.backupServiceAccount',
+            placeholderKey: 'core.settings.backupServiceAccountPlaceholder',
+          },
+        ],
+      },
+      {
+        id: 'backup-schedule',
+        titleKey: 'core.settings.backupSchedule',
+        fields: [
+          { key: 'backup.enabled', labelKey: 'core.settings.backupEnabled', type: 'boolean', helpKey: 'core.settings.backupEnabledHint' },
+          { key: 'backup.frequencyHours', labelKey: 'core.settings.backupFrequency', type: 'select', options: [] },
+          { key: 'backup.backupNewRecords', labelKey: 'core.settings.backupNewRecords', type: 'boolean' },
+          { key: 'backup.backupChangedRecords', labelKey: 'core.settings.backupChangedRecords', type: 'boolean' },
+          { key: 'backup.autoRetry', labelKey: 'core.settings.backupAutoRetry', type: 'boolean' },
+          { key: 'backup.telegramNotify', labelKey: 'core.settings.backupTelegramNotify', type: 'boolean' },
+        ],
+      },
+      {
+        id: 'backup-status',
+        titleKey: 'core.settings.backupStatus',
+        fields: [
+          { key: 'backup.lastSuccessAt', labelKey: 'core.settings.backupLastSuccess', type: 'text', readOnly: true },
+          { key: 'backup.nextRunAt', labelKey: 'core.settings.backupNextRun', type: 'text', readOnly: true },
+        ],
+      },
+    ],
+  },
+]
 
 /** Storage is local disk on the API. No S3 / MinIO / Google Drive settings. */
 export const storageSettingsTabs: DocumentTabSchema[] = []

@@ -113,7 +113,14 @@ export function buildPurchaseReturnLines(
     .filter(line => Number(line.returnableQuantity || 0) > 0)
     .map((line) => {
       const product = productById.get(String(line.productId || '')) || null
-      const qty = roundMoney(Number(line.returnableQuantity || 0))
+      const receivedReturnable = roundMoney(Number(line.returnableQuantity || 0))
+      // Cap at what is still physically in stock: a lot that was already sold
+      // cannot be returned to the supplier. Falls back to the received qty when
+      // the backend did not report availability.
+      const available = line.availableQuantity == null
+        ? receivedReturnable
+        : roundMoney(Number(line.availableQuantity))
+      const qty = Math.max(0, Math.min(receivedReturnable, available))
       const cost = Number(line.price || line.unitCost || 0)
       return {
         lineId: String(line.id || ''),
@@ -128,5 +135,5 @@ export function buildPurchaseReturnLines(
         amount: roundMoney(qty * cost),
       }
     })
-    .filter(line => line.lineId)
+    .filter(line => line.lineId && line.returnableQuantity > 0)
 }

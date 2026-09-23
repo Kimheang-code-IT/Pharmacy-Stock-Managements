@@ -220,7 +220,8 @@ async def test_discount_requires_permission(client, cashier_headers):
         },
         headers=cashier_headers,
     )
-    assert denied.status_code == 409
+    # Authorization failures are 403, never 409 (spec: POS permissions).
+    assert denied.status_code == 403
 
     # Admin (all permissions) may discount.
     allowed = await client.post(

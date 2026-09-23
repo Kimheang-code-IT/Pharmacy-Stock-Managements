@@ -11,7 +11,7 @@ import {
 
 describe('row action collection rules', () => {
   it('exposes hard delete only for dependency-checked collections', () => {
-    for (const collection of ['categories', 'uoms', 'brands', 'products', 'suppliers', 'customers', 'roles', 'documentSequences']) {
+    for (const collection of ['categories', 'uoms', 'products', 'suppliers', 'customers', 'roles', 'documentSequences']) {
       expect(supportsHardDelete(collection), collection).toBe(true)
     }
     for (const collection of ['users', 'deliveryNotes', 'sales', 'stockIns', 'customerDebts', 'supplierDebts', 'auditLogs']) {
@@ -20,7 +20,7 @@ describe('row action collection rules', () => {
   })
 
   it('exposes a status toggle only for ACTIVE/INACTIVE-style collections', () => {
-    for (const collection of ['categories', 'uoms', 'brands', 'products', 'suppliers', 'customers', 'users', 'roles', 'documentSequences']) {
+    for (const collection of ['categories', 'uoms', 'products', 'suppliers', 'customers', 'users', 'roles', 'documentSequences']) {
       expect(supportsStatusToggle(collection), collection).toBe(true)
     }
     for (const collection of ['deliveryNotes', 'sales', 'stockIns', 'customerDebts', 'auditLogs']) {

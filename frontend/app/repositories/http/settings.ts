@@ -1,4 +1,12 @@
-import type { AppConfigRepository, AppInfoRepository, ClearTransactionsResult, ResetAllDataResult } from '~/repositories/contracts/settings'
+import type {
+  AppConfigRepository,
+  AppInfoRepository,
+  ClearTransactionsResult,
+  DestructiveActionInput,
+  MaintenanceAction,
+  MaintenanceConfirmation,
+  ResetAllDataResult,
+} from '~/repositories/contracts/settings'
 import type { ApiResponse } from '~/types/stock-pos/common'
 import type { AppConfig, AppInfo, ConnectionStatus } from '~/types/stock-pos/settings'
 import { ApiEndpoints } from '~/utils/constants/api-endpoints'
@@ -55,11 +63,30 @@ export function createHttpAppConfigRepository(): AppConfigRepository {
       }
       return model
     },
-    resetAllData: async () => unwrapApiData(
-      await api.post<ResetAllDataResult | ApiResponse<ResetAllDataResult>>(ApiEndpoints.RESET_ALL_DATA, {}),
+    requestMaintenanceConfirmation: async (password: string, action: MaintenanceAction) => {
+      const data = unwrapApiData(
+        await api.post<MaintenanceConfirmation | ApiResponse<MaintenanceConfirmation>>(
+          ApiEndpoints.MAINTENANCE_REAUTH,
+          { password, action },
+        ),
+      ) as MaintenanceConfirmation & { confirmation_token?: string, expires_in?: number }
+      return {
+        confirmationToken: data.confirmationToken || data.confirmation_token || '',
+        phrase: data.phrase || '',
+        expiresIn: Number(data.expiresIn ?? data.expires_in ?? 0),
+      }
+    },
+    resetAllData: async (input: DestructiveActionInput) => unwrapApiData(
+      await api.post<ResetAllDataResult | ApiResponse<ResetAllDataResult>>(ApiEndpoints.RESET_ALL_DATA, {
+        confirmation_token: input.confirmationToken,
+        confirmation_phrase: input.confirmationPhrase,
+      }),
     ),
-    clearTransactions: async () => unwrapApiData(
-      await api.post<ClearTransactionsResult | ApiResponse<ClearTransactionsResult>>(ApiEndpoints.CLEAR_TRANSACTIONS, {}),
+    clearTransactions: async (input: DestructiveActionInput) => unwrapApiData(
+      await api.post<ClearTransactionsResult | ApiResponse<ClearTransactionsResult>>(ApiEndpoints.CLEAR_TRANSACTIONS, {
+        confirmation_token: input.confirmationToken,
+        confirmation_phrase: input.confirmationPhrase,
+      }),
     ),
     testEmailConnection: () => postResult(ApiEndpoints.APP_CONFIG_TEST_EMAIL),
     sendTestEmail: to => postResult(ApiEndpoints.APP_CONFIG_SEND_TEST_EMAIL, { to }),

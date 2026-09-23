@@ -3,7 +3,6 @@ from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEV_JWT_SECRET = "dev-only-secret-change-me-in-production-0123456789abcdef"
-_DEV_TELEGRAM_SECRET = "dev-only-telegram-secret-change-me-0123456789abcdef"
 _DEV_SEED_PASSWORD = "123456"
 
 
@@ -26,19 +25,13 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://localhost:6379/0"
 
-    celery_broker_url: str = "amqp://stock_pos:stock_pos@localhost:5672/stock_pos"
-    celery_result_backend: str = "redis://localhost:6379/2"
-
     jwt_secret_key: str = _DEV_JWT_SECRET
     jwt_algorithm: str = "HS256"
     # Keep users signed in for a full day; the refresh token (below) renews the
     # session seamlessly when the access token eventually expires.
     access_token_expire_minutes: int = 1440
     refresh_token_expire_days: int = 7
-    service_token_expire_minutes: int = 10
 
-    telegram_bot_client_id: str = "stock-pos-telegram"
-    telegram_bot_client_secret: str = _DEV_TELEGRAM_SECRET
     telegram_bot_token: str = ""
     telegram_bot_mode: str = "polling"
     telegram_enabled: bool = True
@@ -54,9 +47,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     cors_allow_private_networks: bool = True
 
-    cache_default_ttl_seconds: int = 60
     dashboard_cache_ttl_seconds: int = 60
-    settings_cache_ttl_seconds: int = 120
     rate_limit_login_per_minute: int = 10
     rate_limit_refresh_per_minute: int = 30
     rate_limit_reset_per_hour: int = 5
@@ -74,9 +65,14 @@ class Settings(BaseSettings):
     # so they request a wide page; keep the server-side cap generous.
     max_page_size: int = 500
 
-    # Product / shop / brand images on local disk (not S3/MinIO).
+    # Product / shop / brand images on local disk (not S3/MinIO). This root is
+    # served (publicly) by GET /api/v1/images/{key}, so it must contain ONLY
+    # publicly-renderable images.
     local_storage_dir: str = "var/media"
     max_upload_bytes: int = 5 * 1024 * 1024
+    # Private operational snapshots (maintenance/reset backups). Deliberately
+    # OUTSIDE local_storage_dir: never served by the image route.
+    backup_dir: str = "var/backups"
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -98,8 +94,6 @@ class Settings(BaseSettings):
         problems: list[str] = []
         if self.jwt_secret_key == _DEV_JWT_SECRET or _is_placeholder_secret(self.jwt_secret_key) or len(self.jwt_secret_key) < 32:
             problems.append("JWT_SECRET_KEY is missing, too short, or still a development placeholder")
-        if self.telegram_bot_client_secret == _DEV_TELEGRAM_SECRET or _is_placeholder_secret(self.telegram_bot_client_secret):
-            problems.append("TELEGRAM_BOT_CLIENT_SECRET is still a development placeholder")
         if self.seed_admin_enabled and (
             self.seed_admin_password == _DEV_SEED_PASSWORD
             or _is_placeholder_secret(self.seed_admin_password)

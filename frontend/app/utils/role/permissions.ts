@@ -26,17 +26,6 @@ export interface MatrixGroupDefinition {
   labelKey: string
 }
 
-/** Sidebar groups used to filter the permission matrix. */
-export const MATRIX_GROUPS: readonly MatrixGroupDefinition[] = [
-  { id: 'dashboard', labelKey: 'core.rolePermissions.groups.dashboard' },
-  { id: 'stock', labelKey: 'core.rolePermissions.groups.stock' },
-  { id: 'pos', labelKey: 'core.rolePermissions.groups.pos' },
-  { id: 'delivery', labelKey: 'core.rolePermissions.groups.delivery' },
-  { id: 'setup', labelKey: 'core.rolePermissions.groups.setup' },
-  { id: 'reports', labelKey: 'core.rolePermissions.groups.reports' },
-  { id: 'administration', labelKey: 'core.rolePermissions.groups.administration' },
-] as const
-
 export interface MatrixActionDefinition {
   /** Semantic action key (i18n under `core.rolePermissions.actions`). */
   key: string
@@ -52,9 +41,6 @@ export interface MatrixPageDefinition {
   group: MatrixGroupId
   actions: readonly MatrixActionDefinition[]
 }
-
-/** Backend action names are free-form (e.g. `debt.pay`), so keep them strings. */
-export type RolePermissionAction = string
 
 const a = (key: string, permission: string): MatrixActionDefinition => ({ key, permission })
 
@@ -97,8 +83,9 @@ export const PERMISSION_MATRIX_PAGES: readonly MatrixPageDefinition[] = [
     value: 'stock_movements',
     labelKey: 'app.pages.stockMovements',
     group: 'stock',
-    actions: [a('view', 'stock.view')],
+    actions: [a('view', 'stock.view'), a('stock_valuation', 'report.stock_valuation')],
   },
+
   {
     value: 'pos',
     labelKey: 'app.nav.pos',
@@ -108,6 +95,9 @@ export const PERMISSION_MATRIX_PAGES: readonly MatrixPageDefinition[] = [
       a('discount', 'pos.discount'),
       a('debt_sale', 'pos.debt_sale'),
       a('print_invoice', 'pos.print'),
+      a('sale_edit', 'pos.sale_edit'),
+      a('return', 'pos.return'),
+      a('refund', 'pos.refund'),
     ],
   },
   {
@@ -166,7 +156,14 @@ export const PERMISSION_MATRIX_PAGES: readonly MatrixPageDefinition[] = [
     value: 'finance_report',
     labelKey: 'app.pages.financeReport',
     group: 'reports',
-    actions: [a('view', 'report.finance'), a('create_expense', 'expense.create')],
+    actions: [
+      a('view', 'report.finance'),
+      a('view_expense', 'expense.view'),
+      a('create_expense', 'expense.create'),
+      a('approve_expense', 'expense.approve'),
+      a('void_expense', 'expense.void'),
+      a('expense_report', 'report.expense'),
+    ],
   },
   { value: 'users', labelKey: 'app.pages.users', group: 'administration', actions: crud('user') },
   { value: 'roles', labelKey: 'app.pages.roles', group: 'administration', actions: crud('role') },
@@ -176,7 +173,14 @@ export const PERMISSION_MATRIX_PAGES: readonly MatrixPageDefinition[] = [
     value: 'settings',
     labelKey: 'app.pages.settings',
     group: 'administration',
-    actions: [a('view', 'settings.view'), a('update', 'settings.update')],
+    actions: [
+      a('view', 'settings.view'),
+      a('update', 'settings.update'),
+      a('maintenance', 'system.maintenance'),
+      a('data_reset', 'system.data_reset'),
+      a('backup', 'system.backup'),
+      a('restore', 'system.restore'),
+    ],
   },
 ] as const
 
@@ -199,11 +203,23 @@ export const ACTION_COLUMN_ORDER: readonly string[] = [
   'discount',
   'debt_sale',
   'print_invoice',
+  'sale_edit',
+  'return',
+  'refund',
+  'approve_expense',
+  'void_expense',
+  'view_expense',
+  'expense_report',
+  'stock_valuation',
   'confirm',
   'deliver',
   'cancel',
   'pay_debt',
   'create_expense',
+  'maintenance',
+  'data_reset',
+  'backup',
+  'restore',
 ]
 
 /** Fallback sidebar group for a raw backend module code. */
@@ -225,6 +241,7 @@ const MODULE_GROUP: Record<string, MatrixGroupId> = {
   sequence: 'administration',
   audit: 'administration',
   settings: 'administration',
+  system: 'administration',
 }
 
 export const SUPER_ADMIN_PERMISSION = 'ALL_PAGES'
@@ -251,17 +268,6 @@ function fullAccessRow(): AppRolePermissionRow {
 export function isFullAccessRows(rows: readonly AppRolePermissionRow[] | null | undefined): boolean {
   return (rows || []).some(row =>
     row.documentType === FULL_ACCESS_ROW_ID || row.actions.includes(SUPER_ADMIN_PERMISSION),
-  )
-}
-
-/** Grant/clear the `ALL_PAGES` wildcard, returning a marker-only row set. */
-export function withFullAccess(
-  rows: readonly AppRolePermissionRow[] | null | undefined,
-  enabled: boolean,
-): AppRolePermissionRow[] {
-  if (enabled) return [fullAccessRow()]
-  return (rows || []).filter(row =>
-    row.documentType !== FULL_ACCESS_ROW_ID && !row.actions.includes(SUPER_ADMIN_PERMISSION),
   )
 }
 
@@ -328,27 +334,6 @@ export function normalizePermissionRows(
   return includeEmpty ? all : all.filter(row => row.actions.length > 0)
 }
 
-/** Toggle one action; non-view actions imply view when the module defines it. */
-export function setPermissionAction(
-  row: AppRolePermissionRow,
-  action: string,
-  enabled: boolean,
-  hasViewAction = true,
-): AppRolePermissionRow {
-  const actions = new Set(normalizeActions(row.actions))
-  if (enabled) {
-    actions.add(action)
-    if (action !== 'view' && hasViewAction) actions.add('view')
-  }
-  else if (action === 'view') {
-    actions.clear()
-  }
-  else {
-    actions.delete(action)
-  }
-  return { ...row, actions: normalizeActions([...actions]) }
-}
-
 /**
  * Toggle one flat backend code (`module.action`) on the matrix rows, applying
  * the ERP view-dependency rules:
@@ -410,11 +395,6 @@ export function permissionRowsToFlatKeys(rows: AppRolePermissionRow[]): string[]
     }
   }
   return [...keys].sort()
-}
-
-/** Granted permission count for display (full access counts the whole catalog). */
-export function permissionCountForRows(rows: readonly AppRolePermissionRow[] | null | undefined): number {
-  return isFullAccessRows(rows) ? allFrontendPermissionCodes().length : permissionRowsToFlatKeys(rows as AppRolePermissionRow[]).length
 }
 
 /**

@@ -16,8 +16,6 @@ class SalesReportRow(BaseModel):
     invoice_no: str
     customer_name: str | None
     product_name: str
-    # Legacy internal code: nullable since 0021 (barcode is operational).
-    sku: str | None = None
     quantity: Decimal
     returned_quantity: Decimal = Decimal("0")
     returnable_quantity: Decimal = Decimal("0")
@@ -57,11 +55,11 @@ class PurchaseReportRow(BaseModel):
     transaction_date: datetime
     supplier_name: str | None
     product_name: str
-    # Legacy internal code: nullable since 0021 (barcode is operational).
-    sku: str | None = None
     quantity: Decimal
     returned_quantity: Decimal = Decimal("0")
     returnable_quantity: Decimal = Decimal("0")
+    # Quantity still physically in stock for this line's lot.
+    available_quantity: Decimal = Decimal("0")
     return_amount: Decimal = Decimal("0")
     cost_price: Decimal
     total_cost: Decimal
@@ -124,16 +122,48 @@ class SupplierDebtReportRow(BaseModel):
     created_at: datetime
 
 
+class ProfitAndLossOut(BaseModel):
+    """Accrual/accounting view. COGS already recognizes inventory cost, so
+    supplier payments never appear here (spec: no double counting)."""
+
+    gross_sales: Decimal
+    sale_returns: Decimal
+    net_sales: Decimal
+    cost_of_goods_sold: Decimal
+    gross_profit: Decimal
+    operating_expenses: Decimal
+    stock_damage_loss: Decimal
+    stock_expire_loss: Decimal
+    operating_profit: Decimal
+
+
+class CashFlowOut(BaseModel):
+    """Cash-basis view: only money that actually moved. Unpaid credit sales are
+    not inflow; unpaid purchases are not outflow."""
+
+    sale_receipts: Decimal = Decimal("0")
+    debt_collections: Decimal = Decimal("0")
+    supplier_refunds_received: Decimal = Decimal("0")
+    total_inflow: Decimal = Decimal("0")
+    supplier_payments: Decimal = Decimal("0")
+    customer_refunds_paid: Decimal = Decimal("0")
+    operating_expenses: Decimal = Decimal("0")
+    total_outflow: Decimal = Decimal("0")
+    net_cash_flow: Decimal = Decimal("0")
+
+
 class FinanceReportOut(BaseModel):
-    """Finance summary cards (spec 2.1.10). Net Result includes operating
-    expenses recorded via Add Expense on the Finance Report.
+    """Finance summary cards (spec 2.1.10), split into two unambiguous views:
+    `profit_and_loss` (accounting) and `cash_flow` (cash basis).
 
     `income/expense/net/outstanding` are aliases the frontend financeSummary
-    mapper reads; they match the canonical cards exactly.
+    mapper reads; `net_result` is the P&L operating profit (supplier payments
+    do NOT reduce it).
     """
 
     period_start: date
     period_end: date
+    report_currency: str = "USD"
     total_sales: Decimal
     total_expense: Decimal
     total_purchase_cost: Decimal
@@ -146,7 +176,10 @@ class FinanceReportOut(BaseModel):
     operating_expenses: Decimal
     # Cash paid to suppliers in the period (purchase payments + debt repayments).
     supplier_payments: Decimal = Decimal("0")
+    # P&L operating profit: gross profit - losses - operating expenses.
     net_result: Decimal
+    profit_and_loss: ProfitAndLossOut | None = None
+    cash_flow: CashFlowOut | None = None
 
     @computed_field
     @property
@@ -189,6 +222,43 @@ class ExpenseCreate(BaseModel):
         gt=0,
         validation_alias=AliasChoices("exchange_rate", "exchangeRate"),
     )
+    # Lifecycle: POSTED affects reports/cash flow; DRAFT does not. Default
+    # POSTED keeps the historical "recorded expense" behavior.
+    status: Literal["DRAFT", "POSTED"] = "POSTED"
+    posting_date: date | None = Field(
+        default=None,
+        validation_alias=AliasChoices("posting_date", "postingDate"),
+    )
+    attachment_object_key: str | None = Field(
+        default=None,
+        max_length=500,
+        validation_alias=AliasChoices("attachment_object_key", "attachmentObjectKey", "attachment"),
+    )
+
+
+class ExpenseUpdate(BaseModel):
+    """PATCH a DRAFT expense only (posted expenses are immutable)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    expense_date: date | None = Field(
+        default=None,
+        validation_alias=AliasChoices("date", "expense_date", "expenseDate"),
+    )
+    category: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    reference: str | None = Field(default=None, max_length=100)
+    amount: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=2)
+    payment_method: str | None = None
+    currency: str | None = Field(default=None, pattern="^(USD|KHR)$")
+    exchange_rate: Decimal | None = Field(default=None, gt=0)
+    attachment_object_key: str | None = Field(default=None, max_length=500)
+
+
+class ExpenseVoidRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    reason: str = Field(min_length=1, max_length=2000)
 
 
 class ExpenseOut(BaseModel):
@@ -202,6 +272,14 @@ class ExpenseOut(BaseModel):
     payment_method: str | None
     currency: str = "USD"
     exchange_rate: Decimal = Decimal("1")
+    status: str = "POSTED"
+    posting_date: date | None = None
+    approved_by: UUID | None = None
+    approved_at: datetime | None = None
+    void_reason: str | None = None
+    voided_by: UUID | None = None
+    voided_at: datetime | None = None
+    attachment_object_key: str | None = None
     created_by: UUID | None = None
     created_by_name: str | None = None
     created_at: datetime

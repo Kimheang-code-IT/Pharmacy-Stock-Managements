@@ -1,20 +1,29 @@
 <script setup lang="ts">
 import type { DropdownMenuItem } from '@nuxt/ui'
-import type { AppConfig } from '~/types/stock-pos/settings'
+import type { AppConfig, BackupConfig, BackupJob } from '~/types/stock-pos/settings'
+import type { MaintenanceAction } from '~/repositories/contracts/settings'
 import { systemSettingsTabs } from '~/config/settings-schemas'
-import { useSettingsRepositories } from '~/repositories'
+import { useBackupRepository, useSettingsRepositories } from '~/repositories'
 import { useConfirm } from '~/composables/common/useConfirm'
+import { useAccessAlert } from '~/composables/common/useAccessAlert'
 import { useAppPageTitle } from '~/composables/layout/useAppPageTitle'
 import { getByPath, setByPath } from '~/utils/object-path'
 import { useAppLocalization } from '~/composables/settings/useAppLocalization'
 
 const { appConfig } = useSettingsRepositories()
+const backupRepo = useBackupRepository()
 const { t } = useI18n()
 const toast = useToast()
 const { confirm } = useConfirm()
 const auth = useAuthStore()
 const canEdit = computed(() => auth.canAccessPage('settings.update'))
 const canConfigure = computed(() => auth.canAccessPage('settings.update'))
+/** Destructive actions are gated by their own Administrator permissions. */
+const canResetData = computed(() => auth.canAccessPage('system.data_reset'))
+const canClearTransactions = computed(() => auth.canAccessPage('system.maintenance'))
+const canBackup = computed(() => auth.canAccessPage('system.backup'))
+const canRestore = computed(() => auth.canAccessPage('system.restore'))
+const { showPermissionDenied } = useAccessAlert()
 const appLocalization = useAppLocalization()
 
 const pending = ref(true)
@@ -25,9 +34,45 @@ const resettingData = ref(false)
 const clearingTransactions = ref(false)
 const activeTab = ref('localization')
 const model = ref<AppConfig | null>(null)
+const backupModel = ref<BackupConfig | null>(null)
+
+/** Backup frequency options (from the loaded config, with sensible defaults). */
+const backupFrequencyOptions = computed(() =>
+  (backupModel.value?.frequencyOptions?.length ? backupModel.value.frequencyOptions : [1, 3, 6, 12, 24])
+    .map(hours => ({ label: t('core.settings.backupFrequencyHours', { hours }), value: String(hours) })),
+)
+
+/** Settings tabs with the backup frequency select options resolved at runtime. */
+const tabs = computed(() => systemSettingsTabs.map(tab => tab.id !== 'backup'
+  ? tab
+  : {
+      ...tab,
+      sections: tab.sections.map(section => ({
+        ...section,
+        fields: section.fields.map(field => field.key === 'backup.frequencyHours'
+          ? { ...field, options: backupFrequencyOptions.value }
+          : field),
+      })),
+    }))
+
+const activeReadOnly = computed(() =>
+  activeTab.value === 'backup' ? !canBackup.value : !canEdit.value,
+)
+const activeCanSave = computed(() =>
+  activeTab.value === 'backup' ? canBackup.value : canEdit.value,
+)
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback
+}
+
+async function loadBackup() {
+  try {
+    backupModel.value = await backupRepo.getSettings()
+  }
+  catch (error: unknown) {
+    toast.add({ title: errorMessage(error, t('core.common.loadFailed')), color: 'error' })
+  }
 }
 
 async function load() {
@@ -41,9 +86,11 @@ async function load() {
   finally {
     pending.value = false
   }
+  await loadBackup()
 }
 
 function fieldValue(key: string): unknown {
+  if (key.startsWith('backup.')) return backupFieldValue(key.slice('backup.'.length))
   if (!model.value) return undefined
 
   // Select options use string values; coerce number fields for USelect match.
@@ -63,6 +110,14 @@ function fieldValue(key: string): unknown {
 }
 
 async function setFieldValue(key: string, value: unknown) {
+  if (key.startsWith('backup.')) {
+    if (!backupModel.value) return
+    const field = key.slice('backup.'.length)
+    backupModel.value = field === 'frequencyHours'
+      ? { ...backupModel.value, frequencyHours: Number(value) || 24 }
+      : { ...backupModel.value, [field]: value } as BackupConfig
+    return
+  }
   if (!model.value) return
 
   if (key === 'system.maintenanceMode' || key === 'system.readOnlyMode') {
@@ -94,9 +149,15 @@ async function setFieldValue(key: string, value: unknown) {
 }
 
 async function save() {
-  if (!model.value) return
   saving.value = true
   try {
+    if (activeTab.value === 'backup') {
+      if (!backupModel.value) return
+      backupModel.value = await backupRepo.updateSettings(backupModel.value)
+      toast.add({ title: t('core.common.saved'), color: 'success' })
+      return
+    }
+    if (!model.value) return
     model.value = await appConfig.update(model.value)
     appLocalization.apply(model.value.localization)
     usePreferencesStore().setCurrency(model.value.localization.currency)
@@ -143,74 +204,217 @@ async function testTelegram() {
   }
 }
 
-async function resetAllData() {
-  const ok = await confirm({
-    kind: 'generic',
-    titleKey: 'core.settings.resetDataConfirmTitle',
-    descriptionKey: 'core.settings.resetDataConfirmHelp',
-    confirmLabelKey: 'core.settings.resetDataAction',
-    confirmColor: 'error',
-  })
-  if (!ok) return
+/**
+ * Guarded destructive flow: password reauthentication mints a one-use token,
+ * then the exact confirmation phrase unlocks the action. The backend also
+ * requires a verified pre-deletion backup and records protected audit events.
+ */
+const MAINTENANCE_PHRASES: Record<MaintenanceAction, string> = {
+  RESET_ALL_DATA: 'RESET ALL DATA',
+  CLEAR_TRANSACTIONS: 'CLEAR TRANSACTIONS',
+}
+const maintenanceOpen = ref(false)
+const maintenanceAction = ref<MaintenanceAction>('CLEAR_TRANSACTIONS')
+const maintenancePassword = ref('')
+const maintenancePhrase = ref('')
+const maintenanceBusy = ref(false)
+const maintenanceTitleKey = computed(() => maintenanceAction.value === 'RESET_ALL_DATA'
+  ? 'core.settings.resetDataConfirmTitle'
+  : 'core.settings.clearTransactionsConfirmTitle')
 
-  resettingData.value = true
-  try {
-    await appConfig.resetAllData()
-    toast.add({ title: t('core.settings.resetDataSuccess'), color: 'success' })
-    await auth.logout()
-  }
-  catch (error: unknown) {
-    toast.add({ title: errorMessage(error, t('core.settings.resetDataFailed')), color: 'error' })
-  }
-  finally {
-    resettingData.value = false
-  }
+function openMaintenance(action: MaintenanceAction) {
+  maintenanceAction.value = action
+  maintenancePassword.value = ''
+  maintenancePhrase.value = ''
+  maintenanceOpen.value = true
 }
 
-/** Delete every sales + purchase transaction and zero stock (master data kept). */
-async function clearTransactions() {
-  const ok = await confirm({
-    kind: 'generic',
-    titleKey: 'core.settings.clearTransactionsConfirmTitle',
-    descriptionKey: 'core.settings.clearTransactionsConfirmHelp',
-    confirmLabelKey: 'core.settings.clearTransactionsAction',
-    confirmColor: 'error',
-  })
-  if (!ok) return
+const canSubmitMaintenance = computed(() => Boolean(
+  maintenancePassword.value && maintenancePhrase.value.trim(),
+))
 
-  clearingTransactions.value = true
+async function submitMaintenance() {
+  if (!canSubmitMaintenance.value || maintenanceBusy.value) return
+  const action = maintenanceAction.value
+  if (maintenancePhrase.value.trim() !== MAINTENANCE_PHRASES[action]) {
+    toast.add({ title: t('core.settings.maintenancePhraseMismatch'), color: 'error' })
+    return
+  }
+  maintenanceBusy.value = true
   try {
-    await appConfig.clearTransactions()
-    toast.add({ title: t('core.settings.clearTransactionsSuccess'), color: 'success' })
+    const confirmation = await appConfig.requestMaintenanceConfirmation(maintenancePassword.value, action)
+    const input = {
+      confirmationToken: confirmation.confirmationToken,
+      confirmationPhrase: maintenancePhrase.value.trim(),
+    }
+    if (action === 'RESET_ALL_DATA') {
+      resettingData.value = true
+      await appConfig.resetAllData(input)
+      toast.add({ title: t('core.settings.resetDataSuccess'), color: 'success' })
+      maintenanceOpen.value = false
+      await auth.logout()
+    }
+    else {
+      clearingTransactions.value = true
+      await appConfig.clearTransactions(input)
+      toast.add({ title: t('core.settings.clearTransactionsSuccess'), color: 'success' })
+      maintenanceOpen.value = false
+    }
   }
   catch (error: unknown) {
-    toast.add({ title: errorMessage(error, t('core.settings.clearTransactionsFailed')), color: 'error' })
+    const key = action === 'RESET_ALL_DATA'
+      ? 'core.settings.resetDataFailed'
+      : 'core.settings.clearTransactionsFailed'
+    toast.add({ title: errorMessage(error, t(key)), color: 'error' })
   }
   finally {
+    maintenanceBusy.value = false
+    resettingData.value = false
     clearingTransactions.value = false
   }
 }
 
 /** Destructive maintenance actions live behind the header ⋯ menu. */
 const dangerItems = computed<DropdownMenuItem[][]>(() => {
-  if (!canConfigure.value) return []
-  return [[
-    {
+  const items: DropdownMenuItem[] = []
+  if (canResetData.value) {
+    items.push({
       label: t('core.settings.resetDataAction'),
       icon: 'i-lucide-database-zap',
       color: 'error',
       disabled: resettingData.value,
-      onSelect: () => { void resetAllData() },
-    },
-    {
+      onSelect: () => { openMaintenance('RESET_ALL_DATA') },
+    })
+  }
+  if (canClearTransactions.value) {
+    items.push({
       label: t('core.settings.clearTransactionsAction'),
       icon: 'i-lucide-trash-2',
       color: 'error',
       disabled: clearingTransactions.value,
-      onSelect: () => { void clearTransactions() },
-    },
-  ]]
+      onSelect: () => { openMaintenance('CLEAR_TRANSACTIONS') },
+    })
+  }
+  return items.length ? [items] : []
 })
+
+/* ------------------------------ backup actions ------------------------------ */
+
+const backupTesting = ref(false)
+const backupRunning = ref(false)
+const backupHistoryOpen = ref(false)
+const backupHistoryLoading = ref(false)
+const backupHistory = ref<BackupJob[]>([])
+const backupRestoreOpen = ref(false)
+const backupRestorePassword = ref('')
+const backupRestorePhrase = ref('')
+const backupRestoreBusy = ref(false)
+const BACKUP_RESTORE_PHRASE = 'RESTORE DATABASE'
+
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return t('core.settings.backupNever')
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString()
+}
+
+/** Read a backup field for the standard form (flat keys, formatted status). */
+function backupFieldValue(field: string): unknown {
+  const backup = backupModel.value
+  if (!backup) return undefined
+  if (field === 'frequencyHours') return String(backup.frequencyHours)
+  if (field === 'lastSuccessAt') return formatDateTime(backup.lastSuccessAt)
+  if (field === 'nextRunAt') return formatDateTime(backup.nextRunAt)
+  return (backup as unknown as Record<string, unknown>)[field]
+}
+
+async function testBackupConnection() {
+  backupTesting.value = true
+  try {
+    if (backupModel.value) await backupRepo.updateSettings(backupModel.value)
+    const result = await backupRepo.testConnection()
+    toast.add({ title: result.message, color: result.status === 'connected' ? 'success' : 'error' })
+  }
+  catch (error: unknown) {
+    toast.add({ title: errorMessage(error, t('core.settings.backupTestFailed')), color: 'error' })
+  }
+  finally {
+    backupTesting.value = false
+  }
+}
+
+async function runBackup() {
+  backupRunning.value = true
+  try {
+    if (backupModel.value) await backupRepo.updateSettings(backupModel.value)
+    const result = await backupRepo.run()
+    const job = result.job
+    toast.add({
+      title: t('core.settings.backupRunDone', { status: job.status }),
+      description: t('core.settings.backupRunSummary', {
+        appended: job.rowsAppended,
+        updated: job.rowsUpdated,
+      }),
+      color: job.status === 'success' ? 'success' : job.status === 'failed' ? 'error' : 'warning',
+    })
+    await loadBackup()
+  }
+  catch (error: unknown) {
+    toast.add({ title: errorMessage(error, t('core.settings.backupRunFailed')), color: 'error' })
+  }
+  finally {
+    backupRunning.value = false
+  }
+}
+
+async function openBackupHistory() {
+  backupHistoryOpen.value = true
+  backupHistoryLoading.value = true
+  try {
+    const result = await backupRepo.history(1, 20)
+    backupHistory.value = result.jobs
+  }
+  catch (error: unknown) {
+    toast.add({ title: errorMessage(error, t('core.settings.backupHistoryFailed')), color: 'error' })
+  }
+  finally {
+    backupHistoryLoading.value = false
+  }
+}
+
+function openBackupRestore() {
+  if (!canRestore.value) {
+    showPermissionDenied({ permission: 'system.restore' })
+    return
+  }
+  backupRestorePassword.value = ''
+  backupRestorePhrase.value = ''
+  backupRestoreOpen.value = true
+}
+
+const canSubmitBackupRestore = computed(() => Boolean(
+  backupRestorePassword.value && backupRestorePhrase.value.trim(),
+))
+
+async function submitBackupRestore() {
+  if (backupRestorePhrase.value.trim() !== BACKUP_RESTORE_PHRASE || !backupRestorePassword.value) return
+  backupRestoreBusy.value = true
+  try {
+    const confirmation = await backupRepo.requestRestoreConfirmation(backupRestorePassword.value)
+    const result = await backupRepo.restore({
+      confirmationToken: confirmation.confirmationToken,
+      confirmationPhrase: backupRestorePhrase.value.trim(),
+    })
+    toast.add({ title: t('core.settings.backupRestoreDone', { rows: result.totalRows }), color: 'success' })
+    backupRestoreOpen.value = false
+    await loadBackup()
+  }
+  catch (error: unknown) {
+    toast.add({ title: errorMessage(error, t('core.settings.backupRestoreFailed')), color: 'error' })
+  }
+  finally {
+    backupRestoreBusy.value = false
+  }
+}
 
 onMounted(() => void load())
 useAppPageTitle(() => t('app.pages.settings'))
@@ -219,13 +423,13 @@ useAppPageTitle(() => t('app.pages.settings'))
 <template>
   <DocumentAppDocumentPage
     v-model:active-tab="activeTab"
-    :tabs="systemSettingsTabs"
+    :tabs="tabs"
     :field-value="fieldValue"
     :set-field-value="setFieldValue"
     :pending="pending || !model"
     :saving="saving"
-    :read-only="!canEdit"
-    :can-save="canEdit"
+    :read-only="activeReadOnly"
+    :can-save="activeCanSave"
     :show-list-nav="false"
     :more-items="dangerItems"
     content-wide
@@ -243,6 +447,192 @@ useAppPageTitle(() => t('app.pages.settings'))
         :loading="testingTelegram"
         @click="testTelegram"
       />
+      <template v-if="activeTab === 'backup'">
+        <UButton
+          icon="i-lucide-play"
+          size="sm"
+          :label="t('core.settings.backupNow')"
+          :loading="backupRunning"
+          :disabled="!canBackup || !backupModel?.configured"
+          @click="runBackup"
+        />
+        <UButton
+          icon="i-lucide-plug-zap"
+          color="neutral"
+          variant="soft"
+          size="sm"
+          :label="t('core.settings.backupTest')"
+          :loading="backupTesting"
+          :disabled="!canBackup || !backupModel?.configured"
+          @click="testBackupConnection"
+        />
+        <UButton
+          icon="i-lucide-history"
+          color="neutral"
+          variant="ghost"
+          size="sm"
+          :label="t('core.settings.backupHistory')"
+          @click="openBackupHistory"
+        />
+        <UButton
+          icon="i-lucide-database-backup"
+          color="error"
+          variant="soft"
+          size="sm"
+          :label="t('core.settings.backupRestore')"
+          :disabled="!canRestore || !backupModel?.configured"
+          @click="openBackupRestore"
+        />
+      </template>
+    </template>
+
+    <template #form>
+      <DocumentAppDocumentForm
+        :tabs="tabs"
+        :active-tab="activeTab"
+        :field-value="fieldValue"
+        :set-field-value="setFieldValue"
+        :read-only="activeReadOnly"
+        wide
+      />
     </template>
   </DocumentAppDocumentPage>
+
+  <CommonAppDialog
+    v-model:open="maintenanceOpen"
+    :title="t(maintenanceTitleKey)"
+    icon="i-lucide-shield-alert"
+    size="sm"
+    :loading="maintenanceBusy"
+  >
+    <div class="w-full space-y-3">
+      <p class="text-sm text-muted">
+        {{ t('core.settings.maintenanceConfirmHelp') }}
+      </p>
+      <UFormField :label="t('core.settings.maintenancePassword')" required>
+        <UInput
+          v-model="maintenancePassword"
+          type="password"
+          autocomplete="current-password"
+          size="lg"
+          class="w-full"
+        />
+      </UFormField>
+      <UFormField
+        :label="t('core.settings.maintenancePhrase')"
+        :help="t('core.settings.maintenancePhraseHint', { phrase: MAINTENANCE_PHRASES[maintenanceAction] })"
+        required
+      >
+        <UInput v-model="maintenancePhrase" size="lg" class="w-full" />
+      </UFormField>
+    </div>
+
+    <template #footer>
+      <div class="flex w-full justify-end gap-2">
+        <UButton
+          color="neutral"
+          variant="ghost"
+          :label="t('common.cancel')"
+          @click="maintenanceOpen = false"
+        />
+        <UButton
+          color="error"
+          icon="i-lucide-shield-alert"
+          :loading="maintenanceBusy"
+          :disabled="!canSubmitMaintenance"
+          :label="t('core.settings.maintenanceConfirmAction')"
+          @click="submitMaintenance"
+        />
+      </div>
+    </template>
+  </CommonAppDialog>
+
+  <CommonAppDialog
+    v-model:open="backupHistoryOpen"
+    :title="t('core.settings.backupHistory')"
+    icon="i-lucide-history"
+    width="3xl"
+    :loading="backupHistoryLoading"
+  >
+    <div v-if="backupHistoryLoading" class="flex justify-center py-6">
+      <UIcon name="i-lucide-loader-circle" class="size-5 animate-spin text-primary" />
+    </div>
+    <div v-else-if="!backupHistory.length" class="py-6 text-center text-sm text-muted">
+      {{ t('core.settings.backupHistoryEmpty') }}
+    </div>
+    <ul v-else class="divide-y divide-default">
+      <li v-for="job in backupHistory" :key="job.id" class="flex flex-col gap-1 py-3 text-sm">
+        <div class="flex flex-wrap items-center gap-2">
+          <UBadge
+            :color="job.status === 'success' ? 'success' : job.status === 'failed' ? 'error' : job.status === 'partial' ? 'warning' : 'neutral'"
+            variant="soft"
+          >
+            {{ job.status }}
+          </UBadge>
+          <span class="text-highlighted">{{ formatDateTime(job.startedAt) }}</span>
+          <span class="text-muted">({{ job.trigger }})</span>
+          <span class="ms-auto text-muted">
+            {{ t('core.settings.backupHistoryCounts', { tables: `${job.tablesSucceeded}/${job.tablesTotal}`, appended: job.rowsAppended, updated: job.rowsUpdated }) }}
+          </span>
+        </div>
+        <p v-if="job.errorMessage" class="text-xs text-error">{{ job.errorMessage }}</p>
+      </li>
+    </ul>
+    <template #footer>
+      <div class="flex w-full justify-end">
+        <UButton
+          color="neutral"
+          variant="ghost"
+          :label="t('common.close')"
+          @click="backupHistoryOpen = false"
+        />
+      </div>
+    </template>
+  </CommonAppDialog>
+
+  <CommonAppDialog
+    v-model:open="backupRestoreOpen"
+    :title="t('core.settings.backupRestore')"
+    icon="i-lucide-database-backup"
+    color="error"
+    size="sm"
+    :loading="backupRestoreBusy"
+  >
+    <div class="w-full space-y-3">
+      <p class="text-sm text-muted">{{ t('core.settings.backupRestoreHelp') }}</p>
+      <UFormField :label="t('core.settings.maintenancePassword')" required>
+        <UInput
+          v-model="backupRestorePassword"
+          type="password"
+          autocomplete="current-password"
+          class="w-full"
+        />
+      </UFormField>
+      <UFormField
+        :label="t('core.settings.maintenancePhrase')"
+        :help="t('core.settings.maintenancePhraseHint', { phrase: BACKUP_RESTORE_PHRASE })"
+        required
+      >
+        <UInput v-model="backupRestorePhrase" class="w-full" />
+      </UFormField>
+    </div>
+    <template #footer>
+      <div class="flex w-full justify-end gap-2">
+        <UButton
+          color="neutral"
+          variant="ghost"
+          :label="t('common.cancel')"
+          @click="backupRestoreOpen = false"
+        />
+        <UButton
+          color="error"
+          icon="i-lucide-database-backup"
+          :loading="backupRestoreBusy"
+          :disabled="!canSubmitBackupRestore"
+          :label="t('core.settings.backupRestoreConfirm')"
+          @click="submitBackupRestore"
+        />
+      </div>
+    </template>
+  </CommonAppDialog>
 </template>

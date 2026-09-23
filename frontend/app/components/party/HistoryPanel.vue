@@ -30,8 +30,15 @@ const preferences = usePreferencesStore()
 const ledger = usePartyLedger()
 
 const canEdit = computed(() => props.kind === 'customer'
-  ? auth.canAccessPage('pos.access')
+  ? auth.canAccessPage('pos.sale_edit')
   : auth.canAccessPage('stock.in'))
+
+/** Return-all reuses the POS / Purchase return flows (reverse + restock). */
+const canReturn = computed(() => props.kind === 'customer'
+  ? auth.canAccessPage('pos.return')
+  : auth.canAccessPage('stock.in'))
+
+const showActions = computed(() => canEdit.value || canReturn.value)
 
 const rows = ref<PartyHistory[]>([])
 const loading = ref(false)
@@ -92,7 +99,7 @@ const filteredRows = computed(() => {
     .filter(row => inDateRange(row.date))
     .filter((row) => {
       if (!needle) return true
-      return [row.documentNo, row.status]
+      return [row.documentNo, row.status, row.user]
         .map(value => String(value ?? '').toLowerCase())
         .some(value => value.includes(needle))
     })
@@ -122,55 +129,77 @@ const columns = computed<TableColumn<PartyHistory & Record<string, unknown>>[]>(
       header: t('app.fields.total'),
       enableSorting: false,
       meta: { class: { td: 'text-end tabular-nums', th: 'text-end' } },
-      cell: ({ row }) => h('span', {}, money(row.original.total)) as never,
+      cell: ({ row }) => h('span', {}, money(row.original.total, row.original.currency)) as never,
     },
   ]
-  if (!supplier) {
-    base.push(
-      {
-        accessorKey: 'paidAmount',
-        header: t('app.reports.paidAmount'),
-        enableSorting: false,
-        meta: { class: { td: 'text-end tabular-nums', th: 'text-end' } },
-        cell: ({ row }) => h('span', {}, money(row.original.paidAmount)) as never,
-      },
-      {
-        accessorKey: 'debtAmount',
-        header: t('app.reports.remainingAmount'),
-        enableSorting: false,
-        meta: { class: { td: 'text-end tabular-nums font-medium', th: 'text-end' } },
-        cell: ({ row }) => h('span', {}, money(row.original.debtAmount)) as never,
-      },
-    )
-  }
-  base.push({
-    accessorKey: 'status',
-    header: t('app.fields.status'),
-    enableSorting: false,
-    cell: ({ row }) => h(UBadge, { color: 'neutral', variant: 'subtle', size: 'sm' }, () => row.original.status || '—') as never,
-  })
-  if (canEdit.value) {
+  base.push(
+    {
+      accessorKey: 'paidAmount',
+      header: t('app.reports.paidAmount'),
+      enableSorting: false,
+      meta: { class: { td: 'text-end tabular-nums', th: 'text-end' } },
+      cell: ({ row }) => h('span', {}, money(row.original.paidAmount, row.original.currency)) as never,
+    },
+    {
+      accessorKey: 'debtAmount',
+      header: t('app.reports.remainingAmount'),
+      enableSorting: false,
+      meta: { class: { td: 'text-end tabular-nums font-medium', th: 'text-end' } },
+      cell: ({ row }) => h('span', {}, money(row.original.debtAmount, row.original.currency)) as never,
+    },
+  )
+  base.push(
+    {
+      accessorKey: 'user',
+      header: t('app.fields.user'),
+      enableSorting: false,
+      cell: ({ row }) => h('span', { class: 'text-muted whitespace-nowrap' }, row.original.user || '—') as never,
+    },
+    {
+      accessorKey: 'status',
+      header: t('app.fields.status'),
+      enableSorting: false,
+      cell: ({ row }) => h(UBadge, { color: 'neutral', variant: 'subtle', size: 'sm' }, () => row.original.status || '—') as never,
+    },
+  )
+  if (showActions.value) {
     base.push(listTableRowMetaColumn<PartyHistory & Record<string, unknown>>({
       summary: '',
-      items: row => editMenu(row as PartyHistory),
+      items: row => rowMenu(row as PartyHistory),
     }))
   }
   return base
 })
 
-/** Edit reuses the original transaction screen (POS / Purchase) with the
- *  invoice loaded; saving reverse-applies the document. */
-function editMenu(row: PartyHistory): DropdownMenuItem[][] {
-  if (!canEdit.value || !row.id) return []
-  const to = props.kind === 'customer'
-    ? `/pos?editSaleId=${encodeURIComponent(row.id)}`
-    : `/reports/purchases/new?editPurchaseId=${encodeURIComponent(row.id)}&purchaseNo=${encodeURIComponent(row.documentNo)}`
-  return [[{
-    label: t('app.reports.edit'),
-    icon: 'i-lucide-pencil',
-    color: 'primary',
-    onSelect: () => { void navigateTo(to) },
-  }]]
+/** Row actions reuse the original transaction screen (POS / Purchase): Edit
+ *  loads the invoice and saving reverse-applies it; Return loads every line
+ *  into the return flow with restock enabled. */
+function rowMenu(row: PartyHistory): DropdownMenuItem[][] {
+  if (!row.id) return []
+  const items: DropdownMenuItem[] = []
+  if (canEdit.value) {
+    const to = props.kind === 'customer'
+      ? `/pos?editSaleId=${encodeURIComponent(row.id)}`
+      : `/reports/purchases/new?editPurchaseId=${encodeURIComponent(row.id)}&purchaseNo=${encodeURIComponent(row.documentNo)}`
+    items.push({
+      label: t('app.reports.edit'),
+      icon: 'i-lucide-pencil',
+      color: 'primary',
+      onSelect: () => { void navigateTo(to) },
+    })
+  }
+  if (canReturn.value) {
+    const to = props.kind === 'customer'
+      ? `/pos?returnSaleId=${encodeURIComponent(row.id)}`
+      : `/reports/purchases/new?returnPurchaseId=${encodeURIComponent(row.id)}&purchaseNo=${encodeURIComponent(row.documentNo)}`
+    items.push({
+      label: t('app.reports.returnAll'),
+      icon: 'i-lucide-undo-2',
+      color: 'warning',
+      onSelect: () => { void navigateTo(to) },
+    })
+  }
+  return items.length ? [items] : []
 }
 </script>
 

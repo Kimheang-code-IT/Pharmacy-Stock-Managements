@@ -26,9 +26,10 @@
 # 127.0.0.1-published dev ports below: PostgreSQL 55432 and Redis 56379
 # (see backend/tests/conftest.py).
 
-# Pin the Compose project name so volume/container names are stable regardless
-# of the checkout folder. Override with COMPOSE_PROJECT_NAME in `.env`.
-name: stock_pos
+# Pin the Compose project name and explicit container/volume names so they are
+# stable and friendly regardless of the checkout folder. Override the project
+# name with COMPOSE_PROJECT_NAME in `.env`.
+name: stock-management
 
 x-api-build: &api-build
   image: ${IMAGE_REGISTRY:-stock_pos}/api:${IMAGE_TAG:-local}
@@ -39,6 +40,7 @@ x-api-build: &api-build
 
 services:
   db:
+    container_name: stock-db
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
@@ -57,6 +59,7 @@ services:
       retries: 12
 
   redis:
+    container_name: stock-redis
     image: redis:7-alpine
     restart: unless-stopped
     command: redis-server --appendonly yes
@@ -73,6 +76,7 @@ services:
 
   api:
     <<: *api-build
+    container_name: stock-api
     restart: unless-stopped
     ports:
       # Loopback only: API docs / direct calls from this PC (frontend nginx
@@ -80,16 +84,18 @@ services:
       - "127.0.0.1:${API_HOST_PORT:-8100}:8000"
     volumes:
       - mediadata:/srv/data/media
+      # Private maintenance/reset snapshots — NOT under the public media root.
+      - backupdata:/srv/data/backups
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stock_pos}:${POSTGRES_PASSWORD:-stock_pos}@db:5432/${POSTGRES_DB:-stock_pos}
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-only-secret-change-me-in-production-0123456789abcdef}
       # 24-hour access token so users stay signed in through the day.
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
-      TELEGRAM_BOT_CLIENT_ID: ${TELEGRAM_BOT_CLIENT_ID:-stock-pos-telegram-bot}
-      TELEGRAM_BOT_CLIENT_SECRET: ${TELEGRAM_BOT_CLIENT_SECRET:-dev-only-telegram-secret-change-me-0123456789abcdef}
+
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       LOCAL_STORAGE_DIR: /srv/data/media
+      BACKUP_DIR: /srv/data/backups
       SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://127.0.0.1,http://localhost:80,http://127.0.0.1:80}
@@ -117,6 +123,7 @@ services:
              uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
   frontend:
+    container_name: stock-nginx
     image: ${IMAGE_REGISTRY:-stock_pos}/frontend:${IMAGE_TAG:-local}
     pull_policy: ${PULL_POLICY:-build}
     build:
@@ -142,6 +149,7 @@ services:
       retries: 5
 
   telegram-bot:
+    container_name: stock-telegram-bot
     image: ${IMAGE_REGISTRY:-stock_pos}/telegram-bot:${IMAGE_TAG:-local}
     pull_policy: ${PULL_POLICY:-build}
     build:
@@ -153,8 +161,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_BOT_MODE: ${TELEGRAM_BOT_MODE:-polling}
-      TELEGRAM_BOT_CLIENT_ID: ${TELEGRAM_BOT_CLIENT_ID:-stock-pos-telegram-bot}
-      TELEGRAM_BOT_CLIENT_SECRET: ${TELEGRAM_BOT_CLIENT_SECRET:-dev-only-telegram-secret-change-me-0123456789abcdef}
+
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost}
     depends_on:
       db:
@@ -164,7 +171,47 @@ services:
       api:
         condition: service_started
 
+  # ---------------------------------------------------------------- backups
+  # One-shot helpers, only run explicitly (profile "tools"):
+  #   docker compose --profile tools run --rm backup
+  #   docker compose --profile tools run --rm media-backup
+  # They write timestamped artifacts into ./backups (git-ignored).
+  backup:
+    image: postgres:16-alpine
+    profiles: ["tools"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER:-stock_pos}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-stock_pos}
+      PGDATABASE: ${POSTGRES_DB:-stock_pos}
+    volumes:
+      - ./backups:/backups
+    entrypoint: ["sh", "-c"]
+    # Custom-format dump (pg_restore-compatible) with a timestamped name.
+    command: >
+      'pg_dump -Fc -f "/backups/stock_pos_$(date -u +%Y%m%dT%H%M%SZ).dump" &&
+       ls -lh /backups'
+
+  media-backup:
+    image: alpine:3.20
+    profiles: ["tools"]
+    volumes:
+      - mediadata:/media:ro
+      - ./backups:/backups
+    entrypoint: ["sh", "-c"]
+    command: >
+      'tar czf "/backups/media_$(date -u +%Y%m%dT%H%M%SZ).tgz" -C /media . &&
+       ls -lh /backups'
+
 volumes:
   pgdata:
+    name: stock-pgdata
   redisdata:
+    name: stock-redisdata
   mediadata:
+    name: stock-mediadata
+  backupdata:
+    name: stock-backupdata

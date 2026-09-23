@@ -81,6 +81,18 @@ describe('frontend permission IDs match the backend catalog', () => {
     expect(unknown, `unknown permission literals:\n${unknown.join('\n')}`).toEqual([])
   })
 
+  it('exposes every POS action in the backend and the matrix mirror', () => {
+    const posCodes = [
+      'pos.access', 'pos.discount', 'pos.debt_sale', 'pos.print',
+      'pos.sale_edit', 'pos.return', 'pos.refund',
+    ]
+    for (const code of posCodes) expect(valid.has(code), code).toBe(true)
+    const frontend = new Set(allFrontendPermissionCodes())
+    for (const code of ['pos.sale_edit', 'pos.return', 'pos.refund']) {
+      expect(frontend.has(code), code).toBe(true)
+    }
+  })
+
   it('menu route guards are backend codes', () => {
     const codes = PAGE_PERMISSIONS.flatMap(page => [
       page.permission,

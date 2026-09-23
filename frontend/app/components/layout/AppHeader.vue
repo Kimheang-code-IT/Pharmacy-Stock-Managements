@@ -225,11 +225,6 @@ function onHeaderRefresh() {
           class="rounded-sm"
           @click="actions.onCreate?.()"
         />
-
-        <LayoutUserMenu
-          collapsed
-          placement="header"
-        />
       </div>
     </template>
   </UDashboardNavbar>

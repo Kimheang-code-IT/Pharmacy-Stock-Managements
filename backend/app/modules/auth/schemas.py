@@ -42,6 +42,9 @@ class UserOut(BaseModel):
     permissions: list[str] = []
     last_login_at: datetime | None = None
     avatar: str | None = None
+    # True when the account must change its password before doing anything else
+    # (admin-forced change or an expired password).
+    must_change_password: bool = False
 
 
 def auth_user_payload(user) -> dict:
@@ -63,6 +66,7 @@ def auth_user_payload(user) -> dict:
             "telegramChatId": data["telegram_chat_id"],
             "telegramName": data.get("telegram_name"),
             "effectivePermissions": list(data["permissions"]),
+            "mustChangePassword": bool(data.get("must_change_password")),
         }
     )
     return data

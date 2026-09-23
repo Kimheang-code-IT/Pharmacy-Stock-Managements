@@ -16,8 +16,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "playwright test",
-    "e2e:install": "playwright install chromium",
-    "og:image": "node scripts/generate-og-image.mjs"
+    "e2e:install": "playwright install chromium"
   },
   "dependencies": {
     "@iconify-json/lucide": "^1.2.96",
@@ -42,7 +41,6 @@
     "@nuxt/fonts": "^0.14.0",
     "@playwright/test": "^1.63.0",
     "eslint": "^10.9.0",
-    "sharp": "^0.35.4",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11",
     "vue-tsc": "^3.2.5"

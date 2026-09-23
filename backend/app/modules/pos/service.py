@@ -14,7 +14,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictError, NotFoundError, ValidationError
+from app.core.exceptions import AccessDeniedError, ConflictError, NotFoundError, ValidationError
 from app.core.permissions import user_has_permission
 from app.modules.auth.models import User
 from app.modules.customers.models import Customer, CustomerDebt
@@ -127,14 +127,14 @@ class POSService:
         if q:
             needle = q.strip()
             # Barcode is the operational identifier: an exact (indexed) match
-            # wins before name/sku fuzzy search.
+            # wins before name fuzzy search.
             exact = await self.products.get_by_barcode(needle)
             if exact is not None and exact.status == "ACTIVE":
                 rows = [exact]
             else:
                 pattern = f"%{needle}%"
                 stmt = stmt.where(
-                    Product.name.ilike(pattern) | Product.sku.ilike(pattern) | Product.barcode.ilike(pattern)
+                    Product.name.ilike(pattern) | Product.barcode.ilike(pattern)
                 )
                 rows = list((await self.session.execute(stmt)).scalars().all())
             return [await self._product_out(p) for p in rows]
@@ -213,7 +213,6 @@ class POSService:
             )
         return POSProductOut(
             id=product.id,
-            sku=product.sku,
             barcode=product.barcode,
             name=product.name,
             category_id=product.category_id,
@@ -396,7 +395,6 @@ class POSService:
             sale_id=sale.id,
             product_id=product.id,
             product_name=product.name,
-            sku=product.sku,
             barcode=product.barcode,
             uom_id=uom_id,
             uom_code=uom_code,
@@ -480,7 +478,7 @@ class POSService:
             any(item.discount_amount > 0 or item.discount_percent > 0 for item in payload.items)
             or (payload.discount or Decimal("0")) > 0
         ) and not discount_allowed:
-            raise ConflictError("You do not have permission to apply discounts")
+            raise AccessDeniedError("You do not have permission to apply discounts")
 
         customer = await self._resolve_customer(payload)
         products: dict[uuid.UUID, Product] = {}
@@ -606,6 +604,9 @@ class POSService:
         paid_for_sale = max(Decimal("0.00"), min(_q2(payload.amount_received), sale.grand_total))
         debt_amount = sale.grand_total - paid_for_sale
 
+        if debt_amount > 0 and not user_has_permission(actor, "pos.debt_sale"):
+            raise AccessDeniedError("You do not have permission to create a debt sale")
+
         debt: CustomerDebt | None = None
         change_amount = Decimal("0.00")
         if debt_amount > 0 and customer.is_walk_in:
@@ -711,7 +712,7 @@ class POSService:
             any(item.discount_amount > 0 or item.discount_percent > 0 for item in payload.items)
             or (payload.discount or Decimal("0")) > 0
         ) and not discount_allowed:
-            raise ConflictError("You do not have permission to apply discounts")
+            raise AccessDeniedError("You do not have permission to apply discounts")
 
         result = await self.session.execute(
             select(Sale).where(Sale.id == sale_id).with_for_update()
@@ -909,10 +910,12 @@ class POSService:
         reference_no,
         actor,
         customer_debt_id=None,
+        sale_return_id=None,
     ) -> Payment:
         payment = Payment(
             payment_no=payment_no,
             sale_id=sale_id,
+            sale_return_id=sale_return_id,
             customer_id=customer_id,
             customer_debt_id=customer_debt_id,
             payment_type=payment_type,
@@ -1014,7 +1017,6 @@ class POSService:
                 {
                     "id": item.id,
                     "name": item.product_name,
-                    "sku": item.sku,
                     "barcode": item.barcode,
                     "uom": item.uom_symbol,
                     "uom_symbol": item.uom_symbol,
@@ -1130,13 +1132,48 @@ class POSService:
                     field_errors={"items": "Return quantity exceeds remaining"},
                 )
 
+        # The sale-level (header) discount is not stored on the lines, so spread
+        # it over the lines in proportion to line_total. A refund then never
+        # exceeds what was actually paid for the returned units.
+        sum_line_totals = sum((Decimal(item.line_total) for item in sale.items), Decimal("0.00"))
+        sum_line_discounts = sum((Decimal(item.discount_amount) for item in sale.items), Decimal("0.00"))
+        header_discount = max(Decimal("0.00"), Decimal(sale.discount_amount) - sum_line_discounts)
+
+        def effective_line_amount(sale_item: SaleItem) -> Decimal:
+            line_total = Decimal(sale_item.line_total)
+            if sum_line_totals > 0 and header_discount > 0:
+                share = (header_discount * line_total / sum_line_totals).quantize(
+                    TWO, rounding=ROUND_HALF_UP
+                )
+                return max(Decimal("0.00"), line_total - share)
+            return line_total
+
+        # Cumulative guard: prior non-void refunds on this sale can never let the
+        # total refunded exceed the goods revenue (grand total minus delivery).
+        prior = await self.session.execute(
+            select(func.coalesce(func.sum(SaleReturn.refund_amount), 0)).where(
+                SaleReturn.sale_id == sale.id, SaleReturn.status != "VOID"
+            )
+        )
+        already_refunded = Decimal(prior.scalar_one() or 0)
+        goods_revenue = max(
+            Decimal("0.00"), Decimal(sale.grand_total) - Decimal(sale.delivery_price or 0)
+        )
+        remaining_refundable = max(Decimal("0.00"), goods_revenue - already_refunded)
+
         return_no = await allocate_document_number(self.session, "SALE_RETURN")
+        now = datetime.now(timezone.utc)
         sale_return = SaleReturn(
             return_no=return_no,
             sale_id=sale.id,
-            return_date=payload.return_date or datetime.now(timezone.utc),
+            return_date=payload.return_date or now,
             refund_amount=Decimal("0.00"),
             reason=payload.reason,
+            status="COMPLETED",
+            currency=sale.currency,
+            exchange_rate=sale.exchange_rate,
+            processed_by=actor.id,
+            processed_at=now,
             created_by=actor.id,
         )
         self.session.add(sale_return)
@@ -1146,7 +1183,7 @@ class POSService:
         out_items: list[SaleReturnItem] = []
         for return_item in payload.items:
             sale_item = items_by_id[return_item.sale_item_id]
-            refund = _q2(sale_item.line_total * return_item.quantity / sale_item.quantity)
+            refund = _q2(effective_line_amount(sale_item) * return_item.quantity / sale_item.quantity)
             row = SaleReturnItem(
                 sale_return_id=sale_return.id,
                 sale_item_id=sale_item.id,
@@ -1188,16 +1225,85 @@ class POSService:
             refund_total += refund
         sale_return.refund_amount = _q2(refund_total)
 
-        # A returned sale reduces what the customer still owes.
+        if sale_return.refund_amount > remaining_refundable:
+            raise ValidationError(
+                f"Refund exceeds the remaining refundable amount ({remaining_refundable})",
+                field_errors={"items": "Refund exceeds refundable amount"},
+            )
+
+        # Lock the debt row: concurrent returns/edits must serialize.
         debt_result = await self.session.execute(
             select(CustomerDebt).where(CustomerDebt.sale_id == sale.id).with_for_update()
         )
         debt = debt_result.scalar_one_or_none()
-        if debt is not None and debt.remaining_amount > 0:
-            reduction = min(sale_return.refund_amount, debt.remaining_amount)
-            debt.remaining_amount = debt.remaining_amount - reduction
-            debt.paid_amount = debt.original_amount - debt.remaining_amount
-            debt.status = "PAID" if debt.remaining_amount == 0 else "PARTIAL"
+
+        disposition = (payload.refund_disposition or "").strip().upper() or None
+        debt_reduction = Decimal("0.00")
+        paid = Decimal("0.00")
+        credit = Decimal("0.00")
+        method: str | None = None
+        effective_disposition = disposition or "DEBT_REDUCTION"
+
+        if disposition == "NO_REFUND":
+            # Explicit no-refund: no debt relief and no payout.
+            effective_disposition = "NO_REFUND"
+        else:
+            # A credit sale return always reduces outstanding debt first.
+            if debt is not None and Decimal(debt.remaining_amount) > 0:
+                debt_reduction = min(sale_return.refund_amount, Decimal(debt.remaining_amount))
+                debt.remaining_amount = Decimal(debt.remaining_amount) - debt_reduction
+                debt.paid_amount = Decimal(debt.original_amount) - Decimal(debt.remaining_amount)
+                debt.status = "PAID" if Decimal(debt.remaining_amount) == 0 else "PARTIAL"
+            excess = _q2(sale_return.refund_amount - debt_reduction)
+            if disposition is None:
+                # Legacy default: debt reduction when fully covered, otherwise a
+                # cash refund of the excess.
+                target = "DEBT_REDUCTION" if excess == 0 else "CASH_REFUND"
+            else:
+                target = disposition
+                if target == "DEBT_REDUCTION" and excess > 0:
+                    raise ValidationError(
+                        "Return exceeds the remaining customer debt; choose a refund "
+                        "disposition for the excess",
+                        field_errors={"refund_disposition": "Excess requires a refund disposition"},
+                    )
+            if target in ("CASH_REFUND", "BANK_QR_REFUND"):
+                paid = excess
+                method = "CASH" if target == "CASH_REFUND" else "BANK_QR"
+            elif target in ("STORE_CREDIT", "CUSTOMER_CREDIT"):
+                credit = excess
+                method = "CREDIT"
+            # Record what actually happened: a monetary/credit disposition with
+            # no excess was fully absorbed by the debt.
+            if excess == 0 and target != "DEBT_REDUCTION":
+                effective_disposition = "DEBT_REDUCTION"
+            else:
+                effective_disposition = target
+            if paid > 0 and not user_has_permission(actor, "pos.refund"):
+                raise AccessDeniedError("You do not have permission to issue a monetary refund")
+
+        sale_return.refund_disposition = effective_disposition
+        sale_return.refund_method = method
+        sale_return.refund_paid_amount = _q2(paid)
+        sale_return.credit_amount = _q2(credit)
+        sale_return.debt_reduction = _q2(debt_reduction)
+        sale_return.refund_reference = payload.refund_reference
+        sale_return.refund_note = payload.refund_note
+
+        if paid > 0:
+            # Cash/bank refund is a real cash-out ledger entry (never counted as
+            # income). Debt reductions and store credits create no cash movement.
+            await self._create_payment(
+                payment_no=await allocate_document_number(self.session, "SALE_REFUND"),
+                sale_id=sale.id,
+                customer_id=sale.customer_id,
+                payment_type="SALE_REFUND",
+                payment_method=method or "CASH",
+                amount=paid,
+                reference_no=payload.refund_reference or return_no,
+                actor=actor,
+                sale_return_id=sale_return.id,
+            )
 
         fully_returned = all(
             item.returned_quantity >= item.quantity for item in sale.items
@@ -1215,6 +1321,10 @@ class POSService:
                 "return_no": return_no,
                 "invoice_no": sale.invoice_no,
                 "refund_amount": str(sale_return.refund_amount),
+                "refund_disposition": effective_disposition,
+                "refund_paid_amount": str(sale_return.refund_paid_amount),
+                "debt_reduction": str(sale_return.debt_reduction),
+                "credit_amount": str(sale_return.credit_amount),
             },
         )
         await self.session.commit()
@@ -1227,6 +1337,18 @@ class POSService:
             return_date=sale_return.return_date,
             refund_amount=sale_return.refund_amount,
             reason=sale_return.reason,
+            status=sale_return.status,
+            refund_disposition=sale_return.refund_disposition,
+            refund_method=sale_return.refund_method,
+            refund_paid_amount=sale_return.refund_paid_amount,
+            credit_amount=sale_return.credit_amount,
+            debt_reduction=sale_return.debt_reduction,
+            refund_reference=sale_return.refund_reference,
+            refund_note=sale_return.refund_note,
+            processed_by=sale_return.processed_by,
+            processed_at=sale_return.processed_at,
+            currency=sale_return.currency,
+            exchange_rate=sale_return.exchange_rate,
             items=[
                 SaleReturnItemOut(
                     id=row.id,

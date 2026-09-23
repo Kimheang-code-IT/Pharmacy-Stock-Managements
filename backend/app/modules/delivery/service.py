@@ -175,7 +175,6 @@ class DeliveryNoteService:
                     sale_item_id=sale_item.id,
                     product_id=sale_item.product_id,
                     product_name=sale_item.product_name,
-                    sku=sale_item.sku,
                     uom_symbol=sale_item.uom_symbol,
                     qty_ordered=ordered,
                     qty_returned=_q4(sale_item.returned_quantity),

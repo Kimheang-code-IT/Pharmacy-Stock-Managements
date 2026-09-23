@@ -186,7 +186,9 @@ async def test_purchase_return_cannot_exceed_available_stock(client):
         },
         headers=headers,
     )
-    assert response.status_code == 409, response.text
+    # Capped at the in-stock quantity: a clear validation error, not a raw 409.
+    assert response.status_code == 422, response.text
+    assert "in stock" in response.json()["detail"]["message"].lower()
     assert await _balance(client, headers, product["id"]) == Decimal("2.0000")
 
 
@@ -303,8 +305,7 @@ async def test_purchase_return_rolls_back_when_any_line_fails(client, db_session
     line_a, line_b = stock_in["items"][0], stock_in["items"][1]
 
     # Product B's stock is drained via POS so its line still has returnable
-    # qty but the PURCHASE_RETURN movement will fail — after line A has
-    # already mutated stock.
+    # qty but nothing left in stock; the whole return is rejected up front.
     sale = await client.post(
         "/api/v1/pos/sales",
         json={
@@ -327,7 +328,7 @@ async def test_purchase_return_rolls_back_when_any_line_fails(client, db_session
         },
         headers=headers,
     )
-    assert response.status_code == 409, response.text
+    assert response.status_code == 422, response.text
 
     # Nothing persisted: no return document, no movement, no balance change.
     returns = (

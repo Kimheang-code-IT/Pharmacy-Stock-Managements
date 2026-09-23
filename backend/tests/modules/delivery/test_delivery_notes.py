@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 
 from tests.modules.pos.helpers import balance_of, make_customer, make_stocked_product
-from tests.utils import admin_headers, create_user_with_role, login
+from tests.utils import admin_headers, create_user_with_role, deactivate_then_delete, login
 
 
 async def _sale_two_lines(client, headers, tag: str):
@@ -589,3 +589,64 @@ async def test_delivery_note_requires_completed_sale(client):
     )
     # A fully returned sale (RETURNED status) cannot produce delivery notes.
     assert fully_returned.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_history_reads_survive_product_hard_delete(client):
+    """Hard-deleting a product nulls `product_id` on its history rows
+    (sale_items / delivery_note_items / stock_movements). Readers must still
+    serialize instead of failing pydantic validation with a 500."""
+    headers = await admin_headers(client)
+    tag = uuid.uuid4().hex[:6]
+    product = await make_stocked_product(client, headers, sku=f"DNP-{tag}", name=f"Delete Me {tag}", qty="5")
+    customer = await make_customer(client, headers, code=f"DN-DEL-{tag}", name=f"Delete Cust {tag}")
+    sale = await client.post(
+        "/api/v1/pos/sales",
+        json={
+            "payment_method": "CASH",
+            "amount_received": "100.00",
+            "customer_id": customer["id"],
+            "items": [{"product_id": product["id"], "quantity": "2"}],
+        },
+        headers=headers,
+    )
+    assert sale.status_code == 201, sale.text
+    sale_data = sale.json()["data"]
+    line = sale_data["items"][0]
+
+    created = await client.post(
+        "/api/v1/delivery",
+        json={"lines": [{"saleId": sale_data["id"], "saleItemId": line["id"], "qtyToDeliver": "1"}]},
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    note = created.json()["data"]
+
+    deleted = await deactivate_then_delete(client, headers, f"/api/v1/products/{product['id']}")
+    assert deleted.status_code in (200, 204), deleted.text
+
+    # Delivery note detail: the line keeps its name snapshot and a null product_id.
+    detail = await client.get(f"/api/v1/delivery/{note['id']}", headers=headers)
+    assert detail.status_code == 200, detail.text
+    item = detail.json()["data"]["items"][0]
+    assert item["product_id"] is None
+    assert item["product_name"] == product["name"]
+
+    # Sale detail line.
+    sale_read = await client.get(f"/api/v1/pos/sales/{sale_data['id']}", headers=headers)
+    assert sale_read.status_code == 200, sale_read.text
+    assert sale_read.json()["data"]["items"][0]["product_id"] is None
+
+    # Deliverable items (create form).
+    deliverable = await client.get(f"/api/v1/sales/{sale_data['id']}/deliverable-items", headers=headers)
+    assert deliverable.status_code == 200, deliverable.text
+    assert deliverable.json()["data"]["items"][0]["product_id"] is None
+
+    # Movement ledger row (filtered to this sale's document).
+    movements = await client.get(
+        f"/api/v1/stock/movements?q={sale_data['invoice_no']}", headers=headers
+    )
+    assert movements.status_code == 200, movements.text
+    sale_movements = [m for m in movements.json()["data"] if m["movement_type"] == "SALE"]
+    assert sale_movements, "expected the sale movement in the ledger"
+    assert sale_movements[0]["product_id"] is None

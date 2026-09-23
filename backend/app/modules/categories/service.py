@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ConflictError, NotFoundError
 from app.modules.categories.models import Category
 from app.modules.categories.repository import CategoryRepository
+from app.shared.audit.service import record_audit
 from app.shared.lifecycle import assert_inactive_for_delete
 
 
@@ -35,11 +36,20 @@ class CategoryService:
         )
         self.repo.add(category)
         await self.repo.flush()
+        await record_audit(
+            self.session,
+            action="category_created",
+            module="categories",
+            entity_type="category",
+            entity_id=category.id,
+            new_values={"code": category.code, "name": category.name, "status": category.status},
+        )
         await self.session.commit()
         return category
 
     async def update(self, category_id: uuid.UUID, payload) -> Category:
         category = await self.get(category_id)
+        old = {"code": category.code, "name": category.name, "status": category.status}
         if payload.code is not None:
             code = payload.code.strip()
             if code and code != category.code:
@@ -53,6 +63,15 @@ class CategoryService:
         if payload.status is not None:
             category.status = payload.status
         await self.repo.flush()
+        await record_audit(
+            self.session,
+            action="category_updated",
+            module="categories",
+            entity_type="category",
+            entity_id=category.id,
+            old_values=old,
+            new_values={"code": category.code, "name": category.name, "status": category.status},
+        )
         await self.session.commit()
         return category
 
@@ -64,5 +83,14 @@ class CategoryService:
                 "Cannot delete this category because products reference it. "
                 "Deactivate it instead."
             )
+        snapshot = {"code": category.code, "name": category.name}
         await self.session.delete(category)
+        await record_audit(
+            self.session,
+            action="category_deleted",
+            module="categories",
+            entity_type="category",
+            entity_id=category.id,
+            old_values=snapshot,
+        )
         await self.session.commit()

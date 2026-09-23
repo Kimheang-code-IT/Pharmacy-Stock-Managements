@@ -168,10 +168,7 @@ function adaptProductOut(row: Record<string, unknown>): Record<string, unknown> 
   return {
     ...row,
     id: asRecordId(row.id),
-    code: row.code ?? row.sku ?? '',
-    sku: row.sku ?? row.code ?? '',
     categoryId: asRecordId(row.categoryId ?? row.category_id) || null,
-    brandId: asRecordId(row.brandId ?? row.brand_id) || null,
     uomId: asRecordId(row.uomId ?? row.uom_id) || null,
     supplierId: asRecordId(row.supplierId ?? row.supplier_id) || null,
     category: row.category ?? row.category_name ?? '',
@@ -259,24 +256,15 @@ function adaptUomConversionsOut(value: unknown): Array<Record<string, unknown>> 
 
 /**
  * Product create/update payload: UI camelCase → ProductCreate/ProductUpdate.
- * Only present keys are forwarded (PATCH is partial). SKU is generated when
- * the UI did not capture one (backend requires a unique sku).
+ * Only present keys are forwarded (PATCH is partial).
  */
 function adaptProductIn(input: Record<string, unknown>): Record<string, unknown> {
   const output: Record<string, unknown> = {}
   const text = (value: unknown): string => String(value ?? '').trim()
-  const sku = text(input.sku ?? input.code)
-  if (sku) output.sku = sku
-  else if (input.id == null && (input.name != null || input.barcode != null)) {
-    // Unique-enough fallback: normalized name + timestamp (server re-checks).
-    const base = (text(input.name) || text(input.barcode) || 'PRD')
-      .toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
-    output.sku = `${base || 'PRD'}-${Date.now().toString(36).toUpperCase()}`
-  }
   if (input.name != null) output.name = text(input.name)
   if (input.barcode != null) output.barcode = text(input.barcode) || null
   if (input.categoryId != null) output.category_id = asRecordId(input.categoryId) || null
-  if (input.brandId != null) output.brand_id = asRecordId(input.brandId) || null
+  if (input.brand != null) output.brand = text(input.brand) || null
   if (input.uomId != null) output.uom_id = asRecordId(input.uomId) || null
   if (input.supplierId != null) output.supplier_id = asRecordId(input.supplierId) || null
   if (input.costPrice != null) output.cost_price = Number(input.costPrice)
@@ -348,7 +336,7 @@ function adaptEntityOut(collection: ApiCollection, row: Record<string, unknown>)
   if (collection === 'roles') return adaptRoleOut(row)
   if (collection === 'auditLogs') return adaptAuditLogOut(row)
   if (collection === 'products') return adaptProductOut(row)
-  if (collection === 'categories' || collection === 'uoms' || collection === 'brands') {
+  if (collection === 'categories' || collection === 'uoms') {
     return { ...row, status: statusToUiDialect(row.status) }
   }
   if (collection === 'customers' || collection === 'suppliers') return adaptPartyLocationOut(row)
@@ -674,6 +662,8 @@ function adaptSalesReportLine(row: Record<string, unknown>): Record<string, unkn
     debtAmount: q2(row.debt_amount ?? row.debtAmount),
     paymentMethod: String(row.payment_method ?? row.paymentMethod ?? ''),
     cashier: String(row.cashier_name ?? row.cashier ?? ''),
+    // Staff user who created the sale (audit tracking column/filter).
+    user: String(row.cashier_name ?? row.cashier ?? row.user ?? ''),
     // Saved sale header (repeated per line): authoritative checkout values so
     // the report never recomputes from current prices.
     saleSubtotal: q2(row.subtotal ?? row.saleSubtotal),
@@ -734,6 +724,7 @@ function groupSalesReportRows(rows: Record<string, unknown>[]): AppRecord[] {
         paymentStatus: line.paymentStatus,
         paymentMethod: '',
         cashier: '',
+        user: '',
       }
       bySale.set(key, doc)
     }
@@ -760,6 +751,7 @@ function groupSalesReportRows(rows: Record<string, unknown>[]): AppRecord[] {
     // Header fields repeat per line — take the first non-empty value.
     if (!doc.paymentMethod && line.paymentMethod) doc.paymentMethod = String(line.paymentMethod)
     if (!doc.cashier && line.cashier) doc.cashier = line.cashier
+    if (!doc.user && line.user) doc.user = line.user
     if (!doc.note && line.note) doc.note = line.note
     if (!doc.dueDate && line.dueDate) doc.dueDate = line.dueDate
     if (!doc.paymentStatus && line.paymentStatus) doc.paymentStatus = line.paymentStatus
@@ -823,6 +815,8 @@ function adaptPurchaseReportLine(row: Record<string, unknown>): Record<string, u
     quantity: q4(row.quantity),
     returnedQuantity: q4(row.returned_quantity ?? row.returnedQuantity),
     returnableQuantity: q4(row.returnable_quantity ?? row.returnableQuantity),
+    // Quantity still physically in stock for this line's lot.
+    availableQuantity: q4(row.available_quantity ?? row.availableQuantity),
     price: q2(row.cost_price ?? row.costPrice),
     total: q2(row.total_cost ?? row.totalCost),
     remaining: q2(row.remaining_debt ?? row.remainingDebt),
@@ -835,6 +829,8 @@ function adaptPurchaseReportLine(row: Record<string, unknown>): Record<string, u
     tax: q2(row.tax_amount ?? row.taxAmount),
     // Tender recorded for the stock-in (Purchase Report Payment Method).
     paymentMethod: String(row.payment_method ?? row.paymentMethod ?? ''),
+    // Staff user who created the stock-in (audit tracking column/filter).
+    user: String(row.created_by_name ?? row.user ?? ''),
   }
 }
 
@@ -870,6 +866,7 @@ function groupPurchaseReportRows(rows: Record<string, unknown>[]): AppRecord[] {
         discount: line.discount,
         tax: line.tax,
         paymentMethod: line.paymentMethod,
+        user: line.user,
       }
       byTx.set(key, doc)
     }
@@ -885,6 +882,7 @@ function groupPurchaseReportRows(rows: Record<string, unknown>[]): AppRecord[] {
       quantity: line.quantity,
       returnedQuantity: line.returnedQuantity,
       returnableQuantity: line.returnableQuantity,
+      availableQuantity: line.availableQuantity,
       price: line.price,
       total: line.total,
     })
@@ -893,6 +891,7 @@ function groupPurchaseReportRows(rows: Record<string, unknown>[]): AppRecord[] {
     doc.remaining = Math.max(Number(doc.remaining), Number(line.remaining))
     if (!doc.supplier && line.supplier) doc.supplier = line.supplier
     if (!doc.paymentMethod && line.paymentMethod) doc.paymentMethod = line.paymentMethod
+    if (!doc.user && line.user) doc.user = line.user
   }
   return [...byTx.values()].map((doc) => {
     doc.paidAmount = q2(Number(doc.total) - Number(doc.remaining))
@@ -1243,6 +1242,11 @@ export function createHttpPosCommandRepository(): PosCommandRepository {
           quantity: line.quantity,
           restock: line.restock,
         })),
+        // Explicit refund settlement so the backend never invents a cash
+        // refund the cashier did not choose.
+        ...(input.refundDisposition ? { refund_disposition: input.refundDisposition } : {}),
+        ...(input.refundNote ? { refund_note: input.refundNote } : {}),
+        ...(input.refundReference ? { refund_reference: input.refundReference } : {}),
       },
     )) as AppRecord
   }
@@ -1698,11 +1702,41 @@ export function createHttpFinanceRepository(): FinanceRepository {
           cancelPrevious: true,
         }))
       }
+      const num = (value: unknown) => Number(value ?? 0)
+      const plRaw = (data.profit_and_loss ?? null) as Record<string, unknown> | null
+      const cfRaw = (data.cash_flow ?? null) as Record<string, unknown> | null
       return {
-        income: Number(data.income ?? data.total_income ?? 0),
-        expense: Number(data.expense ?? data.total_expense ?? 0),
-        net: Number(data.net ?? data.net_result ?? 0),
-        outstanding: Number(data.outstanding ?? data.outstanding_debt ?? 0),
+        income: num(data.income ?? data.total_income),
+        expense: num(data.expense ?? data.total_expense),
+        net: num(data.net ?? data.net_result),
+        outstanding: num(data.outstanding ?? data.outstanding_debt),
+        reportCurrency: String(data.report_currency ?? 'USD'),
+        profitAndLoss: plRaw
+          ? {
+              grossSales: num(plRaw.gross_sales),
+              saleReturns: num(plRaw.sale_returns),
+              netSales: num(plRaw.net_sales),
+              costOfGoodsSold: num(plRaw.cost_of_goods_sold),
+              grossProfit: num(plRaw.gross_profit),
+              operatingExpenses: num(plRaw.operating_expenses),
+              stockDamageLoss: num(plRaw.stock_damage_loss),
+              stockExpireLoss: num(plRaw.stock_expire_loss),
+              operatingProfit: num(plRaw.operating_profit),
+            }
+          : null,
+        cashFlow: cfRaw
+          ? {
+              saleReceipts: num(cfRaw.sale_receipts),
+              debtCollections: num(cfRaw.debt_collections),
+              supplierRefundsReceived: num(cfRaw.supplier_refunds_received),
+              totalInflow: num(cfRaw.total_inflow),
+              supplierPayments: num(cfRaw.supplier_payments),
+              customerRefundsPaid: num(cfRaw.customer_refunds_paid),
+              operatingExpenses: num(cfRaw.operating_expenses),
+              totalOutflow: num(cfRaw.total_outflow),
+              netCashFlow: num(cfRaw.net_cash_flow),
+            }
+          : null,
         startDate: (data.startDate ?? data.start_date ?? startDate) ? String(data.startDate ?? data.start_date ?? startDate).slice(0, 10) : null,
         endDate: (data.endDate ?? data.end_date ?? endDate) ? String(data.endDate ?? data.end_date ?? endDate).slice(0, 10) : null,
       }

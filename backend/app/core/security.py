@@ -87,6 +87,27 @@ def decode_token(token: str, expected_type: str | None = None) -> dict[str, Any]
     return payload
 
 
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 128
+
+
+def validate_password_strength(password: str) -> None:
+    """Enforce the strong password policy (raises ValueError on failure).
+
+    Minimum 8 characters with at least one letter and one digit. Kept simple
+    and locale-friendly so Khmer/romanized passwords are accepted.
+    """
+    value = password or ""
+    if len(value) < PASSWORD_MIN_LENGTH:
+        raise ValueError(f"Password must be at least {PASSWORD_MIN_LENGTH} characters")
+    if len(value) > PASSWORD_MAX_LENGTH:
+        raise ValueError(f"Password must be at most {PASSWORD_MAX_LENGTH} characters")
+    if not any(character.isalpha() for character in value):
+        raise ValueError("Password must contain at least one letter")
+    if not any(character.isdigit() for character in value):
+        raise ValueError("Password must contain at least one digit")
+
+
 def hash_password(password: str) -> str:
     from argon2 import PasswordHasher
 

@@ -117,34 +117,6 @@ export const stockModules: ModuleConfig[] = [
     ],
   }),
   createModule({
-    path: '/setup/brands',
-    title: 'Brands',
-    singular: 'Brand',
-    description: 'Product brands used to group stock items by manufacturer.',
-    icon: 'i-lucide-award',
-    group: 'master',
-    permission: 'brand.view',
-    actionPermissions: { create: 'brand.create', edit: 'brand.update', delete: 'brand.delete' },
-    collection: 'brands',
-    titleField: 'name',
-    columns: [
-      col('code', 'Code'),
-      col('name', 'Name'),
-      col('description', 'Description'),
-      col('productCount', 'Products'),
-      col('status', 'Status'),
-    ],
-    fields: [
-      f('name', 'Brand Name', 'General Information', 'text', undefined, { required: true }),
-      f('code', 'Code', 'General Information', 'text', undefined, { required: true, help: 'Unique short code for this record.' }),
-      f('description', 'Description', 'General Information', 'textarea', undefined, { colSpan: 2 }),
-      f('status', 'Status', 'Status', 'select', ACTIVE_INACTIVE, { required: true }),
-    ],
-    filters: [
-      f('status', 'Status', '', 'select', ACTIVE_INACTIVE),
-    ],
-  }),
-  createModule({
     path: '/stock/products',
     title: 'Stock',
     singular: 'Product',
@@ -172,7 +144,7 @@ export const stockModules: ModuleConfig[] = [
       f('name', 'Product Name', 'General Information', 'text', undefined, { required: true, labelKey: 'app.modules.products.fields.name' }),
       f('categoryId', 'Category', 'General Information', 'select', undefined, { required: true, optionsCollection: 'categories' }),
       f('imageUrl', 'Image', 'General Information', 'image'),
-      f('brandId', 'Brand', 'General Information', 'select', undefined, { optionsCollection: 'brands' }),
+      f('brand', 'Brand', 'General Information', 'text', undefined, { labelKm: 'ម៉ាក' }),
       f('barcode', 'Barcode', 'General Information', 'text', undefined, { hideOnCreate: true, help: 'Generated automatically. Shown once the product is saved.' }),
       f('uomId', 'Unit of Measure', 'General Information', 'select', undefined, { required: true, optionsCollection: 'uoms' }),
       f('supplierId', 'Supplier', 'General Information', 'select', undefined, { optionsCollection: 'suppliers' }),
@@ -272,6 +244,7 @@ export const stockModules: ModuleConfig[] = [
       col('paidAmount', 'Paid Amount'),
       col('remainingAmount', 'Remaining'),
       col('paymentMethodLabel', 'Payment Method'),
+      col('user', 'User'),
       col('status', 'Status'),
     ],
     fields: [
@@ -284,6 +257,7 @@ export const stockModules: ModuleConfig[] = [
     filters: [
       f('status', 'Status', '', 'select', SALE_STATUS),
       f('paymentMethod', 'Payment Method', '', 'select', SALE_PAYMENT_METHODS),
+      f('user', 'User', '', 'select'),
     ],
   }),
   createModule({
@@ -311,6 +285,7 @@ export const stockModules: ModuleConfig[] = [
       col('paidAmount', 'Paid'),
       col('remaining', 'Remaining'),
       col('paymentMethodLabel', 'Payment Method'),
+      col('user', 'User'),
       col('status', 'Status'),
     ],
     fields: [
@@ -322,6 +297,7 @@ export const stockModules: ModuleConfig[] = [
     filters: [
       f('supplier', 'Supplier', '', 'select'),
       f('status', 'Status', '', 'select', ['Completed', 'Partial']),
+      f('user', 'User', '', 'select'),
     ],
   }),
   createModule({

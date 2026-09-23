@@ -117,4 +117,28 @@ describe('Purchase return mode lines', () => {
   it('reports no returnable lines when everything was already returned', () => {
     expect(documentHasReturnableLines({ items: [{ quantity: 2, returnedQuantity: 2 }] } as unknown as AppRecord)).toBe(false)
   })
+
+  it('caps the return at the quantity still in stock', () => {
+    const partlySold = {
+      ...doc,
+      items: [
+        { id: 'line1', productId: 'p1', name: 'Paracetamol', batchNo: 'B-1', expiryDate: '2027-01-01', quantity: 10, returnedQuantity: 4, returnableQuantity: 6, availableQuantity: 2, price: 2 },
+      ],
+    } as unknown as AppRecord
+    const lines = buildPurchaseReturnLines(partlySold, new Map([['p1', product()]]))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]!.quantity).toBe(2)
+    expect(lines[0]!.returnableQuantity).toBe(2)
+    expect(lines[0]!.amount).toBe(4)
+  })
+
+  it('drops a line whose stock was fully sold', () => {
+    const soldOut = {
+      ...doc,
+      items: [
+        { id: 'line1', productId: 'p1', name: 'Paracetamol', quantity: 10, returnedQuantity: 0, returnableQuantity: 10, availableQuantity: 0, price: 2 },
+      ],
+    } as unknown as AppRecord
+    expect(buildPurchaseReturnLines(soldOut, new Map())).toHaveLength(0)
+  })
 })

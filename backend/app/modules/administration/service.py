@@ -71,6 +71,21 @@ SETTING_GROUPS: dict[str, dict[str, object]] = {
         "number_format": "1,234.56",
         "display_locale": "en-US",
     },
+    "backup": {
+        "enabled": False,
+        "sheet_id": "",
+        "service_account_json": "",
+        "frequency_hours": 24,
+        "backup_new_records": True,
+        "backup_changed_records": True,
+        "auto_retry": True,
+        "retry_attempts": 3,
+        "telegram_notify": True,
+        "last_success_at": "",
+        "next_run_at": "",
+        "last_job_status": "",
+        "last_error": "",
+    },
     "security": {
         "max_login_attempts": 5,
         "account_lock_minutes": 15,
@@ -84,7 +99,7 @@ SETTING_GROUPS: dict[str, dict[str, object]] = {
     },
 }
 
-SECRET_SETTING_KEYS = frozenset({"telegram.bot_token"})
+SECRET_SETTING_KEYS = frozenset({"telegram.bot_token", "backup.service_account_json"})
 _MASK = "********"
 
 
@@ -128,7 +143,12 @@ class AdministrationService:
             raise ValidationError("Selected role does not exist or is inactive", field_errors={"role_id": "Invalid role"})
         self._assert_privileged_role_allowed(actor, role)
 
-        from app.core.security import hash_password
+        from app.core.security import hash_password, utcnow, validate_password_strength
+
+        try:
+            validate_password_strength(payload.password)
+        except ValueError as exc:
+            raise ValidationError(str(exc), field_errors={"password": str(exc)})
 
         # A Chat ID entered by an administrator is trusted, so it is marked
         # verified and immediately eligible for notifications/reset codes.
@@ -142,6 +162,7 @@ class AdministrationService:
             telegram_verified=bool(chat_id),
             role_id=role.id,
             status=payload.status,
+            password_changed_at=utcnow(),
         )
         self.session.add(user)
         await self.session.flush()
@@ -208,10 +229,14 @@ class AdministrationService:
             if user.id == actor.id or await self._is_last_active_admin(user):
                 raise ConflictError("Cannot change the role of the last active administrator")
             user.role_id = role.id
+            # Invalidate existing sessions: a role change must take effect
+            # immediately, not on the next token refresh.
+            user.token_version = (user.token_version or 0) + 1
             # Keep the loaded relationship in sync so serialization does not
             # return the previous role name.
             user.role_ref = role
             changes["role_id"] = str(role.id)
+            changes["sessions_invalidated"] = True
 
         if changes:
             await record_audit(
@@ -237,9 +262,20 @@ class AdministrationService:
             and not user_has_permission(actor, "role.update")
         ):
             raise AccessDeniedError("Resetting an Administrator password requires role.update")
-        from app.core.security import hash_password
+        from app.core.security import hash_password, utcnow, validate_password_strength
+
+        try:
+            validate_password_strength(new_password)
+        except ValueError as exc:
+            raise ValidationError(str(exc), field_errors={"new_password": str(exc)})
 
         user.password_hash = hash_password(new_password)
+        user.password_changed_at = utcnow()
+        # An administrator-issued reset forces the user to choose their own
+        # password at next login.
+        user.must_change_password = True
+        user.failed_login_attempts = 0
+        user.locked_until = None
         user.token_version = (user.token_version or 0) + 1
         await self.session.flush()
         await record_audit(
@@ -249,6 +285,7 @@ class AdministrationService:
             user_id=actor.id,
             entity_type="user",
             entity_id=user.id,
+            new_values={"must_change_password": True, "sessions_invalidated": True},
         )
         await self.session.commit()
 
@@ -409,10 +446,17 @@ class AdministrationService:
         await self.session.refresh(sequence)
         return sequence
 
-    async def update_sequence(self, sequence_id: UUID, payload) -> DocumentSequence:
+    async def update_sequence(self, sequence_id: UUID, payload, *, actor: User | None = None) -> DocumentSequence:
         sequence = await self.session.get(DocumentSequence, sequence_id)
         if sequence is None:
             raise NotFoundError("Document sequence not found")
+        old = {
+            "prefix": sequence.prefix,
+            "next_number": sequence.next_number,
+            "number_length": sequence.number_length,
+            "reset_type": sequence.reset_type,
+            "status": sequence.status,
+        }
         if payload.prefix is not None:
             sequence.prefix = payload.prefix.strip()
         if payload.next_number is not None:
@@ -424,6 +468,23 @@ class AdministrationService:
         if payload.status is not None:
             sequence.status = payload.status
         await self.session.flush()
+        # Rewinding/altering counters is security-relevant: always audit it.
+        await record_audit(
+            self.session,
+            action="sequence_updated",
+            module="administration",
+            user_id=getattr(actor, "id", None),
+            entity_type="document_sequence",
+            entity_id=sequence.id,
+            old_values=old,
+            new_values={
+                "prefix": sequence.prefix,
+                "next_number": sequence.next_number,
+                "number_length": sequence.number_length,
+                "reset_type": sequence.reset_type,
+                "status": sequence.status,
+            },
+        )
         await self.session.commit()
         await self.session.refresh(sequence)
         return sequence

@@ -8,6 +8,19 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 PAYMENT_METHODS = {"CASH", "BANK_QR", "CUSTOMER_DEBT"}
 
+# Refund dispositions (spec: sale-return refund ledger). CASH_REFUND and
+# BANK_QR_REFUND move money (require `pos.refund`); DEBT_REDUCTION reduces an
+# open customer debt; STORE_CREDIT/CUSTOMER_CREDIT issue a credit; NO_REFUND
+# leaves the customer uncompensated and requires an explicit reason.
+REFUND_DISPOSITIONS = (
+    "CASH_REFUND",
+    "BANK_QR_REFUND",
+    "STORE_CREDIT",
+    "CUSTOMER_CREDIT",
+    "DEBT_REDUCTION",
+    "NO_REFUND",
+)
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -37,7 +50,6 @@ class UomConversionOut(BaseModel):
 
 class POSProductOut(BaseModel):
     id: UUID
-    sku: str | None
     barcode: str
     name: str
     category_id: UUID | None
@@ -242,7 +254,6 @@ class SaleItemOut(BaseModel):
     # Null when the product was hard-deleted (sale_items.product_id is SET NULL).
     product_id: UUID | None = None
     product_name: str
-    sku: str | None
     barcode: str | None
     uom_id: UUID | None = None
     uom_code: str | None = None
@@ -310,13 +321,40 @@ class SaleReturnItemRequest(BaseModel):
 
 class SaleReturnRequest(BaseModel):
     """POST /pos/sales/{id}/return body. `items` is canonical; `lines` is an
-    accepted alias so both API dialects work (spec 2.1.7)."""
+    accepted alias so both API dialects work (spec 2.1.7).
+
+    `refund_disposition` selects how any refundable amount beyond an open
+    customer debt is settled. Omitted = legacy behavior (reduce debt first,
+    then pay the excess as cash)."""
+
+    model_config = ConfigDict(populate_by_name=True)
 
     reason: str = Field(min_length=1, max_length=1000)
     items: list[SaleReturnItemRequest] = Field(
         min_length=1, validation_alias=AliasChoices("items", "lines")
     )
     return_date: datetime | None = None
+    refund_disposition: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("refund_disposition", "refundDisposition"),
+    )
+    refund_reference: str | None = Field(
+        default=None,
+        max_length=100,
+        validation_alias=AliasChoices("refund_reference", "refundReference"),
+    )
+    refund_note: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("refund_note", "refundNote"),
+    )
+
+    @model_validator(mode="after")
+    def validate_disposition(self):
+        if self.refund_disposition is not None and self.refund_disposition not in REFUND_DISPOSITIONS:
+            raise ValueError(f"refund_disposition must be one of {', '.join(REFUND_DISPOSITIONS)}")
+        if self.refund_disposition == "NO_REFUND" and not (self.refund_note or "").strip():
+            raise ValueError("NO_REFUND requires an explicit reason")
+        return self
 
 
 class SaleReturnItemOut(BaseModel):
@@ -338,6 +376,19 @@ class SaleReturnOut(BaseModel):
     return_date: datetime
     refund_amount: Decimal
     reason: str
+    status: str = "COMPLETED"
+    # Refund ledger: disposition + how the money/credit was settled.
+    refund_disposition: str | None = None
+    refund_method: str | None = None
+    refund_paid_amount: Decimal = Decimal("0")
+    credit_amount: Decimal = Decimal("0")
+    debt_reduction: Decimal = Decimal("0")
+    refund_reference: str | None = None
+    refund_note: str | None = None
+    processed_by: UUID | None = None
+    processed_at: datetime | None = None
+    currency: str = "USD"
+    exchange_rate: Decimal = Decimal("1")
     items: list[SaleReturnItemOut]
 
 

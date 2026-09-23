@@ -54,7 +54,7 @@ async def test_product_list_exposes_stock_aggregates(client):
     assert await balance_of(client, headers, pid) == Decimal("6.0000")
 
     # The list endpoint carries the same aggregates.
-    listing = await client.get(f"/api/v1/products?q=AGG-{tag}", headers=headers)
+    listing = await client.get(f"/api/v1/products?q={tag}", headers=headers)
     rows = listing.json()["data"]
     assert len(rows) == 1
     assert Decimal(rows[0]["stock_in_qty"]) == Decimal("10.0000")
@@ -126,7 +126,7 @@ async def test_product_list_exposes_nearest_expiry_date(client):
     row = await _product_row(client, headers, pid)
     assert row["expiry_date"] == "2026-12-15"
 
-    listing = await client.get(f"/api/v1/products?q=EXP-{tag}", headers=headers)
+    listing = await client.get(f"/api/v1/products?q={tag}", headers=headers)
     assert listing.status_code == 200, listing.text
     assert listing.json()["data"][0]["expiry_date"] == "2026-12-15"
 

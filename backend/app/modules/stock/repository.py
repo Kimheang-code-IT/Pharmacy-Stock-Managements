@@ -40,7 +40,6 @@ def product_to_out(product: Product, *, grouped: dict | None = None, pos: dict |
     pos_prices = {str(key): value for key, value in (pos.get("prices") or {}).items()}
     data = {
         "id": product.id,
-        "sku": product.sku,
         "barcode": product.barcode,
         "name": product.name,
         "category_id": product.category_id,
@@ -51,6 +50,8 @@ def product_to_out(product: Product, *, grouped: dict | None = None, pos: dict |
         "uom_symbol": product.uom_ref.symbol if product.uom_ref else None,
         "brand_id": product.brand_id,
         "brand_name": product.brand_ref.name if product.brand_ref else None,
+        # Free-text brand the user typed on the product form.
+        "brand": product.brand,
         "supplier_id": product.supplier_id,
         "supplier_name": product.supplier_ref.name if product.supplier_ref else None,
         "cost_price": product.cost_price,
@@ -124,9 +125,9 @@ class ProductRepository:
         count_stmt = select(func.count()).select_from(Product)
         if q:
             pattern = f"%{q.strip()}%"
-            # Barcode-first operational search: barcode, then name, then the
-            # legacy optional sku. A full barcode search hits the unique index.
-            condition = Product.barcode.ilike(pattern) | Product.name.ilike(pattern) | Product.sku.ilike(pattern)
+            # Barcode-first operational search: barcode, then name. A full
+            # barcode search hits the unique index.
+            condition = Product.barcode.ilike(pattern) | Product.name.ilike(pattern)
             stmt = stmt.where(condition)
             count_stmt = count_stmt.where(condition)
         if category_id is not None:
@@ -147,10 +148,6 @@ class ProductRepository:
 
     async def get(self, product_id: uuid.UUID) -> Product | None:
         return await self.session.get(Product, product_id)
-
-    async def get_by_sku(self, sku: str) -> Product | None:
-        result = await self.session.execute(select(Product).where(Product.sku == sku))
-        return result.scalar_one_or_none()
 
     async def get_by_barcode(self, barcode: str) -> Product | None:
         result = await self.session.execute(select(Product).where(Product.barcode == barcode))

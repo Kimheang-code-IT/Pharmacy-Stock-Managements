@@ -16,6 +16,7 @@ import { normalizeUomConversions } from '~/utils/stock/uom-conversions'
 import type { AppRolePermissionRow } from '~/types/stock-pos/entities'
 import { documentSequencePreview, documentSequenceTypeLabel, documentSequenceTypeOptions, normalizeDocumentSequenceType } from '~/utils/document-sequences'
 import { apiErrorMessage, isApiErrorHandled } from '~/utils/api/errors'
+import { clearPublishedFieldErrors } from '~/composables/useFormErrors'
 import {
   canHardDeleteRecord,
   isRecordInactive,
@@ -155,7 +156,6 @@ watch(
   (collection) => {
     if (!import.meta.client || collection !== 'products') return
     void store.fetchList('uoms')
-    void store.fetchList('brands')
     void store.fetchList('categories')
   },
   { immediate: true },
@@ -308,6 +308,8 @@ function recalculate() {
 
 async function save() {
   if (!module.value || readOnly.value) return
+  // Fresh attempt: drop errors from the previous submit.
+  clearPublishedFieldErrors()
   saving.value = true
   try {
     recalculate()
@@ -411,6 +413,7 @@ async function save() {
     await (isCreate.value || !payload.id
       ? store.createRemote(module.value.collection, payload)
       : store.updateRemote(module.value.collection, String(payload.id), payload))
+    clearPublishedFieldErrors()
     toast.add({ title: t('core.common.saved'), color: 'success' })
     await navigateTo(module.value.path)
   }

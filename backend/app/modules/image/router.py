@@ -91,18 +91,27 @@ async def download_object(
     object_key: str,
 ):
     """Public static media: the SPA renders product images with plain <img>,
-    which cannot attach a bearer token (see docs/API.md §12)."""
+    which cannot attach a bearer token (see docs/API.md §12).
+
+    Only real images are served: the key must live under the `images/` prefix
+    and have an allowed image extension. Everything else (including any private
+    operational file that might end up under the media root) returns 404, so a
+    non-image file can never be downloaded from this public route."""
     key = _safe_object_key(object_key)
-    service = ImageStorageService.from_settings()
-    path = service.resolved_path(key)
-    if not await service.object_exists(key):
+    if not key.startswith("images/"):
         raise NotFoundError("Object not found")
 
     suffix = key.rsplit(".", 1)
-    content_type = _CONTENT_TYPE_BY_SUFFIX.get(
-        f".{suffix[-1].lower()}" if len(suffix) > 1 else "",
-        "application/octet-stream",
-    )
+    extension = f".{suffix[-1].lower()}" if len(suffix) > 1 else ""
+    content_type = _CONTENT_TYPE_BY_SUFFIX.get(extension)
+    if content_type is None:
+        raise NotFoundError("Object not found")
+
+    service = ImageStorageService.from_settings()
+    if not await service.object_exists(key):
+        raise NotFoundError("Object not found")
+    path = service.resolved_path(key)
+
     filename = key.rsplit("/", 1)[-1]
     return FileResponse(
         path,

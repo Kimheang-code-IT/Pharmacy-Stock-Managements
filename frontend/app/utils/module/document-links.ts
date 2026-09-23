@@ -68,10 +68,3 @@ export function documentDetailHrefFor(
   }
   return null
 }
-
-/** @deprecated Use documentDetailHrefFor — detail dialogs were removed. */
-export function documentDetailKindFor(collection: string, key: string): 'sale' | 'purchase' | null {
-  if (collection === 'sales' && key === 'saleNo') return 'sale'
-  if (collection === 'stockIns' && key === 'purchaseNo') return 'purchase'
-  return null
-}

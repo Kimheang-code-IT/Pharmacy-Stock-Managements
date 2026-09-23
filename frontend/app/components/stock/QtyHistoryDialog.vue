@@ -532,7 +532,7 @@ const title = computed(() => {
 const productLabel = computed(() => {
   const product = productRecord.value
   if (!product) return ''
-  return `${product.code || ''} · ${product.name || ''}`.replace(/^\s*·\s*/, '')
+  return String(product.name || '')
 })
 
 /** Nested add must sit above the wide history dialog. */

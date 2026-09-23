@@ -627,3 +627,34 @@ async def deduct_from_batch(
         remaining -= take
     await session.flush()
     return primary
+
+
+async def available_quantity(
+    session: AsyncSession,
+    *,
+    product_id: uuid.UUID,
+    batch_no: str | None,
+    expiry_date=None,
+) -> Decimal:
+    """Remaining stock a purchase edit/return can take from a line's lot.
+
+    With `batch_no` + `expiry_date` it is the exact lot; with only `batch_no`
+    it is the sum of that batch_no's lots (the pool `deduct_from_batch` drains
+    FEFO). Used to reject a reduction/return that would exceed what is still
+    in stock (i.e. the rest was already sold or disposed)."""
+    if (batch_no or "").strip():
+        conditions = (
+            _lot_conditions(product_id, batch_no, expiry_date)
+            if expiry_date is not None
+            else [
+                BatchStockBalance.product_id == product_id,
+                BatchStockBalance.batch_no == _batch_key(batch_no),
+            ]
+        )
+        result = await session.execute(
+            select(BatchStockBalance.remaining_quantity).where(*conditions)
+        )
+        return _q4(sum((Decimal(value or 0) for value in result.scalars().all()), Decimal("0")))
+    # Unbatched line: the FEFO pool is every remaining lot of the product.
+    lots = await lock_batches_for_product(session, product_id, include_expired=True)
+    return _q4(sum((lot.remaining_quantity for lot in lots), Decimal("0")))

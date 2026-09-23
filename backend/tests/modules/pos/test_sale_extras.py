@@ -262,7 +262,7 @@ async def test_receipt_payload_is_print_ready(client):
     assert len(data["items"]) == 1
     item = data["items"][0]
     assert item["name"] == product["name"]
-    assert item["sku"]
+    assert item["barcode"]
     assert item["uom_symbol"]
     assert Decimal(item["line_total"]) == Decimal("18.00")  # 2 × 10 − 10%
     assert Decimal(data["subtotal"]) == Decimal("20.00")

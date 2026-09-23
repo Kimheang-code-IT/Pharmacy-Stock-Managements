@@ -111,7 +111,6 @@ const noteInvoices = computed<DeliverableInvoice[]>(() => {
         saleItemId: String(item.saleItemId || ''),
         productId: String(item.productId || ''),
         product: String(item.product || ''),
-        sku: '',
         uomSymbol: String(item.uomSymbol || ''),
         qtyOrdered: Number(item.qtyOrdered ?? 0),
         qtyRemaining: Number(item.qtyToDeliver ?? 0),

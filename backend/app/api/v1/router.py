@@ -5,6 +5,7 @@ from app.api.v1.search import router as search_router
 from app.modules.administration.router import router as administration_router
 from app.modules.administration.settings_router import router as settings_router
 from app.modules.auth.router import router as auth_router
+from app.modules.backup.router import router as backup_router
 from app.modules.brands.router import router as brands_router
 from app.modules.categories.router import router as categories_router
 from app.modules.customers.router import router as customers_router
@@ -28,6 +29,7 @@ api_router.include_router(suppliers_router)
 api_router.include_router(customers_router)
 api_router.include_router(administration_router)
 api_router.include_router(settings_router)
+api_router.include_router(backup_router)
 api_router.include_router(search_router)
 api_router.include_router(pos_router)
 api_router.include_router(delivery_notes_router)

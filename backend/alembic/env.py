@@ -14,6 +14,7 @@ from app.core.database import Base
 # against an empty schema and can never detect model<->migration drift.
 import app.modules.administration.models  # noqa: F401,E402
 import app.modules.auth.models  # noqa: F401,E402
+import app.modules.backup.models  # noqa: F401,E402
 import app.modules.brands.models  # noqa: F401,E402
 import app.modules.categories.models  # noqa: F401,E402
 import app.modules.customers.models  # noqa: F401,E402

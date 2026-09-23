@@ -219,12 +219,12 @@ async def test_disabled_setting_refuses_inquiry(client, db_session):
 @pytest.mark.asyncio
 async def test_current_stock_returns_read_data(client, db_session):
     tag = uuid.uuid4().hex[:8]
-    await make_stocked_product(
+    product = await make_stocked_product(
         client, await admin_headers(client), sku=f"CUR-{tag}", name=f"Current {tag}", qty="7"
     )
     text, total_pages = await run_tool(db_session, InquiryAction(tool="current_stock"))
     assert f"Current {tag}" in text
-    assert f"CUR-{tag}" in text
+    assert product["barcode"] in text
     assert "7" in text
     assert total_pages >= 1
 
@@ -288,13 +288,13 @@ async def test_expiring_uses_settings_alert_windows(client, db_session):
     )
 
     text, _ = await run_tool(db_session, InquiryAction(tool="expiring"))
-    assert f"EXP2-{tag}" in text
+    assert f"Inquiry Widget a{tag}" in text
     assert "ALERT 2" in text
-    assert f"EXP1-{tag}" in text
+    assert f"Inquiry Widget b{tag}" in text
     assert "ALERT 1" in text
-    assert f"EXP0-{tag}" not in text  # outside the configured windows
+    assert f"Inquiry Widget c{tag}" not in text  # outside the configured windows
     assert "Alert 1 = 90d" in text and "Alert 2 = 7d" in text
-    assert soon["sku"] and mid["sku"]
+    assert soon["barcode"] and mid["barcode"]
 
 
 @pytest.mark.asyncio

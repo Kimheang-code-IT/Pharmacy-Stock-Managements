@@ -50,14 +50,12 @@ function New-Secret([int]$Bytes) {
 
 $postgresPassword = New-Secret 24
 $jwtSecret = New-Secret 48
-$telegramSecret = New-Secret 32
 $seedPassword = if ($AdminPassword) { $AdminPassword } else { New-Secret 16 }
 
 $content = [System.IO.File]::ReadAllText($template)
 
 $content = [regex]::Replace($content, "(?m)^POSTGRES_PASSWORD=.*$", "POSTGRES_PASSWORD=$postgresPassword")
 $content = [regex]::Replace($content, "(?m)^JWT_SECRET_KEY=.*$", "JWT_SECRET_KEY=$jwtSecret")
-$content = [regex]::Replace($content, "(?m)^TELEGRAM_BOT_CLIENT_SECRET=.*$", "TELEGRAM_BOT_CLIENT_SECRET=$telegramSecret")
 $content = [regex]::Replace($content, "(?m)^TELEGRAM_BOT_TOKEN=.*$", "TELEGRAM_BOT_TOKEN=$TelegramBotToken")
 $content = [regex]::Replace($content, "(?m)^SEED_ADMIN_EMAIL=.*$", "SEED_ADMIN_EMAIL=$AdminEmail")
 $content = [regex]::Replace($content, "(?m)^SEED_ADMIN_PASSWORD=.*$", "SEED_ADMIN_PASSWORD=$seedPassword")

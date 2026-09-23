@@ -14,6 +14,7 @@ from typing import Any
 
 from sqlalchemy import delete, update
 
+from app.modules.administration.maintenance import MaintenanceService
 from app.modules.administration.service import SETTING_GROUPS, AdministrationService
 from app.modules.brands.models import Brand
 from app.modules.categories.models import Category
@@ -41,8 +42,7 @@ from app.modules.stock.models import (
 from app.modules.suppliers.models import Supplier, SupplierDebt
 from app.modules.telegram.models import TelegramExpiryAlertState
 from app.modules.uoms.models import UOM
-from app.shared.audit.models import AuditLog
-from app.shared.audit.service import record_audit
+from app.shared.audit.service import record_audit, record_system_event
 from app.shared.documents import (
     DocumentSequence,
     allocate_document_number,
@@ -51,6 +51,42 @@ from app.shared.documents import (
 
 _MASK = "********"
 _DEFAULT_SHOP_NAME = "Yoeun Sokhon Pharmacy"
+
+# Delete order: children before parents so foreign keys never block the wipe.
+# Delivery note lines reference sale items (RESTRICT), so delivery tables go
+# before SaleItem/Sale.
+_CLEAR_TRANSACTION_MODELS: tuple = (
+    SaleItemBatch,
+    SaleReturnItem,
+    SaleReturn,
+    DeliveryNoteItem,
+    DeliveryNoteSale,
+    DeliveryNote,
+    Payment,
+    CustomerDebt,
+    SupplierDebt,
+    SaleItem,
+    Sale,
+    PurchaseReturnItem,
+    PurchaseReturn,
+    StockMovement,
+    StockTransactionItem,
+    StockTransaction,
+    BatchStockBalance,
+)
+# Full reset additionally removes master data (AuditLog is intentionally NOT
+# deleted: the protected system_audit_events store plus the live audit trail
+# must survive a reset so the initiator can never be erased).
+_RESET_MODELS: tuple = _CLEAR_TRANSACTION_MODELS + (
+    TelegramExpiryAlertState,
+    Expense,
+    Product,
+    Customer,
+    Supplier,
+    Category,
+    Brand,
+    UOM,
+)
 
 
 def _now() -> str:
@@ -131,36 +167,43 @@ async def reset_app_info(service: AdministrationService, *, actor: Any) -> dict:
     return build_app_info(await service.get_settings())
 
 
-async def clear_transactions(service: AdministrationService, *, actor: Any) -> dict:
+async def clear_transactions(
+    service: AdministrationService,
+    *,
+    actor: Any,
+    confirmation_token: str | None = None,
+    confirmation_phrase: str | None = None,
+) -> dict:
     """Delete all sale + purchase history and zero every product's stock.
 
-    Removes sales, sale returns, purchases, purchase returns, stock movements,
-    payments, customer/supplier debts and delivery notes; master data (products,
-    customers, suppliers, categories, settings) and document sequences are kept.
+    Guarded by reauthentication, a one-use confirmation token, an exact phrase
+    and a verified pre-deletion backup. Master data (products, customers,
+    suppliers, categories, settings) and document sequences are kept, as is the
+    audit trail and the protected system-event store.
     """
     session = service.session
-    # Children before parents so foreign keys never block the delete. Delivery
-    # note lines reference sale_items/sales (RESTRICT), so the delivery tables
-    # must go before SaleItem/Sale.
-    for model in (
-        SaleItemBatch,
-        SaleReturnItem,
-        SaleReturn,
-        DeliveryNoteItem,
-        DeliveryNoteSale,
-        DeliveryNote,
-        Payment,
-        CustomerDebt,
-        SupplierDebt,
-        SaleItem,
-        Sale,
-        PurchaseReturnItem,
-        PurchaseReturn,
-        StockMovement,
-        StockTransactionItem,
-        StockTransaction,
-        BatchStockBalance,
-    ):
+    maintenance = MaintenanceService(session)
+    await maintenance.consume_confirmation(
+        actor=actor,
+        action="CLEAR_TRANSACTIONS",
+        token=confirmation_token,
+        phrase=confirmation_phrase,
+    )
+    backup = await maintenance.create_backup(
+        action="CLEAR_TRANSACTIONS", models=_CLEAR_TRANSACTION_MODELS, actor=actor
+    )
+    # Evidence of intent, committed BEFORE any deletion.
+    await record_system_event(
+        session,
+        action="transactions_cleared",
+        module="administration",
+        actor=actor,
+        entity_type="system",
+        new_values={"phase": "before", "scope": "sales_purchases", "backup": backup["filename"]},
+    )
+    await session.commit()
+
+    for model in _CLEAR_TRANSACTION_MODELS:
         await session.execute(delete(model))
     # Every movement is gone — reset the materialized balances to zero.
     await session.execute(update(StockBalance).values(quantity=0, average_cost=0))
@@ -171,59 +214,67 @@ async def clear_transactions(service: AdministrationService, *, actor: Any) -> d
         user_id=actor.id,
         entity_type="system",
         entity_id=actor.id,
-        new_values={"scope": "sales_purchases"},
+        new_values={"scope": "sales_purchases", "backup": backup["filename"]},
+    )
+    await record_system_event(
+        session,
+        action="transactions_cleared",
+        module="administration",
+        actor=actor,
+        entity_type="system",
+        new_values={"phase": "after", "scope": "sales_purchases", "backup": backup["filename"]},
     )
     await session.commit()
-    return {"cleared": True, "message": "Sales and purchase transactions cleared"}
+    return {
+        "cleared": True,
+        "requiresReauth": True,
+        "backup": backup,
+        "message": "Sales and purchase transactions cleared",
+    }
 
 
-async def reset_all_data(service: AdministrationService, *, actor: Any) -> dict:
+async def reset_all_data(
+    service: AdministrationService,
+    *,
+    actor: Any,
+    confirmation_token: str | None = None,
+    confirmation_phrase: str | None = None,
+) -> dict:
     """Wipe every business record and re-seed the bootstrap defaults.
 
-    Deletes all transaction history plus master data (products, categories,
-    brands, customers, suppliers, expenses, audit logs) and resets the document
-    sequences. The current administrator, roles/permissions, system settings and
-    the unit-of-measure catalogue are kept so the app stays usable; the walk-in
+    Guarded by reauthentication, a one-use confirmation token, an exact phrase
+    and a verified pre-deletion backup. The audit trail and the protected
+    system-event store are preserved so the initiator's evidence survives the
+    reset. The current administrator, roles/permissions, system settings and the
+    unit-of-measure catalogue are kept so the app stays usable; the walk-in
     customer is re-created for POS.
     """
     session = service.session
-    # 1. Transactions and their dependent rows (children before parents).
-    for model in (
-        SaleItemBatch,
-        SaleReturnItem,
-        SaleReturn,
-        DeliveryNoteItem,
-        DeliveryNoteSale,
-        DeliveryNote,
-        Payment,
-        CustomerDebt,
-        SupplierDebt,
-        SaleItem,
-        Sale,
-        PurchaseReturnItem,
-        PurchaseReturn,
-        StockMovement,
-        StockTransactionItem,
-        StockTransaction,
-        BatchStockBalance,
-        TelegramExpiryAlertState,
-        Expense,
-        AuditLog,
-    ):
+    maintenance = MaintenanceService(session)
+    await maintenance.consume_confirmation(
+        actor=actor,
+        action="RESET_ALL_DATA",
+        token=confirmation_token,
+        phrase=confirmation_phrase,
+    )
+    backup = await maintenance.create_backup(
+        action="RESET_ALL_DATA", models=_RESET_MODELS, actor=actor
+    )
+    await record_system_event(
+        session,
+        action="all_data_reset",
+        module="administration",
+        actor=actor,
+        entity_type="system",
+        new_values={"phase": "before", "scope": "all_business_data", "backup": backup["filename"]},
+    )
+    await session.commit()
+
+    for model in _RESET_MODELS:
         await session.execute(delete(model))
 
-    # 2. Master data. Products cascade their balances / sale-price versions and
-    #    must go before suppliers/categories/brands (SET NULL) and UOMs (RESTRICT).
-    await session.execute(delete(Product))
-    await session.execute(delete(Customer))
-    await session.execute(delete(Supplier))
-    await session.execute(delete(Category))
-    await session.execute(delete(Brand))
-    # UOMs are Setup data: clear them too so only Administration data remains.
-    await session.execute(delete(UOM))
-
-    # 3. Reset the document counters, then re-seed the bootstrap rows so the
-    #    app is immediately usable again.
+    # Reset the document counters, then re-seed the bootstrap rows so the
+    # app is immediately usable again.
     await session.execute(update(DocumentSequence).values(next_number=1))
     await ensure_default_sequences(session)
     session.add(
@@ -242,10 +293,22 @@ async def reset_all_data(service: AdministrationService, *, actor: Any) -> dict:
         user_id=actor.id,
         entity_type="system",
         entity_id=actor.id,
-        new_values={"scope": "all_business_data"},
+        new_values={"scope": "all_business_data", "backup": backup["filename"]},
+    )
+    await record_system_event(
+        session,
+        action="all_data_reset",
+        module="administration",
+        actor=actor,
+        entity_type="system",
+        new_values={"phase": "after", "scope": "all_business_data", "backup": backup["filename"]},
     )
     await session.commit()
-    return {"message": "All business data has been reset", "requiresReauth": False}
+    return {
+        "message": "All business data has been reset",
+        "requiresReauth": True,
+        "backup": backup,
+    }
 
 
 # ------------------------------------------------------------- App Config

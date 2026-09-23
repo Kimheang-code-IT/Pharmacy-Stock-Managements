@@ -14,16 +14,26 @@ PERMISSION_CATALOG: dict[str, tuple[str, ...]] = {
     "stock": ("view", "in", "adjust", "damage", "expire"),
     "product": ("create", "update", "delete"),
     "supplier": ("view", "create", "update", "delete", "debt.pay"),
-    "pos": ("access", "discount", "debt_sale", "print"),
+    "pos": ("access", "discount", "debt_sale", "print", "sale_edit", "return", "refund"),
     "customer": ("view", "create", "update", "delete", "debt.pay"),
     "delivery": ("view", "create", "update", "confirm", "deliver", "cancel"),
-    "report": ("sales", "purchase", "customer_debt", "supplier_debt", "finance"),
-    "expense": ("create",),  # Add Expense on Finance Report only (no Expense page)
+    "report": (
+        "sales",
+        "purchase",
+        "customer_debt",
+        "supplier_debt",
+        "finance",
+        "stock_valuation",
+        "expense",
+    ),
+    # Operating expenses have a full lifecycle (draft → posted → void).
+    "expense": ("view", "create", "approve", "void"),
     "user": ("view", "create", "update", "delete"),
     "role": ("view", "create", "update", "delete"),
     "sequence": ("view", "create", "update", "delete"),
     "audit": ("view",),
     "settings": ("view", "update"),
+    "system": ("maintenance", "data_reset", "backup", "restore"),
 }
 
 # Legacy `*.manage` codes expand to CRUD so older role rows keep working.
@@ -113,6 +123,10 @@ def effective_permissions(user: object) -> list[str]:
     """
     role = getattr(user, "role_ref", None)
     if role is None:
+        return []
+    # A disabled role grants nothing, even to the system Administrator role
+    # (which the app also refuses to disable).
+    if getattr(role, "status", "ACTIVE") != "ACTIVE":
         return []
     if getattr(role, "name", None) == SUPER_ADMIN_ROLE:
         return [SUPER_ADMIN_PERMISSION]

@@ -1,12 +1,16 @@
 """Telegram bot process (Compose service `telegram-bot`).
 
 Inbound (long polling), view-only (spec sections 3.6 / 3.6.1):
-- /start replies with the chat's Telegram Chat ID so administrators can copy
-  it into Administration > Users.
-- linked users get the view-only inquiry keyboard: Current Stock, Low Stock,
-  Expiring Soon, Sales Summary (period select), Help. Every tool calls the
-  read-only adapters in `app.shared.telegram.inquiry`; the bot never writes
-  to the database. Any unknown/write-shaped callback is refused ("View only").
+
+- /start replies with the chat's Telegram Chat ID for administrators to copy
+  into Administration > Users; linked users get the reply-keyboard menu.
+- The whole inquiry flow uses **reply keyboards only** (buttons below the
+  conversation): a main menu (Summary / Current Stock / Low Stock / Expiring
+  Soon / Help), a Summary period picker (Today / Last 7 Days / This Month /
+  Custom Date Range / Back to Menu) and Previous / Next pagination for stock
+  lists. No inline keyboards are attached to bot messages.
+- Every tool calls the read-only adapters in `app.shared.telegram.inquiry`
+  and `app.shared.telegram.summary`; the bot never writes to the database.
 
 Outbound password-reset delivery is sent in-process by the API
 (`app.shared.telegram.delivery`) — no Celery/RabbitMQ worker.
@@ -19,23 +23,43 @@ import asyncio
 import logging
 
 from app.core.config import settings
+from app.shared.telegram import keyboards as kb
 from app.shared.telegram.inquiry import (
-    VIEW_ONLY_REPLY,
+    HELP_TEXT,
+    NO_PERMISSION_REPLY,
     InquiryAction,
-    route_callback,
+    check_tool_permission,
     resolve_access,
     run_tool,
+)
+from app.shared.telegram.summary import (
+    PERIOD_7D,
+    PERIOD_MONTH,
+    PERIOD_TODAY,
+    SummaryConversation,
+    custom_range_error,
+    max_custom_range_days,
+    parse_iso_date,
+    period_summary,
+    render_summary,
+    resolve_period,
+    shop_timezone,
+    utc_window,
 )
 
 logger = logging.getLogger("stock_pos.telegram_bot")
 
-TOOL_LABELS = {
-    "current_stock": "Current Stock",
-    "low_stock": "Low Stock",
-    "expiring": "Expiring Soon",
-    "sales": "Sales Summary",
+# Per-chat conversation state (custom date entry + stock pagination).
+conversations = SummaryConversation()
+
+_PERIOD_ACTIONS = {
+    kb.ACTION_TODAY: PERIOD_TODAY,
+    kb.ACTION_7D: PERIOD_7D,
+    kb.ACTION_MONTH: PERIOD_MONTH,
 }
-PERIOD_LABELS = {"today": "Today", "7d": "Last 7 days", "month": "This month"}
+_STOCK_TOOLS = (kb.ACTION_CURRENT_STOCK, kb.ACTION_LOW_STOCK, kb.ACTION_EXPIRING)
+
+_DATE_PROMPT = "Send the date in YYYY-MM-DD format (e.g. 2026-09-30)."
 
 
 async def _wait_for_bot_token() -> str:
@@ -50,65 +74,36 @@ async def _wait_for_bot_token() -> str:
         await asyncio.sleep(60)
 
 
-def _menu_keyboard():
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+async def _language(session) -> str:
+    from app.shared.telegram.service import notification_language
 
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(TOOL_LABELS["current_stock"], callback_data="tool:current_stock"),
-                InlineKeyboardButton(TOOL_LABELS["low_stock"], callback_data="tool:low_stock"),
-            ],
-            [
-                InlineKeyboardButton(TOOL_LABELS["expiring"], callback_data="tool:expiring"),
-                InlineKeyboardButton(TOOL_LABELS["sales"], callback_data="tool:sales"),
-            ],
-            [InlineKeyboardButton("Help", callback_data="help")],
-        ]
-    )
+    return await notification_language(session)
 
 
-def _period_keyboard():
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+async def _timezone(session):
+    from app.modules.administration.service import get_setting_value
 
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(PERIOD_LABELS[period], callback_data=f"page:sales:{period}:1")
-                for period in PERIOD_LABELS
-            ],
-            [InlineKeyboardButton("Menu", callback_data="menu")],
-        ]
-    )
+    name = str(await get_setting_value(session, "system", "timezone", "UTC") or "UTC")
+    return shop_timezone(name)
 
 
-def _result_keyboard(action: InquiryAction, total_pages: int):
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-    page = min(max(1, action.page), total_pages)
-    rows = []
-    if total_pages > 1:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    "Prev", callback_data=f"page:{action.tool}:{action.period or '-'}:{max(1, page - 1)}"
-                ),
-                InlineKeyboardButton("Menu", callback_data="menu"),
-                InlineKeyboardButton(
-                    "Next", callback_data=f"page:{action.tool}:{action.period or '-'}:{min(total_pages, page + 1)}"
-                ),
-            ]
-        )
-    else:
-        rows.append([InlineKeyboardButton("Menu", callback_data="menu")])
-    return InlineKeyboardMarkup(rows)
-
-
-async def _reply_instruction(update, text: str) -> None:
-    """Send an instruction that never contains business data."""
+async def _send(update, text: str, spec: list[list[str]] | None = None) -> None:
+    """Reply with text and (optionally) a reply keyboard. No inline buttons."""
     message = update.effective_message
-    if message:
+    if message is None:
+        return
+    if spec is None:
         await message.reply_text(text)
+    else:
+        await message.reply_text(text, reply_markup=kb.to_reply_markup(spec))
+
+
+async def _send_menu(update, lang: str) -> None:
+    await _send(update, "Stock & POS inquiry — choose a tool:", kb.menu_keyboard_spec(lang))
+
+
+async def _send_periods(update, lang: str) -> None:
+    await _send(update, "Choose a period:", kb.period_keyboard_spec(lang))
 
 
 async def on_start(update, context) -> None:
@@ -119,19 +114,28 @@ async def on_start(update, context) -> None:
     from app.core.database import SessionFactory
 
     async with SessionFactory() as session:
-        _, error = await resolve_access(session, str(chat.id))
-    if error:
-        await _reply_instruction(update, error)
-        return
-    if update.message:
-        await update.message.reply_text("Stock & POS inquiry — choose a tool:", reply_markup=_menu_keyboard())
+        user, error = await resolve_access(session, str(chat.id))
+        if error:
+            await _send(update, error)
+            return
+        lang = await _language(session)
+    conversations.reset(str(chat.id))
+    await _send_menu(update, lang)
 
 
 async def on_help(update, context) -> None:
-    from app.shared.telegram.inquiry import HELP_TEXT
+    chat = update.effective_chat
+    if not chat:
+        return
+    from app.core.database import SessionFactory
 
-    if update.message:
-        await update.message.reply_text(HELP_TEXT)
+    async with SessionFactory() as session:
+        _, error = await resolve_access(session, str(chat.id))
+        if error:
+            await _send(update, error)
+            return
+        lang = await _language(session)
+    await _send(update, HELP_TEXT, kb.menu_keyboard_spec(lang))
 
 
 async def on_link(update, context) -> None:
@@ -157,72 +161,146 @@ async def on_link(update, context) -> None:
         )
         return
     await update.message.reply_text(
-        "Telegram linked. You can now use the view-only stock inquiry menu."
+        "Telegram linked. You can now use the view-only inquiry menu."
     )
 
 
 async def on_text(update, context) -> None:
-    """Non-command text: linked users get the menu; unlinked get the link hint."""
+    """Reply-keyboard button or conversation text (e.g. a custom date)."""
     chat = update.effective_chat
-    if not chat or not update.message:
+    message = update.message
+    if not chat or not message:
         return
+    text = message.text or ""
     from app.core.database import SessionFactory
 
     async with SessionFactory() as session:
-        _, error = await resolve_access(session, str(chat.id))
-    if error:
-        await _reply_instruction(update, error)
-        return
-    await update.message.reply_text("Choose a tool:", reply_markup=_menu_keyboard())
-
-
-async def on_callback(update, context) -> None:
-    """View-only callback dispatcher (spec section 3.6.1)."""
-    query = update.callback_query
-    if query is None:
-        return
-    action = route_callback(query.data)
-    if action is None:
-        # Write attempt or unknown payload: refuse and ignore. No business data.
-        chat_id = update.effective_chat.id if update.effective_chat else "?"
-        logger.warning("Refused non-read-only callback from chat %s: %r", chat_id, query.data)
-        await query.answer(VIEW_ONLY_REPLY, show_alert=True)
-        if query.message:
-            await query.message.reply_text(VIEW_ONLY_REPLY)
-        return
-
-    chat = update.effective_chat
-    if not chat:
-        return
-    from app.core.database import SessionFactory
-
-    async with SessionFactory() as session:
-        _, error = await resolve_access(session, str(chat.id))
+        user, error = await resolve_access(session, str(chat.id))
         if error:
-            await query.answer()
-            await _reply_instruction(update, error)
+            conversations.reset(str(chat.id))
+            await _send(update, error)
             return
-        if action.tool == "help":
-            from app.shared.telegram.inquiry import HELP_TEXT
+        lang = await _language(session)
+        action = kb.route_text(text)
+        if action is not None:
+            await _dispatch(update, session, user, lang, action)
+            return
+        # Free text: only meaningful while collecting a custom date range.
+        step = conversations.custom_step(str(chat.id))
+        if step:
+            await _handle_custom_date(update, session, user, lang, step, text)
+            return
+        await _send_menu(update, lang)
 
-            await query.answer()
-            if query.message:
-                await query.message.reply_text(HELP_TEXT)
-            return
-        if action.tool == "menu":
-            await query.answer()
-            if query.message:
-                await query.message.reply_text("Choose a tool:", reply_markup=_menu_keyboard())
-            return
-        if action.tool == "sales" and not action.period:
-            await query.answer()
-            if query.message:
-                await query.message.reply_text("Choose a period:", reply_markup=_period_keyboard())
-            return
-        text, total_pages = await run_tool(session, action)
-    await query.answer()
-    if query.message:
-        await query.message.reply_text(text, reply_markup=_result_keyboard(action, total_pages))
+
+async def _dispatch(update, session, user, lang: str, action: str) -> None:
+    chat_id = str(update.effective_chat.id)
+
+    if action == kb.ACTION_MENU:
+        conversations.reset(chat_id)
+        await _send_menu(update, lang)
+        return
+    if action == kb.ACTION_HELP:
+        await _send(update, HELP_TEXT, kb.menu_keyboard_spec(lang))
+        return
+    if action == kb.ACTION_SUMMARY:
+        conversations.cancel_custom(chat_id)
+        conversations.clear_pager(chat_id)
+        await _send_periods(update, lang)
+        return
+    if action in _PERIOD_ACTIONS:
+        conversations.cancel_custom(chat_id)
+        await _run_period_summary(update, session, user, lang, _PERIOD_ACTIONS[action])
+        return
+    if action == kb.ACTION_CUSTOM:
+        conversations.begin_custom(chat_id)
+        await _send(update, f"Send the start date. {_DATE_PROMPT}", kb.custom_keyboard_spec(lang))
+        return
+    if action == kb.ACTION_CANCEL:
+        conversations.reset(chat_id)
+        await _send(update, "Cancelled.", kb.menu_keyboard_spec(lang))
+        return
+    if action in (kb.ACTION_PREV, kb.ACTION_NEXT):
+        await _run_pager(update, session, user, lang, action)
+        return
+    if action in _STOCK_TOOLS:
+        conversations.cancel_custom(chat_id)
+        await _run_stock_tool(update, session, user, lang, tool=action, page=1)
+        return
+
+
+async def _run_period_summary(update, session, user, lang: str, period: str) -> None:
+    tz = await _timezone(session)
+    local_start, local_end = resolve_period(period, tz=tz)
+    utc_start, utc_end = utc_window(local_start, local_end, tz)
+    summary = await period_summary(
+        session,
+        utc_start=utc_start,
+        utc_end=utc_end,
+        local_start=local_start,
+        local_end=local_end,
+        user=user,
+    )
+    await _send(update, render_summary(summary, lang=lang), kb.period_keyboard_spec(lang))
+
+
+async def _run_custom_summary(update, session, user, lang: str, start, end) -> None:
+    tz = await _timezone(session)
+    utc_start, utc_end = utc_window(start, end, tz)
+    summary = await period_summary(
+        session,
+        utc_start=utc_start,
+        utc_end=utc_end,
+        local_start=start,
+        local_end=end,
+        user=user,
+    )
+    await _send(update, render_summary(summary, lang=lang), kb.period_keyboard_spec(lang))
+
+
+async def _handle_custom_date(update, session, user, lang: str, step: str, text: str) -> None:
+    chat_id = str(update.effective_chat.id)
+    parsed = parse_iso_date(text)
+    if parsed is None:
+        await _send(
+            update,
+            f"That is not a valid date. {_DATE_PROMPT}",
+            kb.custom_keyboard_spec(lang),
+        )
+        return
+    if step == "start":
+        conversations.set_custom_start(chat_id, parsed)
+        await _send(update, f"Send the end date. {_DATE_PROMPT}", kb.custom_keyboard_spec(lang))
+        return
+    # step == "end"
+    start = conversations.custom_start(chat_id)
+    error = custom_range_error(start, parsed, max_days=await max_custom_range_days(session))
+    if error:
+        await _send(update, f"{error} {_DATE_PROMPT}", kb.custom_keyboard_spec(lang))
+        return
+    conversations.cancel_custom(chat_id)
+    await _run_custom_summary(update, session, user, lang, start, parsed)
+
+
+async def _run_stock_tool(update, session, user, lang: str, *, tool: str, page: int) -> None:
+    chat_id = str(update.effective_chat.id)
+    # Role check mirrors the HTTP stock API: a verified chat alone is not enough.
+    if not check_tool_permission(user, tool):
+        await _send(update, NO_PERMISSION_REPLY, kb.menu_keyboard_spec(lang))
+        return
+    text, total_pages = await run_tool(session, InquiryAction(tool=tool, page=page), user=user)
+    conversations.set_pager(chat_id, tool, min(max(1, page), total_pages))
+    await _send(update, text, kb.pagination_keyboard_spec(lang))
+
+
+async def _run_pager(update, session, user, lang: str, action: str) -> None:
+    chat_id = str(update.effective_chat.id)
+    pager = conversations.pager(chat_id)
+    if not pager:
+        await _send_menu(update, lang)
+        return
+    step = 1 if action == kb.ACTION_NEXT else -1
+    await _run_stock_tool(update, session, user, lang, tool=pager["tool"], page=pager["page"] + step)
 
 
 def _import_all_models() -> None:
@@ -265,23 +343,17 @@ def run() -> None:
     if not token:
         token = loop.run_until_complete(_wait_for_bot_token())
 
-    from telegram.ext import (
-        Application,
-        CallbackQueryHandler,
-        CommandHandler,
-        MessageHandler,
-        filters,
-    )
+    from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
     application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", on_start))
     application.add_handler(CommandHandler("help", on_help))
     application.add_handler(CommandHandler("menu", on_start))
     application.add_handler(CommandHandler("link", on_link))
-    application.add_handler(CallbackQueryHandler(on_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     logger.info("Telegram bot started (mode=%s)", settings.telegram_bot_mode)
-    application.run_polling(allowed_updates=["message", "callback_query"])
+    # Reply-keyboard only: no callback_query (inline) updates are processed.
+    application.run_polling(allowed_updates=["message"])
 
 
 if __name__ == "__main__":

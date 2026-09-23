@@ -12,9 +12,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.v1.health import router as health_router
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.core.exceptions import AccessDeniedError, AuthRequiredError
 from app.core.logging import setup_logging
 from app.core.redis import close_redis
 from app.core.scheduler import start_backend_scheduler
+from app.shared.audit.service import RESULT_DENIED, record_audit, set_audit_context
 
 setup_logging()
 logger = logging.getLogger("stock_pos")
@@ -54,6 +56,20 @@ async def lifespan(app: FastAPI):
         logger.info("Stock & POS API stopped")
 
 
+def _client_ip(request: Request) -> str | None:
+    """Client IP for auditing. Trusts the last X-Forwarded-For hop only (the
+    proxy appends the real client), never the spoofable first entry."""
+    real = (request.headers.get("x-real-ip") or "").strip()
+    if real:
+        return real
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        parts = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if parts:
+            return parts[-1]
+    return request.client.host if request.client else None
+
+
 def create_app() -> FastAPI:
     docs_enabled = not settings.is_production
     app = FastAPI(
@@ -85,9 +101,54 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def request_id_middleware(request: Request, call_next):
         request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+        request.state.request_id = request_id
+        # Propagate request context so every audit row written downstream is
+        # attributed with the correlation id, IP and user agent.
+        set_audit_context(
+            request_id=request_id,
+            ip_address=_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         return response
+
+    async def _audit_denied(request: Request, exc: Exception) -> None:
+        """Persist a denied/failed authorization attempt (best effort)."""
+        try:
+            from app.core.database import SessionFactory
+
+            user = getattr(request.state, "user", None)
+            status_code = getattr(exc, "status_code", 403)
+            action = "authentication_failed" if status_code == 401 else "permission_denied"
+            async with SessionFactory() as session:
+                await record_audit(
+                    session,
+                    action=action,
+                    module="security",
+                    user_id=getattr(user, "id", None),
+                    actor_email=getattr(user, "email", None),
+                    entity_type="http_request",
+                    new_values={
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": status_code,
+                    },
+                    result=RESULT_DENIED,
+                )
+                await session.commit()
+        except Exception:
+            logger.warning("Failed to persist denied-request audit", exc_info=True)
+
+    @app.exception_handler(AccessDeniedError)
+    async def access_denied_handler(request: Request, exc: AccessDeniedError):
+        await _audit_denied(request, exc)
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    @app.exception_handler(AuthRequiredError)
+    async def auth_required_handler(request: Request, exc: AuthRequiredError):
+        await _audit_denied(request, exc)
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_handler(request: Request, exc: RequestValidationError):

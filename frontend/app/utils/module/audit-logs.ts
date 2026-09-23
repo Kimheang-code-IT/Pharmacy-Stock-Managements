@@ -18,7 +18,6 @@ const REFERENCE_KEYS = [
   'code',
   'saleNo',
   'invoiceNo',
-  'sku',
   'barcode',
 ]
 

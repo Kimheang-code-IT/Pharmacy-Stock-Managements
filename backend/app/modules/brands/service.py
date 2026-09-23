@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ConflictError, NotFoundError
 from app.modules.brands.models import Brand
 from app.modules.brands.repository import BrandRepository
+from app.shared.audit.service import record_audit
 from app.shared.lifecycle import assert_inactive_for_delete
 
 
@@ -36,11 +37,20 @@ class BrandService:
         )
         self.repo.add(brand)
         await self.repo.flush()
+        await record_audit(
+            self.session,
+            action="brand_created",
+            module="brands",
+            entity_type="brand",
+            entity_id=brand.id,
+            new_values={"code": brand.code, "name": brand.name, "status": brand.status},
+        )
         await self.session.commit()
         return brand
 
     async def update(self, brand_id: uuid.UUID, payload) -> Brand:
         brand = await self.get(brand_id)
+        old = {"code": brand.code, "name": brand.name, "status": brand.status}
         if payload.code is not None:
             code = payload.code.strip()
             if code and code != brand.code:
@@ -56,6 +66,15 @@ class BrandService:
         if payload.status is not None:
             brand.status = payload.status
         await self.repo.flush()
+        await record_audit(
+            self.session,
+            action="brand_updated",
+            module="brands",
+            entity_type="brand",
+            entity_id=brand.id,
+            old_values=old,
+            new_values={"code": brand.code, "name": brand.name, "status": brand.status},
+        )
         await self.session.commit()
         return brand
 
@@ -67,5 +86,14 @@ class BrandService:
                 "Cannot delete this brand because products reference it. "
                 "Deactivate it instead."
             )
+        snapshot = {"code": brand.code, "name": brand.name}
         await self.session.delete(brand)
+        await record_audit(
+            self.session,
+            action="brand_deleted",
+            module="brands",
+            entity_type="brand",
+            entity_id=brand.id,
+            old_values=snapshot,
+        )
         await self.session.commit()

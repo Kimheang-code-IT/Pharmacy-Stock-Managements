@@ -13,7 +13,7 @@ from sqlalchemy import DateTime, String, case, cast, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from app.core.exceptions import ValidationError
+from app.core.exceptions import ConflictError, ValidationError
 from app.modules.auth.models import User
 from app.modules.customers.models import Customer, CustomerDebt
 from app.modules.pos.models import Payment, Sale, SaleItem, SaleItemBatch, SaleReturn, SaleReturnItem
@@ -34,6 +34,10 @@ from app.shared.pagination.params import parse_date_range
 
 Q2 = Decimal("0.01")
 Q4 = Decimal("0.0001")
+
+# Reporting currency. All documents carry their own currency + exchange-rate
+# snapshot ("KHR per 1 USD"); summaries normalize every amount to this currency.
+REPORT_CURRENCY = "USD"
 
 # CSV exports are bounded so a single request cannot materialize an unbounded
 # row set into memory (P4); the body is also streamed in chunks.
@@ -99,7 +103,6 @@ class ReportsService:
                 Sale.invoice_no,
                 Customer.name.label("customer_name"),
                 SaleItem.product_name.label("product_name"),
-                SaleItem.sku,
                 SaleItem.id.label("sale_item_id"),
                 SaleItem.product_id.label("product_id"),
                 SaleItem.quantity,
@@ -167,7 +170,6 @@ class ReportsService:
             "invoice_no": row.invoice_no,
             "customer_name": row.customer_name,
             "product_name": row.product_name,
-            "sku": row.sku,
             "quantity": quantity,
             "returned_quantity": returned,
             "returnable_quantity": (quantity - returned).quantize(Q4),
@@ -306,7 +308,6 @@ class ReportsService:
                 StockTransaction.transaction_date,
                 Supplier.name.label("supplier_name"),
                 StockTransactionItem.product_name.label("product_name"),
-                StockTransactionItem.sku,
                 StockTransactionItem.id.label("stock_transaction_item_id"),
                 StockTransactionItem.product_id.label("product_id"),
                 StockTransactionItem.quantity,
@@ -323,11 +324,13 @@ class ReportsService:
                 StockTransaction.note,
                 StockTransaction.discount_amount,
                 StockTransaction.tax_amount,
+                User.full_name.label("created_by_name"),
                 payment_method,
             )
             .select_from(StockTransactionItem)
             .join(StockTransaction, StockTransaction.id == StockTransactionItem.stock_transaction_id)
             .join(Supplier, Supplier.id == StockTransaction.supplier_id, isouter=True)
+            .join(User, User.id == StockTransaction.created_by, isouter=True)
             .where(StockTransaction.transaction_type == "STOCK_IN")
         )
 
@@ -383,6 +386,29 @@ class ReportsService:
             )
             debts = {debt.stock_transaction_id: debt for debt in debt_rows.scalars().all()}
 
+        # In-stock quantity per line's lot: a purchase return can only take
+        # back what is still physically on hand (the rest was already sold).
+        from app.modules.stock.models import BatchStockBalance
+
+        product_ids = {row.product_id for row in raw if row.product_id}
+        lot_remaining: dict[tuple, Decimal] = {}
+        product_remaining: dict = {}
+        if product_ids:
+            batch_rows = await self.session.execute(
+                select(
+                    BatchStockBalance.product_id,
+                    BatchStockBalance.batch_no,
+                    BatchStockBalance.expiry_date,
+                    BatchStockBalance.remaining_quantity,
+                ).where(BatchStockBalance.product_id.in_(product_ids))
+            )
+            for pid, batch_no, expiry_date, remaining in batch_rows.all():
+                amount = Decimal(remaining or 0)
+                lot_remaining[(pid, batch_no or "", expiry_date)] = (
+                    lot_remaining.get((pid, batch_no or "", expiry_date), Decimal("0")) + amount
+                )
+                product_remaining[pid] = product_remaining.get(pid, Decimal("0")) + amount
+
         data = []
         for row in raw:
             debt = debts.get(row.id)
@@ -399,10 +425,18 @@ class ReportsService:
                     "transaction_date": row.transaction_date,
                     "supplier_name": row.supplier_name,
                     "product_name": row.product_name,
-                    "sku": row.sku,
                     "quantity": quantity,
                     "returned_quantity": returned,
                     "returnable_quantity": (quantity - returned).quantize(Q4),
+                    # Still physically in stock for this line's lot (purchase
+                    # return caps at min(returnable, available)).
+                    "available_quantity": (
+                        lot_remaining.get(
+                            (row.product_id, row.batch_no or "", row.expiry_date), Decimal("0")
+                        )
+                        if (row.batch_no or "").strip()
+                        else product_remaining.get(row.product_id, Decimal("0"))
+                    ).quantize(Q4),
                     "return_amount": (returned * unit_cost).quantize(Q2),
                     "cost_price": unit_cost,
                     "total_cost": Decimal(row.line_total),
@@ -420,6 +454,8 @@ class ReportsService:
                     "discount_amount": Decimal(row.discount_amount or 0),
                     "tax_amount": Decimal(row.tax_amount or 0),
                     "payment_method": row.payment_method,
+                    "created_by_name": row.created_by_name,
+                    "user": row.created_by_name,
                 }
             )
         return data, int(total)
@@ -644,6 +680,7 @@ class ReportsService:
         )
         operating_expense = await self.session.execute(
             select(func.coalesce(func.sum(_usd(Expense.amount, Expense.currency, Expense.exchange_rate)), 0)).where(
+                Expense.status == "POSTED",
                 Expense.expense_date >= start_at.date(),
                 Expense.expense_date < end_at.date(),
             )
@@ -741,31 +778,173 @@ class ReportsService:
             )
         )
 
-        total_sales = Decimal(sales_total.scalar_one()) - Decimal(refunds.scalar_one())
-        cogs = Decimal(sold.scalar_one()) - Decimal(restocked.scalar_one())
-        gross_profit = total_sales - cogs
+        gross_sales = Decimal(sales_total.scalar_one())
+        sale_returns = Decimal(refunds.scalar_one())
+        purchase_cost = Decimal(purchase_total.scalar_one())
+        customer_debt_total = Decimal(customer_debt.scalar_one())
+        supplier_debt_total = Decimal(supplier_debt.scalar_one())
         operating_expenses = Decimal(operating_expense.scalar_one())
         supplier_payments = Decimal(supplier_payment.scalar_one())
-        # Total Expense = operating expenses + cash paid to suppliers; Net
-        # Result includes operating expenses and supplier payments (spec 2.1.10).
-        total_expense = operating_expenses + supplier_payments
-        net_result = gross_profit - damage_loss - expiry_loss - total_expense
+
+        net_sales = gross_sales - sale_returns
+        cogs = Decimal(sold.scalar_one()) - Decimal(restocked.scalar_one())
+        gross_profit = net_sales - cogs
+        # Accounting profit NEVER subtracts supplier payments: the inventory cost
+        # is already recognized through COGS. Supplier cash-out belongs to the
+        # separate cash-flow view below.
+        operating_profit = gross_profit - damage_loss - expiry_loss - operating_expenses
+        cash_flow = await self._cash_flow_totals(start_at, end_at)
 
         return {
             "period_start": period_start,
             "period_end": period_end,
-            "total_sales": total_sales,
-            "total_expense": total_expense,
-            "total_purchase_cost": Decimal(purchase_total.scalar_one()),
-            "total_customer_debt": Decimal(customer_debt.scalar_one()),
-            "total_supplier_debt": Decimal(supplier_debt.scalar_one()),
+            "report_currency": REPORT_CURRENCY,
+            # ---- Legacy flattened cards (kept for existing clients) ----------
+            # `total_sales` is net of returns; `total_expense` is the combined
+            # cash view (operating expenses + supplier payments) and is NOT the
+            # P&L expense. Use `profit_and_loss` / `cash_flow` for reporting.
+            "total_sales": net_sales,
+            "total_expense": operating_expenses + supplier_payments,
+            "total_purchase_cost": purchase_cost,
+            "total_customer_debt": customer_debt_total,
+            "total_supplier_debt": supplier_debt_total,
             "cost_of_goods_sold": cogs,
             "stock_damage_loss": damage_loss,
             "stock_expire_loss": expiry_loss,
             "gross_profit": gross_profit,
             "operating_expenses": operating_expenses,
             "supplier_payments": supplier_payments,
-            "net_result": net_result,
+            "net_result": operating_profit,
+            # ---- Profit & Loss (accrual/accounting view) ---------------------
+            "profit_and_loss": {
+                "gross_sales": gross_sales,
+                "sale_returns": sale_returns,
+                "net_sales": net_sales,
+                "cost_of_goods_sold": cogs,
+                "gross_profit": gross_profit,
+                "operating_expenses": operating_expenses,
+                "stock_damage_loss": damage_loss,
+                "stock_expire_loss": expiry_loss,
+                "operating_profit": operating_profit,
+            },
+            # ---- Cash Flow (cash-basis view) ---------------------------------
+            "cash_flow": cash_flow,
+        }
+
+    def _finance_refund_stmt(self, payment_types: tuple[str, ...]) -> select:
+        """Payment rows for sale refunds (cash-out) / supplier refund credits.
+
+        Currency inherits the linked document snapshot (the sale for
+        SALE_REFUND, the supplier debt/purchase for SUPPLIER_RETURN_CREDIT) so
+        normalization never uses the shop's current rate."""
+        sale = aliased(Sale)
+        return (
+            select(
+                Payment.id.label("id"),
+                Payment.created_at.label("entry_date"),
+                Payment.amount.label("amount"),
+                Payment.payment_method.label("payment_method"),
+                func.coalesce(sale.currency, SupplierDebt.currency, literal("USD")).label("currency"),
+                func.coalesce(sale.exchange_rate, SupplierDebt.exchange_rate, literal(1)).label(
+                    "exchange_rate"
+                ),
+            )
+            .select_from(Payment)
+            .outerjoin(sale, sale.id == Payment.sale_id)
+            .outerjoin(SupplierDebt, SupplierDebt.id == Payment.supplier_debt_id)
+            .where(Payment.payment_type.in_(payment_types))
+        )
+
+    async def _cash_flow_totals(self, start_at: datetime, end_at: datetime) -> dict:
+        """Cash-basis inflow/outflow for the period (spec: cash flow).
+
+        Unpaid credit sales are never inflow, unpaid purchases are never
+        outflow. Supplier refunds count only when actually received in
+        cash/bank (a supplier credit is not a cash movement)."""
+        income = self._finance_income_stmt().subquery()
+
+        async def _sum_income(*, sales: bool) -> Decimal:
+            condition = income.c.category == "Sales" if sales else income.c.category != "Sales"
+            result = await self.session.execute(
+                select(
+                    func.coalesce(
+                        func.sum(_usd(income.c.amount, income.c.currency, income.c.exchange_rate)), 0
+                    )
+                ).where(
+                    income.c.entry_date >= start_at,
+                    income.c.entry_date < end_at,
+                    condition,
+                )
+            )
+            return Decimal(result.scalar_one())
+
+        sale_receipts = await _sum_income(sales=True)
+        debt_collections = await _sum_income(sales=False)
+
+        supplier = self._finance_supplier_payment_stmt().subquery()
+        supplier_result = await self.session.execute(
+            select(
+                func.coalesce(
+                    func.sum(_usd(supplier.c.amount, supplier.c.currency, supplier.c.exchange_rate)), 0
+                )
+            ).where(supplier.c.entry_date >= start_at, supplier.c.entry_date < end_at)
+        )
+        supplier_payments = Decimal(supplier_result.scalar_one())
+
+        supplier_refunds = self._finance_refund_stmt(("SUPPLIER_RETURN_CREDIT",)).subquery()
+        supplier_refund_result = await self.session.execute(
+            select(
+                func.coalesce(
+                    func.sum(
+                        _usd(
+                            supplier_refunds.c.amount,
+                            supplier_refunds.c.currency,
+                            supplier_refunds.c.exchange_rate,
+                        )
+                    ),
+                    0,
+                )
+            ).where(
+                supplier_refunds.c.entry_date >= start_at,
+                supplier_refunds.c.entry_date < end_at,
+                supplier_refunds.c.payment_method.in_(("CASH", "BANK_QR")),
+            )
+        )
+        supplier_refunds_received = Decimal(supplier_refund_result.scalar_one())
+
+        refunds = self._finance_refund_stmt(("SALE_REFUND",)).subquery()
+        refund_result = await self.session.execute(
+            select(
+                func.coalesce(
+                    func.sum(_usd(refunds.c.amount, refunds.c.currency, refunds.c.exchange_rate)), 0
+                )
+            ).where(refunds.c.entry_date >= start_at, refunds.c.entry_date < end_at)
+        )
+        customer_refunds = Decimal(refund_result.scalar_one())
+
+        expense = await self.session.execute(
+            select(
+                func.coalesce(func.sum(_usd(Expense.amount, Expense.currency, Expense.exchange_rate)), 0)
+            ).where(
+                Expense.status == "POSTED",
+                Expense.expense_date >= start_at.date(),
+                Expense.expense_date < end_at.date(),
+            )
+        )
+        operating_expenses = Decimal(expense.scalar_one())
+
+        total_inflow = sale_receipts + debt_collections + supplier_refunds_received
+        total_outflow = supplier_payments + customer_refunds + operating_expenses
+        return {
+            "sale_receipts": sale_receipts,
+            "debt_collections": debt_collections,
+            "supplier_refunds_received": supplier_refunds_received,
+            "total_inflow": total_inflow,
+            "supplier_payments": supplier_payments,
+            "customer_refunds_paid": customer_refunds,
+            "operating_expenses": operating_expenses,
+            "total_outflow": total_outflow,
+            "net_cash_flow": total_inflow - total_outflow,
         }
 
     # ------------------------------------------------- finance entries (table)
@@ -833,6 +1012,8 @@ class ReportsService:
             )
             .select_from(Expense)
             .join(User, User.id == Expense.created_by)
+            # Only POSTED expenses affect reports/cash flow.
+            .where(Expense.status == "POSTED")
         )
 
     def _finance_supplier_payment_stmt(self) -> select:
@@ -936,10 +1117,15 @@ class ReportsService:
     # -------------------------------------------------------- create expense
 
     async def create_expense(self, *, payload: ExpenseCreate, actor: User) -> Expense:
-        """Record one operating expense (Finance Report only) with audit."""
+        """Record one operating expense (Finance Report only) with audit.
+
+        Defaults to POSTED (affects reports/cash flow); DRAFT is available for
+        a review-then-post workflow."""
         amount = payload.amount.quantize(Q2)
         if amount <= 0:
             raise ValidationError("Expense amount must be greater than zero")
+        now = datetime.now(timezone.utc)
+        posted = payload.status == "POSTED"
         expense = Expense(
             expense_date=payload.date,
             category=payload.category.strip(),
@@ -949,16 +1135,21 @@ class ReportsService:
             payment_method=payload.payment_method,
             currency=payload.currency,
             exchange_rate=payload.exchange_rate,
+            status=payload.status,
+            posting_date=(payload.posting_date or payload.date) if posted else None,
+            approved_by=actor.id if posted else None,
+            approved_at=now if posted else None,
+            attachment_object_key=payload.attachment_object_key,
             created_by=actor.id,
         )
         self.session.add(expense)
         await self.session.flush()
         await record_audit(
             self.session,
-            action="CREATE",
+            action="expense_created",
             module="reports",
             user_id=actor.id,
-            entity_type="Expense",
+            entity_type="expense",
             entity_id=expense.id,
             new_values={
                 "expense_date": payload.date.isoformat(),
@@ -966,7 +1157,111 @@ class ReportsService:
                 "description": expense.description,
                 "amount": str(amount),
                 "payment_method": expense.payment_method,
+                "status": expense.status,
             },
+        )
+        await self.session.commit()
+        return expense
+
+    async def get_expense(self, expense_id) -> Expense:
+        expense = await self.session.get(Expense, expense_id)
+        if expense is None:
+            raise ValidationError("Expense not found")
+        return expense
+
+    async def update_expense(self, expense_id, payload, *, actor: User) -> Expense:
+        """Edit a DRAFT expense only; posted expenses are immutable."""
+        expense = await self.session.get(Expense, expense_id, with_for_update=True)
+        if expense is None:
+            raise ValidationError("Expense not found")
+        if expense.status != "DRAFT":
+            raise ConflictError("Only draft expenses can be edited; void and replace instead")
+        old = {
+            "category": expense.category,
+            "amount": str(expense.amount),
+            "status": expense.status,
+        }
+        if payload.expense_date is not None:
+            expense.expense_date = payload.expense_date
+        if payload.category is not None:
+            expense.category = payload.category.strip()
+        if payload.description is not None:
+            expense.description = payload.description.strip() or None
+        if payload.reference is not None:
+            expense.reference = payload.reference.strip() or None
+        if payload.amount is not None:
+            amount = payload.amount.quantize(Q2)
+            if amount <= 0:
+                raise ValidationError("Expense amount must be greater than zero")
+            expense.amount = amount
+        if payload.payment_method is not None:
+            expense.payment_method = payload.payment_method
+        if payload.currency is not None:
+            expense.currency = payload.currency
+        if payload.exchange_rate is not None:
+            expense.exchange_rate = payload.exchange_rate
+        if payload.attachment_object_key is not None:
+            expense.attachment_object_key = payload.attachment_object_key
+        await self.session.flush()
+        await record_audit(
+            self.session,
+            action="expense_updated",
+            module="reports",
+            user_id=actor.id,
+            entity_type="expense",
+            entity_id=expense.id,
+            old_values=old,
+            new_values={"category": expense.category, "amount": str(expense.amount)},
+        )
+        await self.session.commit()
+        return expense
+
+    async def post_expense(self, expense_id, *, actor: User) -> Expense:
+        """Approve/post a draft expense so it starts affecting reports."""
+        expense = await self.session.get(Expense, expense_id, with_for_update=True)
+        if expense is None:
+            raise ValidationError("Expense not found")
+        if expense.status == "VOID":
+            raise ConflictError("A voided expense cannot be posted")
+        if expense.status == "POSTED":
+            return expense
+        expense.status = "POSTED"
+        expense.posting_date = expense.posting_date or expense.expense_date
+        expense.approved_by = actor.id
+        expense.approved_at = datetime.now(timezone.utc)
+        await self.session.flush()
+        await record_audit(
+            self.session,
+            action="expense_posted",
+            module="reports",
+            user_id=actor.id,
+            entity_type="expense",
+            entity_id=expense.id,
+            new_values={"status": "POSTED", "posting_date": expense.posting_date.isoformat()},
+        )
+        await self.session.commit()
+        return expense
+
+    async def void_expense(self, expense_id, reason: str, *, actor: User) -> Expense:
+        """Void an expense (corrections use void + replacement, never delete)."""
+        expense = await self.session.get(Expense, expense_id, with_for_update=True)
+        if expense is None:
+            raise ValidationError("Expense not found")
+        if expense.status == "VOID":
+            raise ConflictError("This expense is already void")
+        expense.status = "VOID"
+        expense.void_reason = reason.strip()
+        expense.voided_by = actor.id
+        expense.voided_at = datetime.now(timezone.utc)
+        await self.session.flush()
+        await record_audit(
+            self.session,
+            action="expense_voided",
+            module="reports",
+            user_id=actor.id,
+            entity_type="expense",
+            entity_id=expense.id,
+            new_values={"status": "VOID", "reason": expense.void_reason},
         )
         await self.session.commit()
         return expense
@@ -1171,3 +1466,142 @@ class ReportsService:
             for row in rows.all()
         ]
         return data, total
+
+    # -------------------------------------------- stock valuation / recon
+
+    async def inventory_valuation(self, *, as_of: date | None = None) -> dict:
+        """Inventory valuation, batch-level.
+
+        Current-date valuation uses the batch ledger (remaining x unit cost)
+        plus any untracked balance at the moving-average cost. An explicit
+        `as_of` date derives the quantity from the movement ledger up to that
+        date and values it at the current average cost (a documented
+        approximation: historical unit costs are not reconstructed)."""
+        from app.modules.stock.models import BatchStockBalance, StockBalance
+
+        batch_agg = (
+            select(
+                BatchStockBalance.product_id.label("product_id"),
+                func.coalesce(func.sum(BatchStockBalance.remaining_quantity), 0).label("batch_qty"),
+                func.coalesce(
+                    func.sum(BatchStockBalance.remaining_quantity * BatchStockBalance.unit_cost), 0
+                ).label("batch_value"),
+            )
+            .group_by(BatchStockBalance.product_id)
+            .subquery()
+        )
+        rows = await self.session.execute(
+            select(
+                Product.id,
+                Product.name,
+                func.coalesce(StockBalance.quantity, 0).label("balance_qty"),
+                func.coalesce(StockBalance.average_cost, 0).label("average_cost"),
+                func.coalesce(batch_agg.c.batch_qty, 0).label("batch_qty"),
+                func.coalesce(batch_agg.c.batch_value, 0).label("batch_value"),
+            )
+            .select_from(Product)
+            .outerjoin(StockBalance, StockBalance.product_id == Product.id)
+            .outerjoin(batch_agg, batch_agg.c.product_id == Product.id)
+            .where(Product.status == "ACTIVE")
+            .order_by(Product.name)
+        )
+        movement_qty: dict = {}
+        if as_of is not None:
+            end_at = _day_start(as_of + timedelta(days=1))
+            mv = await self.session.execute(
+                select(
+                    StockMovement.product_id,
+                    func.coalesce(func.sum(StockMovement.quantity_delta), 0),
+                )
+                .where(StockMovement.created_at < end_at)
+                .group_by(StockMovement.product_id)
+            )
+            movement_qty = {row[0]: Decimal(row[1]) for row in mv.all()}
+
+        data = []
+        total_value = Decimal("0.00")
+        total_qty = Decimal("0.0000")
+        for row in rows.all():
+            balance_qty = Decimal(row.balance_qty)
+            avg_cost = Decimal(row.average_cost)
+            batch_qty = Decimal(row.batch_qty)
+            batch_value = Decimal(row.batch_value)
+            if as_of is not None:
+                qty = movement_qty.get(row.id, Decimal("0"))
+                value = (qty * avg_cost).quantize(Q2)
+            else:
+                qty = balance_qty
+                # Batch value plus any untracked balance at average cost.
+                untracked = max(Decimal("0"), balance_qty - batch_qty)
+                value = (batch_value + untracked * avg_cost).quantize(Q2)
+            total_value += value
+            total_qty += qty
+            data.append(
+                {
+                    "product_id": row.id,
+                    "product_name": row.name,
+                    "quantity": qty,
+                    "batch_quantity": batch_qty,
+                    "unit_cost": avg_cost,
+                    "value": value,
+                }
+            )
+        return {
+            "as_of": as_of,
+            "rows": data,
+            "total_quantity": total_qty,
+            "total_value": total_value.quantize(Q2),
+        }
+
+    async def stock_reconciliation(self) -> dict:
+        """Reconcile stock_balances vs batch remaining vs movement ledger."""
+        from app.modules.stock.models import BatchStockBalance, StockBalance
+
+        batch_agg = (
+            select(
+                BatchStockBalance.product_id.label("product_id"),
+                func.coalesce(func.sum(BatchStockBalance.remaining_quantity), 0).label("batch_qty"),
+            )
+            .group_by(BatchStockBalance.product_id)
+            .subquery()
+        )
+        movement_agg = (
+            select(
+                StockMovement.product_id.label("product_id"),
+                func.coalesce(func.sum(StockMovement.quantity_delta), 0).label("movement_qty"),
+            )
+            .group_by(StockMovement.product_id)
+            .subquery()
+        )
+        rows = await self.session.execute(
+            select(
+                Product.id,
+                Product.name,
+                func.coalesce(StockBalance.quantity, 0).label("balance_qty"),
+                func.coalesce(batch_agg.c.batch_qty, 0).label("batch_qty"),
+                func.coalesce(movement_agg.c.movement_qty, 0).label("movement_qty"),
+            )
+            .select_from(Product)
+            .outerjoin(StockBalance, StockBalance.product_id == Product.id)
+            .outerjoin(batch_agg, batch_agg.c.product_id == Product.id)
+            .outerjoin(movement_agg, movement_agg.c.product_id == Product.id)
+            .order_by(Product.name)
+        )
+        mismatches = []
+        for row in rows.all():
+            balance_qty = Decimal(row.balance_qty)
+            batch_qty = Decimal(row.batch_qty)
+            movement_qty = Decimal(row.movement_qty)
+            if balance_qty != batch_qty or balance_qty != movement_qty:
+                mismatches.append(
+                    {
+                        "product_id": row.id,
+                        "product_name": row.name,
+                        "balance_quantity": balance_qty,
+                        "batch_quantity": batch_qty,
+                        "movement_quantity": movement_qty,
+                        "difference": balance_qty - batch_qty,
+                    }
+                )
+        return {"mismatch_count": len(mismatches), "mismatches": mismatches}
+

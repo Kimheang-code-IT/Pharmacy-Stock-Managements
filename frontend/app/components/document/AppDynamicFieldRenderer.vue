@@ -9,6 +9,7 @@ import type { AppRolePermissionRow } from '~/types/stock-pos/entities'
 import { resolveFieldHelp } from '~/utils/field-help'
 import { normalizeDocumentSequenceType } from '~/utils/document-sequences'
 import { useReferenceOptions } from '~/composables/common/useReferenceOptions'
+import { useFormErrors } from '~/composables/useFormErrors'
 import type { ModuleRelated, ModuleTable } from '~/config/modules'
 import type { AppRecord } from '~/config/admin-seed'
 import { asNumber } from '~/composables/module/useModule'
@@ -32,6 +33,11 @@ const emit = defineEmits<{
 
 const { t, te } = useI18n()
 const { loadReferenceOptions } = useReferenceOptions()
+// Registers this form as an inline field-error sink, claims this field's key
+// so its error can render inline, and reads the published backend
+// `field_errors` per field key (snake/camel normalized).
+const { errorFor, claim } = useFormErrors()
+if (props.field.key) claim(props.field.key)
 
 const hintOpen = ref(false)
 
@@ -401,6 +407,12 @@ watch(() => props.field.key, () => {
       @update:currency="setDocCurrency"
       @row-action="(action, row) => lineAction?.(action, row)"
     />
+    <p
+      v-if="errorFor(field.key)"
+      class="text-sm text-error"
+    >
+      {{ errorFor(field.key) }}
+    </p>
     <CommonAppExchangeRateDialog
       v-if="field.meta?.currencyToggle"
       v-model:open="currencyRateDialogOpen"
@@ -618,6 +630,7 @@ watch(() => props.field.key, () => {
   <!-- Checkbox: label beside control + helper text below -->
   <UFormField
     v-else-if="isBoolean"
+    :error="errorFor(field.key)"
     :help="helpText"
   >
     <div class="flex min-h-11 flex-wrap items-center gap-2 pt-1">
@@ -669,6 +682,7 @@ watch(() => props.field.key, () => {
     v-else
     :label="labelText"
     :required="field.required"
+    :error="errorFor(field.key)"
     :help="helpText"
   >
     <div class="flex items-start gap-1.5">

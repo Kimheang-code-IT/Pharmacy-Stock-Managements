@@ -225,7 +225,6 @@ export interface DeliverableInvoiceItem {
   saleItemId: string
   productId: string
   product: string
-  sku: string
   uomSymbol: string
   qtyOrdered: number
   qtyRemaining: number
@@ -269,7 +268,6 @@ export function normalizeDeliverableInvoice(row: Record<string, unknown>): Deliv
       saleItemId: String(item.saleItemId ?? item.sale_item_id ?? item.id ?? ''),
       productId: String(item.productId ?? item.product_id ?? ''),
       product: String(item.product ?? item.product_name ?? item.name ?? ''),
-      sku: String(item.sku ?? ''),
       uomSymbol: String(item.uomSymbol ?? item.uom_symbol ?? item.uom ?? ''),
       qtyOrdered: num4(item.qtyOrdered ?? item.qty_ordered ?? item.quantity),
       qtyRemaining: num4(item.qtyRemaining ?? item.qty_remaining),

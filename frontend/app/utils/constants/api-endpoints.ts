@@ -22,9 +22,6 @@ export const ApiEndpoints = {
   UOMS: '/api/v1/uoms',
   UOM: (id: string) => `/api/v1/uoms/${id}`,
 
-  BRANDS: '/api/v1/brands',
-  BRAND: (id: string) => `/api/v1/brands/${id}`,
-
   PRODUCTS: '/api/v1/products',
   PRODUCT: (id: string) => `/api/v1/products/${id}`,
 
@@ -129,6 +126,7 @@ export const ApiEndpoints = {
 
   APP_INFO: '/api/v1/settings/app-info',
   APP_INFO_RESET: '/api/v1/settings/app-info/reset',
+  MAINTENANCE_REAUTH: '/api/v1/settings/maintenance/reauth',
   RESET_ALL_DATA: '/api/v1/settings/reset-data',
   CLEAR_TRANSACTIONS: '/api/v1/settings/clear-transactions',
   APP_CONFIG: '/api/v1/settings/app-config',
@@ -138,6 +136,16 @@ export const ApiEndpoints = {
   APP_CONFIG_SEND_TEST_EMAIL: '/api/v1/settings/app-config/email/send-test',
   APP_CONFIG_TEST_TELEGRAM: '/api/v1/settings/app-config/telegram/test-connection',
   APP_CONFIG_SEND_TEST_TELEGRAM: '/api/v1/settings/app-config/telegram/send-test',
+
+  /** Google Sheets backup (Settings → Backup). */
+  BACKUP_SETTINGS: '/api/v1/backup/settings',
+  BACKUP_TEST_CONNECTION: '/api/v1/backup/test-connection',
+  BACKUP_RUN: '/api/v1/backup/run',
+  BACKUP_HISTORY: '/api/v1/backup/history',
+  BACKUP_HISTORY_DETAIL: (id: string) => `/api/v1/backup/history/${id}`,
+  BACKUP_TABLES: '/api/v1/backup/tables',
+  BACKUP_REAUTH: '/api/v1/backup/reauth',
+  BACKUP_RESTORE: '/api/v1/backup/restore',
   STORAGE_PROVIDERS: '/api/v1/settings/storage',
   STORAGE_PROVIDER: (id: string) => `/api/v1/settings/storage/${id}`,
   STORAGE_PROVIDER_TEST: (id: string) => `/api/v1/settings/storage/${id}/test-connection`,
@@ -154,7 +162,6 @@ export const ApiEndpoints = {
 export const CollectionEndpoints = {
   categories: ApiEndpoints.CATEGORIES,
   uoms: ApiEndpoints.UOMS,
-  brands: ApiEndpoints.BRANDS,
   products: ApiEndpoints.PRODUCTS,
   suppliers: ApiEndpoints.SUPPLIERS,
   customers: ApiEndpoints.CUSTOMERS,

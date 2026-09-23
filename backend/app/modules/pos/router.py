@@ -101,7 +101,7 @@ async def update_sale(
     sale_id: UUID,
     payload: SaleUpdateRequest,
     db: AsyncSession = Depends(get_db_session),
-    actor: User = Depends(require_permission("pos.access")),
+    actor: User = Depends(require_permission("pos.sale_edit")),
 ) -> dict:
     """Edit a completed sale (reverse the old stock, apply the new lines)."""
     service = POSService(db)
@@ -113,7 +113,7 @@ async def return_sale(
     sale_id: UUID,
     payload: SaleReturnRequest,
     db: AsyncSession = Depends(get_db_session),
-    actor: User = Depends(require_permission("pos.access")),
+    actor: User = Depends(require_permission("pos.return")),
 ) -> dict:
     service = POSService(db)
     return envelope(await service.return_sale(sale_id, payload, actor=actor))
@@ -143,7 +143,7 @@ async def create_delivery_note_from_sale(
 async def sale_receipt(
     sale_id: UUID,
     db: AsyncSession = Depends(get_db_session),
-    actor: User = Depends(require_permission("pos.access")),
+    actor: User = Depends(require_permission("pos.print")),
 ) -> dict:
     """Print-ready bilingual invoice payload (shop, invoice, lines with UOM,
     totals, payment). The frontend prints HTML — this JSON drives the paper."""

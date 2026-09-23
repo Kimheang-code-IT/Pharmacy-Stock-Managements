@@ -16,7 +16,10 @@
 param(
   [string]$RepoUrl = "https://github.com/Kimheang-code-IT/stock_pos.git",
   [string]$InstallDir = "",
-  [switch]$SkipGitPull
+  [switch]$SkipGitPull,
+  # By default a failed pre-upgrade backup ABORTS the upgrade (never migrate a
+  # database you could not snapshot). Pass -AllowBackupFailure to override.
+  [switch]$AllowBackupFailure
 )
 
 $ErrorActionPreference = "Stop"
@@ -60,6 +63,27 @@ if (-not (Test-Path (Join-Path $infra ".env"))) {
 
 $env:IMAGE_TAG = "local"
 $env:PULL_POLICY = "build"
+
+# Pre-upgrade safety backup: if the stack is already running, snapshot the
+# database before rebuilding. Best effort so a first-time install still works.
+$runningServices = docker compose -f docker-compose.yml ps --status running --services 2>$null
+if ($runningServices -contains "db") {
+  Write-Host "Taking a pre-upgrade database backup..." -ForegroundColor Cyan
+  try {
+    & (Join-Path $infra "scripts\backup.ps1") -SkipMedia
+  }
+  catch {
+    if (-not $AllowBackupFailure) {
+      Write-Host ""
+      Write-Host "ABORTING upgrade: the pre-upgrade backup failed." -ForegroundColor Red
+      Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+      Write-Host "Fix the backup (see infrastructure\README.md section 4), then re-run." -ForegroundColor Red
+      Write-Host "To upgrade anyway (not recommended): .\scripts\install-client.ps1 -AllowBackupFailure" -ForegroundColor Yellow
+      exit 1
+    }
+    Write-Warning "Pre-upgrade backup failed: $($_.Exception.Message). Continuing because -AllowBackupFailure was set."
+  }
+}
 
 Write-Host "Building and starting from source (no app image pull)..." -ForegroundColor Cyan
 docker compose -f docker-compose.yml up -d --build --pull missing

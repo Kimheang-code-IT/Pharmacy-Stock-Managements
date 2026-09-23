@@ -24,6 +24,7 @@ DEFAULT_SEQUENCES: dict[str, str] = {
     "SUPPLIER": "SUP",
     "CUSTOMER_DEBT_PAYMENT": "CDP",
     "SUPPLIER_DEBT_PAYMENT": "SDP",
+    "SALE_REFUND": "SRF",
 }
 
 

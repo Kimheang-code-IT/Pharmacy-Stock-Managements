@@ -7,6 +7,7 @@ import { moduleDocumentRecordKey } from '~/utils/module/document-tabs'
 import { useCurrencyRateDialog } from '~/composables/common/useCurrencyRateDialog'
 import type { AppRecord } from '~/config/admin-seed'
 import type { SalePriceVersionSelection, UomConversion } from '~/utils/stock/uom-conversions'
+import { cleanConversionFactor, factorForDirection, factorFromDirection } from '~/utils/stock/uom-conversions'
 
 /**
  * Pricing editor on the product form (spec §2.1.3 / §5.9 Pricing tab).
@@ -67,6 +68,27 @@ const activeUoms = computed(() => store.list('uoms')
   })))
 
 type PricingRow = UomConversion & Record<string, unknown> & { __key: string, __base: boolean }
+
+/**
+ * UI-only entry direction per row (`__key` → reverse). The stored
+ * `factorToBase` never changes — reverse only flips the input/display to
+ * "1 Convert = N Original". Kept outside the row so it survives the parent
+ * re-emitting the model (which never carries this field).
+ */
+const reverseDirections = ref<Record<string, boolean>>({})
+
+function isReverse(row: PricingRow): boolean {
+  const override = reverseDirections.value[row.__key]
+  if (override !== undefined) return override
+  // Auto-pick the friendlier side: a sub-1 factor (e.g. 0.083333) displays as
+  // its reciprocal (1 unit = 12 pcs) unless the user toggles it.
+  return row.factorToBase > 0 && row.factorToBase < 1
+}
+
+function toggleDirection(row: PricingRow) {
+  if (row.__base || effectiveDisabled.value) return
+  reverseDirections.value = { ...reverseDirections.value, [row.__key]: !isReverse(row) }
+}
 
 const search = ref('')
 const pagination = ref<PaginationState>({ pageIndex: 0, pageSize: 50 })
@@ -273,10 +295,14 @@ function onUomChange(key: string, uomId: string) {
 }
 
 function factorLabel(row: PricingRow) {
+  // Direction flips which side is "1" — the stored factor stays the same.
+  const reverse = isReverse(row)
+  const from = reverse ? (baseUomSymbol.value || '…') : (row.uomSymbol || '…')
+  const to = reverse ? (row.uomSymbol || '…') : (baseUomSymbol.value || '…')
   return t('app.stock.convFactorLabel', {
-    from: row.uomSymbol || '…',
-    n: row.factorToBase,
-    base: baseUomSymbol.value || '…',
+    from,
+    n: cleanConversionFactor(factorForDirection(row.factorToBase, reverse)),
+    base: to,
   })
 }
 
@@ -322,15 +348,34 @@ const columns = computed<TableColumn<PricingRow>[]>(() => [
     enableSorting: false,
     meta: { class: { td: 'whitespace-nowrap', th: 'whitespace-nowrap' } },
     cell: ({ row }) => h('div', { class: 'flex flex-col gap-0.5' }, [
-      h(UInputNumber, {
-        modelValue: row.original.__base ? 1 : row.original.factorToBase,
-        min: 0,
-        step: 0.5,
-        size: 'xs',
-        class: 'w-24 tabular-nums',
-        disabled: effectiveDisabled.value || row.original.__base,
-        'onUpdate:modelValue': (value: number | null) => updateRow(row.original.__key, { factorToBase: Number(value ?? 0) }),
-      }),
+      h('div', { class: 'flex items-center gap-1' }, [
+        h(UInputNumber, {
+          modelValue: row.original.__base
+            ? 1
+            : cleanConversionFactor(factorForDirection(row.original.factorToBase, isReverse(row.original))),
+          min: 0,
+          step: isReverse(row.original) ? 0.01 : 0.5,
+          size: 'xs',
+          class: 'w-24 tabular-nums',
+          disabled: effectiveDisabled.value || row.original.__base,
+          'onUpdate:modelValue': (value: number | null) =>
+            updateRow(row.original.__key, {
+              factorToBase: factorFromDirection(value, isReverse(row.original)),
+            }),
+        }),
+        row.original.__base
+          ? null
+          : h(UButton, {
+              size: 'xs',
+              variant: 'ghost',
+              color: 'neutral',
+              icon: 'i-lucide-arrow-left-right',
+              title: t('app.stock.convDirectionToggle'),
+              'aria-label': t('app.stock.convDirectionToggle'),
+              disabled: effectiveDisabled.value,
+              onClick: () => toggleDirection(row.original),
+            }),
+      ]),
       row.original.__base
         ? null
         : h('span', { class: 'text-[10px] text-muted' }, factorLabel(row.original)),

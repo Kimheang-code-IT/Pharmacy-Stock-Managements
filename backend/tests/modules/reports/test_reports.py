@@ -677,7 +677,7 @@ async def test_debt_reports_user_filter(client, db_session):
         email=clerk_email,
         password="clerkpass1",
         role_name=f"Debt Clerk {tag}",
-        permissions=["pos.access", "report.customer_debt"],
+        permissions=["pos.access", "pos.debt_sale", "report.customer_debt"],
     )
     await db_session.commit()
     clerk_login = await login(client, clerk_email, "clerkpass1")
@@ -887,11 +887,35 @@ async def test_finance_report_reconciles_with_transactions(client, finance_basel
     assert _delta(finance_baseline, data, "cost_of_goods_sold") == Decimal("8.00")
     assert _delta(finance_baseline, data, "stock_damage_loss") == Decimal("2.00")
     assert _delta(finance_baseline, data, "stock_expire_loss") == Decimal("0.00")
-    # Gross profit = 40 - 8 = 32; Net = 32 - 2 damage - 0 expiry - 5 supplier
-    # payment = 25 (the purchase paid 5 at receipt, leaving a 15 debt).
+    # Gross profit = 40 - 8 = 32; P&L operating profit = 32 - 2 damage - 0
+    # expiry - 0 operating expense = 30. Supplier cash is NOT a P&L expense.
     assert _delta(finance_baseline, data, "gross_profit") == Decimal("32.00")
     assert _delta(finance_baseline, data, "supplier_payments") == Decimal("5.00")
-    assert _delta(finance_baseline, data, "net_result") == Decimal("25.00")
+    assert _delta(finance_baseline, data, "net_result") == Decimal("30.00")
+    # The two views are explicit and never confused.
+    pl = data["profit_and_loss"]
+    assert _delta(finance_baseline["profit_and_loss"], pl, "operating_profit") == Decimal("30.00")
+    assert Decimal(pl["net_sales"]) == Decimal(pl["gross_sales"]) - Decimal(pl["sale_returns"])
+    assert Decimal(pl["gross_profit"]) == Decimal(pl["net_sales"]) - Decimal(pl["cost_of_goods_sold"])
+    # Cash flow: cash sale 30 + the debt-sale deposit 5 = 35 inflow; supplier 5
+    # + the 10 cash refund = 15 outflow -> 20 net (the unpaid credit sale is
+    # NOT income and the open purchase debt is NOT an outflow).
+    cf = data["cash_flow"]
+    assert _delta(finance_baseline["cash_flow"], cf, "sale_receipts") == Decimal("35.00")
+    assert _delta(finance_baseline["cash_flow"], cf, "debt_collections") == Decimal("0.00")
+    assert _delta(finance_baseline["cash_flow"], cf, "customer_refunds_paid") == Decimal("10.00")
+    assert _delta(finance_baseline["cash_flow"], cf, "supplier_payments") == Decimal("5.00")
+    assert _delta(finance_baseline["cash_flow"], cf, "net_cash_flow") == Decimal("20.00")
+    assert Decimal(cf["total_inflow"]) == (
+        Decimal(cf["sale_receipts"])
+        + Decimal(cf["debt_collections"])
+        + Decimal(cf["supplier_refunds_received"])
+    )
+    assert Decimal(cf["total_outflow"]) == (
+        Decimal(cf["supplier_payments"])
+        + Decimal(cf["customer_refunds_paid"])
+        + Decimal(cf["operating_expenses"])
+    )
 
 
 @pytest.mark.asyncio

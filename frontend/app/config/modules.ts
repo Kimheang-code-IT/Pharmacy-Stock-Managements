@@ -48,6 +48,8 @@ export type ModuleLineColumn = {
   width?: string
   /** Render select columns with a searchable input menu (e.g. product picker). */
   searchable?: boolean
+  /** Maximum for a number cell (static or per-row, e.g. returnable qty). */
+  max?: number | ((row: Record<string, unknown>) => number | undefined)
   computed?: boolean
   required?: boolean
   labelKey?: string

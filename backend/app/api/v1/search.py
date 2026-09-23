@@ -44,20 +44,20 @@ async def search(
 
         rows = (
             await db.execute(
-                select(Product.id, Product.name, Product.barcode, Product.sku, StockBalance.quantity)
+                select(Product.id, Product.name, Product.barcode, StockBalance.quantity)
                 .outerjoin(StockBalance, StockBalance.product_id == Product.id)
                 .where(Product.status == "ACTIVE")
-                .where(or_(Product.name.ilike(pattern), Product.barcode.ilike(pattern), Product.sku.ilike(pattern)))
+                .where(or_(Product.name.ilike(pattern), Product.barcode.ilike(pattern)))
                 .order_by(Product.name)
                 .limit(_MAX_PER_TYPE)
             )
         ).all()
-        for product_id, name, barcode, sku, quantity in rows:
+        for product_id, name, barcode, quantity in rows:
             hits.append({
                 "id": str(product_id),
                 "type": "product",
                 "title": name,
-                "subtitle": f"{sku or barcode} \u00b7 Qty {_qty(quantity)}",
+                "subtitle": f"{barcode} \u00b7 Qty {_qty(quantity)}",
                 "url": f"/stock/products/{product_id}",
             })
 

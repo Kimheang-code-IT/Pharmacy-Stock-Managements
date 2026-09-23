@@ -63,15 +63,6 @@ export function startPasswordReset(email: string, linkCode: string | null = null
   })
 }
 
-/** Update the stored bot link code after a resend. */
-export function setPasswordResetLinkCode(linkCode: string | null) {
-  const current = readRaw()
-  if (!current?.email) return null
-  const next: PasswordResetSession = { ...current, linkCode, updatedAt: new Date().toISOString() }
-  writeRaw(next)
-  return next
-}
-
 export function getPasswordResetSession(): PasswordResetSession | null {
   return readRaw()
 }

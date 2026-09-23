@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import ListParams, envelope, get_db_session, list_params, require_permission
 from app.modules.auth.models import User
 from app.modules.reports.schemas import (
+    ExpenseUpdate,
+    ExpenseVoidRequest,
     CustomerDebtReportRow,
     ExpenseCreate,
     ExpenseOut,
@@ -215,6 +217,44 @@ async def create_expense(
     """Record an operating expense (Finance Report only — no Expense page)."""
     service = ReportsService(db)
     expense = await service.create_expense(payload=payload, actor=actor)
+    return envelope(ExpenseOut.model_validate(expense))
+
+
+@router.patch("/finance/expenses/{expense_id}")
+async def update_expense(
+    expense_id: UUID,
+    payload: ExpenseUpdate,
+    db: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_permission("report.finance")),
+    actor: User = Depends(require_permission("expense.create")),
+) -> dict:
+    """Edit a DRAFT expense (posted expenses are immutable)."""
+    expense = await ReportsService(db).update_expense(expense_id, payload, actor=actor)
+    return envelope(ExpenseOut.model_validate(expense))
+
+
+@router.post("/finance/expenses/{expense_id}/post")
+async def post_expense(
+    expense_id: UUID,
+    db: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_permission("report.finance")),
+    actor: User = Depends(require_permission("expense.approve")),
+) -> dict:
+    """Approve/post a draft expense so it affects reports and cash flow."""
+    expense = await ReportsService(db).post_expense(expense_id, actor=actor)
+    return envelope(ExpenseOut.model_validate(expense))
+
+
+@router.post("/finance/expenses/{expense_id}/void")
+async def void_expense(
+    expense_id: UUID,
+    payload: ExpenseVoidRequest,
+    db: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_permission("report.finance")),
+    actor: User = Depends(require_permission("expense.void")),
+) -> dict:
+    """Void an expense (immutable history; corrections use void + replacement)."""
+    expense = await ReportsService(db).void_expense(expense_id, payload.reason, actor=actor)
     return envelope(ExpenseOut.model_validate(expense))
 
 
@@ -444,3 +484,27 @@ async def supplier_debt_report_export(
             for row in rows
         ],
     )
+
+
+# ------------------------------------------------ valuation / reconciliation
+
+
+@router.get("/inventory-valuation")
+async def inventory_valuation(
+    as_of: date | None = Query(default=None, alias="asOf"),
+    db: AsyncSession = Depends(get_db_session),
+    actor: User = Depends(require_permission("report.stock_valuation")),
+) -> dict:
+    """Batch-level inventory valuation (optionally as of a date)."""
+    return envelope(await ReportsService(db).inventory_valuation(as_of=as_of))
+
+
+@router.get("/stock-reconciliation")
+async def stock_reconciliation(
+    db: AsyncSession = Depends(get_db_session),
+    actor: User = Depends(require_permission("report.stock_valuation")),
+) -> dict:
+    """Reconcile stock balances vs batch remaining vs the movement ledger."""
+    return envelope(await ReportsService(db).stock_reconciliation())
+
+

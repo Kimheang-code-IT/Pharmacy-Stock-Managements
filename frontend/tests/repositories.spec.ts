@@ -361,6 +361,33 @@ describe('http finance endpoints (spec §7 reports)', () => {
     })
   })
 
+  it('maps the split profit_and_loss and cash_flow summary views', async () => {
+    withFakeApi(() => ({
+      data: {
+        total_sales: 100,
+        total_expense: 40,
+        net_result: 60,
+        outstanding: 25,
+        report_currency: 'USD',
+        profit_and_loss: {
+          gross_sales: 120, sale_returns: 20, net_sales: 100, cost_of_goods_sold: 40,
+          gross_profit: 60, operating_expenses: 10, stock_damage_loss: 2,
+          stock_expire_loss: 1, operating_profit: 47,
+        },
+        cash_flow: {
+          sale_receipts: 90, debt_collections: 5, supplier_refunds_received: 0,
+          total_inflow: 95, supplier_payments: 30, customer_refunds_paid: 8,
+          operating_expenses: 10, total_outflow: 48, net_cash_flow: 47,
+        },
+      },
+    }))
+    const repository = createHttpFinanceRepository()
+    const summary = await repository.financeSummary()
+    expect(summary.reportCurrency).toBe('USD')
+    expect(summary.profitAndLoss).toMatchObject({ netSales: 100, grossProfit: 60, operatingProfit: 47 })
+    expect(summary.cashFlow).toMatchObject({ totalInflow: 95, totalOutflow: 48, netCashFlow: 47 })
+  })
+
   it('creates expenses via POST /reports/finance/expenses with snake_case body', async () => {
     const captured = withFakeApi(() => ({
       data: { id: 'exp-1', date: '2026-02-01', type: 'expense', category: 'Rent', description: 'Rent', amount: 90, payment_method: 'Cash', created_by_name: 'Sokha' },

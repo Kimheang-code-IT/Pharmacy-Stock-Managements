@@ -9,7 +9,7 @@ import { useStockQueries } from '~/repositories/index'
 import { batchStatusColor } from '~/utils/stock/batch-lots'
 import { apiErrorMessage } from '~/utils/api/errors'
 import { formatMoney } from '~/utils/format/format-service'
-import { multiplyDecimalSafe } from '~/utils/stock/uom-conversions'
+import { multiplyDecimalSafe, stockBreakdownLabel } from '~/utils/stock/uom-conversions'
 
 /**
  * Read-only batch lots of one product (product detail Batches tab).
@@ -118,7 +118,7 @@ const expiryCell = ({ row }: { row: { original: ProductBatchRow } }) =>
 const qtyCell = (value: number) =>
   h('span', {
     class: `text-end tabular-nums whitespace-nowrap font-medium ${value <= 0 ? 'text-muted' : ''}`,
-  }, String(value))
+  }, stockBreakdownLabel(value, productRecord.value))
 
 const costCell = ({ row }: { row: { original: ProductBatchRow } }) =>
   h('span', { class: 'text-end tabular-nums whitespace-nowrap' }, formatMoney(row.original.unitCost))

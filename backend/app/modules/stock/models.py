@@ -36,12 +36,12 @@ class Product(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    # Legacy internal code: optional (barcode is the operational identifier);
-    # UNIQUE retained so any stored value stays distinct.
-    sku: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True)
     # Operational identifier: unique, required, POS barcode lookup.
     barcode: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Free-text manufacturer/brand name entered on the product form (the brand
+    # master-data page was removed; brand_id is kept for legacy rows only).
+    brand: Mapped[str | None] = mapped_column(String(200), nullable=True)
     category_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("categories.id", ondelete="SET NULL"), nullable=True
     )
@@ -393,12 +393,11 @@ class StockTransactionItem(Base):
         UUID(as_uuid=True), ForeignKey("stock_transactions.id", ondelete="CASCADE"), nullable=False
     )
     # Product link is nullable so a product can be hard-deleted while the
-    # purchase/adjustment history survives through the name/sku snapshots.
+    # purchase/adjustment history survives through the name snapshot.
     product_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"), nullable=True
     )
     product_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    sku: Mapped[str | None] = mapped_column(String(100), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     system_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
@@ -470,3 +469,5 @@ class StockMovement(Base):
     )
 
     product_ref: Mapped[Product] = relationship(lazy="selectin")
+
+

@@ -38,12 +38,6 @@ export const TIME_FORMAT_OPTIONS: FieldOption[] = [
   { label: '12-hour with seconds (h:mm:ss A)', value: 'h:mm:ss A' },
 ]
 
-export const FIRST_DAY_OF_WEEK_OPTIONS: FieldOption[] = [
-  { label: 'Sunday', value: '0' },
-  { label: 'Monday', value: '1' },
-  { label: 'Saturday', value: '6' },
-]
-
 export const NUMBER_FORMAT_OPTIONS: FieldOption[] = [
   { label: '1,234.56', value: '1,234.56' },
   { label: '1.234,56', value: '1.234,56' },
@@ -53,17 +47,6 @@ export const NUMBER_FORMAT_OPTIONS: FieldOption[] = [
 export const CURRENCY_OPTIONS: FieldOption[] = [
   { label: 'USD — US Dollar', value: 'USD' },
   { label: 'KHR — Cambodian Riel', value: 'KHR' },
-]
-
-export const LOCALE_OPTIONS: FieldOption[] = [
-  { label: 'English (United States)', value: 'en-US' },
-  { label: 'English (United Kingdom)', value: 'en-GB' },
-  { label: 'Khmer (Cambodia)', value: 'km-KH' },
-  { label: 'Thai (Thailand)', value: 'th-TH' },
-  { label: 'Vietnamese (Vietnam)', value: 'vi-VN' },
-  { label: 'French (France)', value: 'fr-FR' },
-  { label: 'Japanese (Japan)', value: 'ja-JP' },
-  { label: 'Chinese (Simplified)', value: 'zh-CN' },
 ]
 
 export const PAGE_SIZE_OPTIONS: FieldOption[] = [

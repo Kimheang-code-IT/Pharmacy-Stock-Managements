@@ -3,6 +3,7 @@ import type { TableColumn } from '@nuxt/ui'
 import type { PaginationState } from '@tanstack/vue-table'
 import { h } from 'vue'
 import { formatMoney } from '~/composables/module/useModule'
+import { useFormErrors } from '~/composables/useFormErrors'
 import { PAYMENT_METHODS } from '~/config/pos-options'
 import type { PosCartLine } from '~/utils/pos/cart'
 import type { PrintPaperSize } from '~/utils/print/html'
@@ -43,6 +44,8 @@ const props = defineProps<{
     description?: string
   }>
   canOperate: boolean
+  /** Credit / debt sales are gated by `pos.debt_sale` (default allowed). */
+  canDebtSale?: boolean
   completing?: boolean
   disabled?: boolean
   /** View-only: sale detail from Sales Report — no edits, Close instead of Submit. */
@@ -51,6 +54,12 @@ const props = defineProps<{
   returnMode?: boolean
   returnReason?: string
   returnRestock?: boolean
+  /** Cash/bank refunds require `pos.refund` (default: allowed). */
+  canRefund?: boolean
+  /** Explicit refund settlement for a return (never defaulted silently). */
+  refundDisposition?: string
+  /** Required when the refund disposition is NO_REFUND. */
+  refundNote?: string
   /** Invoice paper size (A4 / A5) chosen on the keypad. */
   paperSize?: PrintPaperSize
 }>()
@@ -70,6 +79,8 @@ const emit = defineEmits<{
   'update:includedDebtIds': [value: string[]]
   'update:returnReason': [value: string]
   'update:returnRestock': [value: boolean]
+  'update:refundDisposition': [value: string]
+  'update:refundNote': [value: string]
   'update:paperSize': [value: PrintPaperSize]
   back: []
   complete: []
@@ -77,6 +88,14 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+/** Backend `field_errors` shown inline on the matching checkout fields. */
+const { errorFor, claim } = useFormErrors()
+claim('customerId')
+claim('includedDebtIds')
+claim('items')
+claim('discount')
+/** Cart-level errors (items/discount/deposit) shown once under the cart total. */
+const cartError = computed(() => errorFor('items') || errorFor('discount') || errorFor('includedDebtIds'))
 /** Every checkout amount is in the inherited sale currency — no conversion. */
 const money = (value: unknown) => formatMoney(Number(value || 0), props.saleCurrency)
 const fieldUi = { base: 'text-base' }
@@ -166,6 +185,18 @@ const columns = computed<TableColumn<CheckoutLineRow>[]>(() => [
 ])
 
 const registeredCustomers = computed(() => props.customerOptions.filter(item => item.value))
+
+/** Credit (debt) tender is hidden when the cashier lacks `pos.debt_sale`. */
+const paymentMethodItems = computed(() =>
+  props.canDebtSale === false
+    ? PAYMENT_METHODS.filter(method => method !== 'Credit')
+    : [...PAYMENT_METHODS])
+
+watch(() => props.canDebtSale, (allowed) => {
+  if (allowed === false && String(props.paymentMethod) === 'Credit') {
+    emit('update:paymentMethod', 'Cash')
+  }
+})
 const nameItems = computed(() => registeredCustomers.value)
 const nameMenuValue = computed(() => props.customerId || undefined)
 
@@ -188,11 +219,37 @@ const grandTotal = computed(() =>
   checkoutSaleNet(subtotal.value, discountTotal.value, appliedDeliveryPrice.value))
 const due = computed(() => checkoutDue(grandTotal.value))
 const returnTotal = computed(() => grandTotal.value)
+const refundDispositionProxy = computed({
+  get: () => String(props.refundDisposition || ''),
+  set: (value: string) => emit('update:refundDisposition', value),
+})
+const refundNoteProxy = computed({
+  get: () => String(props.refundNote || ''),
+  set: (value: string) => emit('update:refundNote', value),
+})
+/** Cash/bank refunds require `pos.refund`; debt/credit/none always allowed. */
+const refundOptions = computed(() => {
+  const options = [
+    { label: t('app.pos.refundDebtReduction'), value: 'DEBT_REDUCTION' },
+    { label: t('app.pos.refundStoreCredit'), value: 'CUSTOMER_CREDIT' },
+  ]
+  if (props.canRefund !== false) {
+    options.push({ label: t('app.pos.refundCash'), value: 'CASH_REFUND' })
+    options.push({ label: t('app.pos.refundBank'), value: 'BANK_QR_REFUND' })
+  }
+  options.push({ label: t('app.pos.refundNone'), value: 'NO_REFUND' })
+  return options
+})
+const needsRefundNote = computed(() => refundDispositionProxy.value === 'NO_REFUND')
+
 const canComplete = computed(() =>
   Boolean(props.cart.length)
   && props.canOperate
   && !props.disabled
-  && (!props.returnMode || Boolean(String(props.returnReason || '').trim())))
+  && (!props.returnMode
+    || (Boolean(String(props.returnReason || '').trim())
+      && Boolean(refundDispositionProxy.value)
+      && (!needsRefundNote.value || Boolean(String(props.refundNote || '').trim())))))
 
 const returnReasonProxy = computed({
   get: () => String(props.returnReason || ''),
@@ -358,6 +415,36 @@ watch(() => props.cart.length, (length) => {
             />
           </UFormField>
 
+          <UFormField
+            :label="t('app.pos.refundMethod')"
+            size="md"
+            required
+            :help="t('app.pos.refundMethodHint')"
+          >
+            <USelect
+              :model-value="refundDispositionProxy"
+              :items="refundOptions"
+              class="w-full"
+              size="lg"
+              :disabled="disabled"
+              @update:model-value="emit('update:refundDisposition', String($event))"
+            />
+          </UFormField>
+
+          <UFormField
+            v-if="needsRefundNote"
+            :label="t('app.pos.refundNote')"
+            size="md"
+            required
+          >
+            <UTextarea
+              v-model="refundNoteProxy"
+              :rows="2"
+              class="w-full"
+              :disabled="disabled"
+            />
+          </UFormField>
+
           <div class="border-t border-default pt-3">
             <UCheckbox
               v-model="returnRestockProxy"
@@ -428,6 +515,7 @@ watch(() => props.cart.length, (length) => {
           <UFormField
             :label="t('app.pos.customerName')"
             size="md"
+            :error="errorFor('customerId')"
           >
             <UInputMenu
               :model-value="nameMenuValue"
@@ -454,7 +542,7 @@ watch(() => props.cart.length, (length) => {
           >
             <USelect
               :model-value="paymentMethod"
-              :items="canOperate ? [...PAYMENT_METHODS] : ['Cash']"
+              :items="canOperate ? paymentMethodItems : ['Cash']"
               class="w-full"
               size="lg"
               :disabled="disabled"
@@ -466,6 +554,7 @@ watch(() => props.cart.length, (length) => {
             v-if="hasCustomerDebts"
             :label="t('app.pos.depositTotal')"
             size="md"
+            :error="errorFor('includedDebtIds')"
           >
             <CommonAppMoneyField
               inline
@@ -487,6 +576,13 @@ watch(() => props.cart.length, (length) => {
               <span>{{ t('app.pos.total') }}</span>
               <span class="tabular-nums">{{ money(due) }}</span>
             </div>
+
+            <p
+              v-if="cartError"
+              class="text-sm text-error"
+            >
+              {{ cartError }}
+            </p>
 
             <!-- Back + Next on one line, full width of the right block. -->
             <div class="flex gap-2">

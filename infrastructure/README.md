@@ -10,7 +10,7 @@ Compose files build from those folders.
 - `Start Stock POS.bat` / `Stop Stock POS.bat` — one-click daily use.
 - `First Time Setup.bat` — first run (creates `.env`, builds, starts).
 - `scripts/` — PowerShell helpers (see the bottom of this file).
-- `nginx/` — optional host reverse-proxy configs.
+- `nginx/stock-pos.conf` — optional HTTPS host reverse-proxy example (TLS termination).
 
 ## 1. Local-only deployment in one minute (Windows PC)
 
@@ -97,31 +97,93 @@ if you keep `ENVIRONMENT=production`.
 ## 4. Data, backups and reset
 
 PostgreSQL data, Redis data and uploaded images live in Docker **named
-volumes** (`stock_pos_pgdata`, `stock_pos_redisdata`, `stock_pos_mediadata`) —
+volumes** (`stock-pgdata`, `stock-redisdata`, `stock-mediadata`) —
 they survive `Stop Stock POS.bat` and image rebuilds.
 
-Back up the database:
+### Automated, verified backups
+
+`scripts\backup.ps1` (Windows) and `scripts\backup.sh` (Linux/CI) produce
+**timestamped** artifacts in `infrastructure\backups` (git-ignored):
+
 ```powershell
-docker compose exec -T db pg_dump -U stock_pos stock_pos > backup.sql
+.\scripts\backup.ps1                        # DB + media, 14-day retention
+.\scripts\backup.ps1 -RetentionDays 30 -SkipMedia
 ```
-Restore:
+
+Each run:
+1. runs `pg_dump -Fc` (custom/`pg_restore` format) into
+   `backups\stock_pos_<UTC-timestamp>.dump`;
+2. tars the media volume into `backups\media_<UTC-timestamp>.tgz`;
+3. **verifies integrity** with `pg_restore --list` (fails loudly on a corrupt
+   archive);
+4. prunes artifacts older than the retention window.
+
+The `backup` / `media-backup` Compose services are one-shot helpers behind the
+`tools` profile, so they never start with the stack:
+
 ```powershell
-Get-Content backup.sql | docker compose exec -T db psql -U stock_pos stock_pos
+docker compose --profile tools run --rm backup
+docker compose --profile tools run --rm media-backup
 ```
-Uploaded images are in the `stock_pos_mediadata` volume. To erase everything and
-start over (destructive):
+
+**Schedule it** with Windows Task Scheduler (run `backup.ps1` daily) or a host
+cron job calling `backup.sh`.
+
+### Restore
+
+```powershell
+# 1. Prove a backup is restorable into a throwaway DB (production untouched):
+.\scripts\restore-test.ps1
+
+# 2. Real restore (takes a safety backup, stops api/telegram, restores, restarts):
+.\scripts\restore.ps1 -Dump .\backups\stock_pos_20260923T101500Z.dump `
+                      -Media .\backups\media_20260923T101500Z.tgz `
+                      -ConfirmPhrase "RESTORE DATABASE"
+```
+
+The API container runs `alembic upgrade head` on start, so the restored schema
+is brought up to date automatically.
+
+### Disk space and health
+
+- Watch the host disk where Docker stores volumes; a full disk stops Postgres
+  writes. Keep enough free space for at least two full backups.
+- Deep health (Postgres + Redis): `GET /health/ready` on the API
+  (<http://localhost:8100/health/ready>). Liveness: `/health/live`.
+- Container health: `docker compose ps` shows `healthy` per service.
+
+### Destructive reset
+
+To erase everything and start over (irreversible):
 ```powershell
 docker compose -f docker-compose.yml down -v
 ```
+Inside the app, destructive reset/clear is guarded (password reauth + one-use
+confirmation token + exact phrase + automatic pre-deletion backup) — see the
+Settings page. Audit history and the protected system-event store survive.
 
 ## 5. Upgrade
 
 ```powershell
+# Always back up first:
+.\scripts\backup.ps1 -SkipMedia
 git pull
 .\scripts\install-client.ps1 -SkipGitPull   # rebuild images and restart
 ```
 The API entrypoint runs `alembic upgrade head` on every start, so schema changes
 apply automatically and existing data is preserved.
+
+### Rollback
+
+If an upgrade misbehaves, roll back in this order:
+1. `docker compose stop api telegram-bot frontend`
+2. `git checkout <previous-tag-or-commit>`
+3. Restore the pre-upgrade backup with `scripts\restore.ps1` (above).
+4. `.\scripts\install-client.ps1 -SkipGitPull` to rebuild the previous code and
+   restart.
+
+Never roll back only the database or only the code: keep schema and application
+in step by restoring the backup taken before the upgrade.
 
 ## 6. Troubleshooting
 
@@ -138,6 +200,9 @@ apply automatically and existing data is preserved.
 
 | Script | Purpose |
 |---|---|
+| `scripts\backup.ps1` / `.sh` | Timestamped DB + media backup, verified, with retention. |
+| `scripts\restore.ps1` | Guarded restore from a dump (safety backup + phrase). |
+| `scripts\restore-test.ps1` | Restore the newest backup into a scratch DB. |
 | `scripts\init-env.ps1` | Create `.env` with strong random secrets. |
 | `scripts\install-client.ps1` / `.sh` | Clone + build + start from source. |
 | `scripts\deploy-from-registry.ps1` / `.sh` | Pull prebuilt GHCR images and start (remote prod). |
@@ -156,5 +221,20 @@ docker compose config --quiet       # validate config
 
 There is one Compose file — `docker-compose.yml`. It runs only `db`, `redis`,
 `api`, `frontend` and `telegram-bot` (no RabbitMQ, no Celery workers: scheduled
-jobs run inside the API process). To use prebuilt registry images instead of a
-local build, set `IMAGE_REGISTRY`, `IMAGE_TAG` and `PULL_POLICY=always` in `.env`.
+jobs run inside the API process). The `backup` / `media-backup` helpers live
+behind the `tools` profile and only run when invoked explicitly. To use prebuilt
+registry images instead of a local build, set `IMAGE_REGISTRY`, `IMAGE_TAG` and
+`PULL_POLICY=always` in `.env`.
+
+## 8. Continuous integration
+
+`.github/workflows/ci.yml` runs on every push/PR:
+- **backend** — `ruff check app`, a production-config safety assertion, and
+  `python -m pytest tests -q` against Postgres + Redis service containers;
+- **alembic** — `alembic upgrade head` from an empty database, asserts exactly
+  one head, then `downgrade base` + `upgrade head` to prove reversibility;
+- **frontend** — `pnpm install --frozen-lockfile`, `pnpm prepare:nuxt`,
+  `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build`.
+
+Reproduce the backend jobs locally with the Docker DB/Redis from section 1 and
+the commands in `AGENTS.md`.

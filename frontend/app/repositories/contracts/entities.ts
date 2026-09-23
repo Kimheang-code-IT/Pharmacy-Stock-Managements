@@ -512,6 +512,16 @@ export interface PosCommandRepository {
     saleId: string
     reason: string
     lines: Array<{ lineId: string, quantity: number, restock: boolean }>
+    /**
+     * How any refundable amount beyond an open debt is settled. Must be an
+     * explicit choice so a cash refund is never posted without the cashier
+     * selecting it: DEBT_REDUCTION | CASH_REFUND | BANK_QR_REFUND |
+     * STORE_CREDIT | CUSTOMER_CREDIT | NO_REFUND.
+     */
+    refundDisposition?: string
+    /** Required when refundDisposition is NO_REFUND. */
+    refundNote?: string | null
+    refundReference?: string | null
   }): Promise<AppRecord>
   /** Supplier return against a confirmed Stock In (POST /stock/in/{id}/return). */
   returnPurchase(input: {
@@ -570,11 +580,44 @@ export interface DashboardSummary {
   endDate?: string | null
 }
 
+/**
+ * Accounting (accrual) view. COGS already recognizes inventory cost, so
+ * supplier payments never appear here — profit and cash flow are distinct.
+ */
+export interface FinanceProfitAndLoss {
+  grossSales: number
+  saleReturns: number
+  netSales: number
+  costOfGoodsSold: number
+  grossProfit: number
+  operatingExpenses: number
+  stockDamageLoss: number
+  stockExpireLoss: number
+  operatingProfit: number
+}
+
+/** Cash-basis view: only money that actually moved in the period. */
+export interface FinanceCashFlow {
+  saleReceipts: number
+  debtCollections: number
+  supplierRefundsReceived: number
+  totalInflow: number
+  supplierPayments: number
+  customerRefundsPaid: number
+  operatingExpenses: number
+  totalOutflow: number
+  netCashFlow: number
+}
+
 export interface FinanceSummary {
   income: number
   expense: number
   net: number
   outstanding: number
+  /** Reporting currency of the normalized summary values (default USD). */
+  reportCurrency?: string
+  profitAndLoss?: FinanceProfitAndLoss | null
+  cashFlow?: FinanceCashFlow | null
   startDate?: string | null
   endDate?: string | null
 }

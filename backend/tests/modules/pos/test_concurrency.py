@@ -80,3 +80,41 @@ async def test_concurrent_debt_payments_never_overpay(client):
     assert Decimal(row["paid_amount"]) == Decimal("8.00")
     assert Decimal(row["remaining_amount"]) == Decimal("2.00")
     assert Decimal(row["paid_amount"]) <= Decimal(row["original_amount"])
+
+
+@pytest.mark.asyncio
+async def test_concurrent_returns_cannot_over_return(client):
+    """Two simultaneous full returns of the same line: exactly one wins."""
+    headers = await admin_headers(client)
+    product = await make_stocked_product(client, headers, sku="CONC-3", name="Race Return Widget", qty="2")
+    sale = (
+        await client.post(
+            "/api/v1/pos/sales",
+            json={
+                "payment_method": "CASH",
+                "amount_received": "100.00",
+                "items": [{"product_id": product["id"], "quantity": "2"}],
+            },
+            headers=headers,
+        )
+    ).json()["data"]
+    sale_item_id = sale["items"][0]["id"]
+
+    async def refund():
+        return await client.post(
+            f"/api/v1/pos/sales/{sale['id']}/return",
+            json={
+                "reason": "race",
+                "refund_disposition": "CASH_REFUND",
+                "items": [{"sale_item_id": sale_item_id, "quantity": "2", "restock": True}],
+            },
+            headers=headers,
+        )
+
+    first, second = await asyncio.gather(refund(), refund())
+    statuses = sorted([first.status_code, second.status_code])
+    assert statuses == [201, 409], (first.text, second.text)
+
+    detail = (await client.get(f"/api/v1/pos/sales/{sale['id']}", headers=headers)).json()["data"]
+    assert Decimal(detail["items"][0]["returned_quantity"]) == Decimal("2")
+    assert await balance_of(client, headers, product["id"]) == Decimal("2.0000")

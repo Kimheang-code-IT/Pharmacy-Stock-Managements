@@ -4,6 +4,7 @@ import PosCheckoutPanel from '~/components/pos/PosCheckoutPanel.vue'
 import PosProductBrowser from '~/components/pos/PosProductBrowser.vue'
 import { useAppHeader } from '~/composables/layout/useAppHeader'
 import { useCurrencyRateDialog } from '~/composables/common/useCurrencyRateDialog'
+import { useConfirm } from '~/composables/common/useConfirm'
 import { usePosChrome } from '~/composables/layout/usePosChrome'
 import { usePosScanner } from '~/composables/pos/usePosScanner'
 import { usePageSeo } from '~/composables/usePageSeo'
@@ -32,6 +33,7 @@ import {
 } from '~/utils/pos/checkout'
 import { printSaleInvoice, type SaleInvoicePrintInput } from '~/utils/print/invoice'
 import { apiErrorMessage, isApiErrorHandled } from '~/utils/api/errors'
+import { clearPublishedFieldErrors } from '~/composables/useFormErrors'
 import { resolveExactBarcode } from '~/utils/pos/barcode-scan'
 import { saleEditCartLines, saleReturnCartLines } from '~/utils/pos/return'
 import type { PrintPaperSize } from '~/utils/print/html'
@@ -56,6 +58,7 @@ const posCommands = usePosCommands()
 const deliveryCommands = useDeliveryCommands()
 const { appInfo } = useSettingsRepositories()
 const toast = useToast()
+const { confirm } = useConfirm()
 
 const shopName = ref('Yoeun Sokhon Pharmacy')
 const step = ref<PosStep>('cart')
@@ -154,6 +157,9 @@ const returnInvoiceNo = ref('')
 const returnReason = ref('')
 const returnRestock = ref(true)
 const returnLoading = ref(false)
+/** Explicit refund settlement for the return (never defaulted silently). */
+const returnRefundDisposition = ref('')
+const returnRefundNote = ref('')
 
 /* ------------------------------- edit mode ------------------------------- */
 /** POS edit mode: an existing invoice is loaded with its original lines and
@@ -222,6 +228,16 @@ const canOperate = computed(() =>
 const canDiscount = computed(() =>
   auth.canAccessPage('pos.discount'))
 
+/**
+ * Every POS capability is gated in the backend; these computeds only hide or
+ * disable the UI affordance (the server is the authority).
+ */
+const canDebtSale = computed(() => auth.canAccessPage('pos.debt_sale'))
+const canPrint = computed(() => auth.canAccessPage('pos.print'))
+const canSaleEdit = computed(() => auth.canAccessPage('pos.sale_edit'))
+const canReturn = computed(() => auth.canAccessPage('pos.return'))
+const canRefund = computed(() => auth.canAccessPage('pos.refund'))
+
 const currency = computed(() => preferences.currency)
 
 const categoryOptions = computed(() => [
@@ -238,7 +254,7 @@ const products = computed(() => {
     .filter(row => !categoryId.value || String(row.categoryId) === categoryId.value)
     .filter((row) => {
       if (!q) return true
-      return [row.name, row.barcode, row.code]
+      return [row.name, row.barcode]
         .map(value => String(value || '').toLowerCase())
         .some(value => value.includes(q))
     })
@@ -592,6 +608,10 @@ watch(isCredit, (credit) => {
  *  lines (original UOM, price, discount, currency/rate, customer) and record
  *  a Sale Return on Submit — never a new sale. */
 async function loadReturnSale(saleId: string) {
+  if (!canReturn.value) {
+    toast.add({ title: t('app.states.accessDeniedDescription'), color: 'error' })
+    return
+  }
   returnLoading.value = true
   try {
     await store.fetchList('products')
@@ -613,6 +633,14 @@ async function loadReturnSale(saleId: string) {
     returnSaleId.value = saleId
     returnReason.value = ''
     returnRestock.value = true
+    // Default the refund settlement to what is safe for this sale: reduce the
+    // open debt first, otherwise a cash refund (or store credit without the
+    // refund permission). The cashier can still change it explicitly.
+    const hasDebt = Number(sale.debtAmount || 0) > 0
+    returnRefundDisposition.value = hasDebt
+      ? 'DEBT_REDUCTION'
+      : (canRefund.value ? 'CASH_REFUND' : 'CUSTOMER_CREDIT')
+    returnRefundNote.value = ''
     step.value = 'cart'
   }
   catch (error: unknown) {
@@ -635,6 +663,8 @@ function exitReturnMode() {
   returnInvoiceNo.value = ''
   returnReason.value = ''
   returnRestock.value = true
+  returnRefundDisposition.value = ''
+  returnRefundNote.value = ''
   cart.value = []
   customerId.value = undefined
   customerName.value = ''
@@ -660,12 +690,40 @@ async function completeReturn() {
     toast.add({ title: t('app.reports.returnQtyRequired'), color: 'warning' })
     return
   }
+  // An explicit refund settlement is required; NO_REFUND additionally needs a
+  // written reason. A cash/bank refund must be confirmed before it is posted.
+  const disposition = returnRefundDisposition.value
+  if (!disposition) {
+    toast.add({ title: t('app.pos.refundMethodRequired'), color: 'warning' })
+    return
+  }
+  if (disposition === 'NO_REFUND' && !returnRefundNote.value.trim()) {
+    toast.add({ title: t('app.pos.refundNoteRequired'), color: 'warning' })
+    return
+  }
+  const isMonetary = disposition === 'CASH_REFUND' || disposition === 'BANK_QR_REFUND'
+  if (isMonetary && canRefund.value) {
+    const methodLabel = disposition === 'CASH_REFUND'
+      ? t('app.pos.refundCash')
+      : t('app.pos.refundBank')
+    const ok = await confirm({
+      kind: 'generic',
+      titleKey: 'app.pos.refundConfirmTitle',
+      descriptionKey: 'app.pos.refundConfirmHelp',
+      descriptionParams: { method: methodLabel },
+      confirmLabelKey: 'app.pos.refundConfirmAction',
+      confirmColor: 'warning',
+    })
+    if (!ok) return
+  }
   completing.value = true
   try {
     const result = await posCommands.returnSale({
       saleId: returnSaleId.value,
       reason,
       lines,
+      refundDisposition: disposition,
+      refundNote: returnRefundNote.value.trim() || null,
     })
     toast.add({
       title: `${t('app.reports.returnSaved')} · ${String(result.returnNo || '')}`,
@@ -698,6 +756,10 @@ async function completeReturn() {
 /** Load an existing invoice into the POS for editing: original lines, prices,
  *  discounts, UOM, currency/rate and customer. Submit re-saves via PATCH. */
 async function loadEditSale(saleId: string) {
+  if (!canSaleEdit.value) {
+    toast.add({ title: t('app.states.accessDeniedDescription'), color: 'error' })
+    return
+  }
   editLoading.value = true
   try {
     await store.fetchList('products')
@@ -893,6 +955,8 @@ function onPaymentConfirm(amount: number) {
 }
 
 async function completeSale() {
+  // Fresh attempt: clear inline checkout errors from the previous submit.
+  clearPublishedFieldErrors()
   if (returnMode.value) {
     await completeReturn()
     return
@@ -1017,7 +1081,8 @@ async function completeSale() {
     const delivery = pendingDelivery.value
     pendingDelivery.value = null
     try {
-      await printSaleInvoice(printInput, printPaperSize.value)
+      // Receipt data is gated by `pos.print`; without it the sale is still saved.
+      if (canPrint.value) await printSaleInvoice(printInput, printPaperSize.value)
     }
     catch {
       // ignore — the sale is already saved
@@ -1177,14 +1242,20 @@ async function completeSale() {
       :debts="openDebts"
       :customer-options="customerOptions"
       :can-operate="canOperate && !viewMode"
+      :can-debt-sale="canDebtSale"
       :completing="completing"
       :disabled="viewMode || !canOperate"
       :view-mode="viewMode"
       :return-mode="returnMode"
       :return-reason="returnReason"
       :return-restock="returnRestock"
+      :can-refund="canRefund"
+      :refund-disposition="returnRefundDisposition"
+      :refund-note="returnRefundNote"
       @update:return-reason="returnReason = $event"
       @update:return-restock="returnRestock = $event"
+      @update:refund-disposition="returnRefundDisposition = $event"
+      @update:refund-note="returnRefundNote = $event"
       @back="goBack"
       @complete="completeSale"
       @pay="onPaymentConfirm"

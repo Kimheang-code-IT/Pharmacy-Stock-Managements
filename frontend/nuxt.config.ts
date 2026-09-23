@@ -52,8 +52,6 @@ export default defineNuxtConfig({
       apiBase: import.meta.env.NUXT_PUBLIC_API_BASE || 'auto',
       apiTimeoutMs: Number(import.meta.env.NUXT_PUBLIC_API_TIMEOUT_MS || 30000),
       authMode: import.meta.env.NUXT_PUBLIC_AUTH_MODE === 'cookie' ? 'cookie' : 'bearer',
-      csrfCookieName: import.meta.env.NUXT_PUBLIC_CSRF_COOKIE_NAME || 'XSRF-TOKEN',
-      csrfHeaderName: import.meta.env.NUXT_PUBLIC_CSRF_HEADER_NAME || 'X-CSRF-Token',
       appVersion: import.meta.env.NUXT_PUBLIC_APP_VERSION || '0.1.0',
       // Canonical public origin for Open Graph / Twitter image URLs (no trailing slash).
       // Example: https://app.stockpos.example — required for link previews to show images.
