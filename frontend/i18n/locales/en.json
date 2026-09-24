@@ -561,6 +561,7 @@
       "setupFailedDesc": "Please check the entered information and try again.",
       "shopName": "Shop name",
       "passwordConfirm": "Confirm password",
+      "passwordConfirmPlaceholder": "Re-enter your password",
       "passwordMismatch": "Passwords do not match",
       "backToLogin": "Back to login"
     },

@@ -42,6 +42,9 @@ const state = reactive({
   passwordConfirmation: '',
 })
 
+const showPassword = ref(false)
+const showPasswordConfirmation = ref(false)
+
 async function onSubmit(payload: FormSubmitEvent<Schema>) {
   if (submitting.value) return
   submitting.value = true
@@ -99,17 +102,41 @@ placeholder="admin@stockpos.local" />
         <UInput
 v-model="state.password"
 name="password"
-type="password"
+:type="showPassword ? 'text' : 'password'"
 size="lg"
-class="w-full" />
+class="w-full"
+:placeholder="t('pages.auth.passwordPlaceholder')"
+:ui="{ trailing: 'pe-1' }">
+          <template #trailing>
+            <UButton
+:icon="showPassword ? 'i-lucide-eye-off' : 'i-lucide-eye'"
+color="neutral"
+variant="link"
+size="sm"
+:aria-label="showPassword ? t('core.common.hideSecret') : t('core.common.showSecret')"
+@click="showPassword = !showPassword" />
+          </template>
+        </UInput>
       </UFormField>
       <UFormField :label="t('pages.auth.passwordConfirm')" name="passwordConfirmation" required>
         <UInput
 v-model="state.passwordConfirmation"
 name="passwordConfirmation"
-type="password"
+:type="showPasswordConfirmation ? 'text' : 'password'"
 size="lg"
-class="w-full" />
+class="w-full"
+:placeholder="t('pages.auth.passwordConfirmPlaceholder')"
+:ui="{ trailing: 'pe-1' }">
+          <template #trailing>
+            <UButton
+:icon="showPasswordConfirmation ? 'i-lucide-eye-off' : 'i-lucide-eye'"
+color="neutral"
+variant="link"
+size="sm"
+:aria-label="showPasswordConfirmation ? t('core.common.hideSecret') : t('core.common.showSecret')"
+@click="showPasswordConfirmation = !showPasswordConfirmation" />
+          </template>
+        </UInput>
       </UFormField>
 
       <UButton

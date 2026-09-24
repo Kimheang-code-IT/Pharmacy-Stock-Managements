@@ -1343,6 +1343,7 @@
       "setupFailedDesc": "សូមពិនិត្យព័ត៌មានដែលបានបញ្ចូល ហើយសាកល្បងម្តងទៀត។",
       "shopName": "ឈ្មោះហាង",
       "passwordConfirm": "បញ្ជាក់ពាក្យសម្ងាត់",
+      "passwordConfirmPlaceholder": "បញ្ចូលពាក្យសម្ងាត់ម្តងទៀត",
       "passwordMismatch": "ពាក្យសម្ងាត់មិនត្រូវគ្នាទេ",
       "backToLogin": "ត្រឡប់ទៅការចូល"
     },
