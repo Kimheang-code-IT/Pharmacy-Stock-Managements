@@ -90,9 +90,24 @@ No admin rights are required. Undo with `scripts\stockpos\remove-autostart.bat`.
 > Never commit `.env` — it contains secrets. It is already git-ignored.
 
 ### LAN access (optional)
-Set `FRONTEND_BIND=0.0.0.0` (or the PC's LAN IP) in `.env`, then
-`scripts\stockpos\restart-system.bat`. Add your frontend URL to `CORS_ORIGINS`
-if you keep `ENVIRONMENT=production`.
+To open the app from another device (iPad, phone, laptop) on the same Wi-Fi:
+
+1. Set `FRONTEND_BIND=0.0.0.0` (or the PC's LAN IP) in `.env`, then run
+   `scripts\stockpos\restart-system.bat`.
+2. Allow the port through Windows Firewall (one-time, asks for admin):
+   `scripts\allow-lan-access.ps1` — it adds the inbound rule and prints the
+   URLs to use, e.g. `http://192.168.1.50/`.
+3. On the other device, connect to the **same Wi-Fi** and open that URL.
+
+Add your frontend URL to `CORS_ORIGINS` if you keep `ENVIRONMENT=production`.
+Set `FRONTEND_BASE_URL` to the LAN URL too if you use Telegram password resets
+(deep links would otherwise point at `localhost`).
+
+> Some Wi-Fi routers (guest networks, phone hotspots) use "AP/client
+> isolation", which blocks device-to-device traffic regardless of the firewall.
+> If a device still cannot connect, disable isolation or join the main network.
+> DHCP can also change the PC's IP — set a static IP / DHCP reservation and
+> update `CORS_ORIGINS` / `FRONTEND_BASE_URL` if the URL stops working.
 
 ## 4. Data, backups and reset
 
