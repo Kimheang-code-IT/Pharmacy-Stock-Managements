@@ -1583,7 +1583,7 @@ class StockOperationService:
             if product.track_batch and not (item.batch_no or "").strip():
                 raise ValidationError(
                     "Batch number is required for batch-tracked products",
-                    field_errors={"items": "Batch number is required"},
+                    field_errors={"batch_no": "Batch number is required"},
                 )
             # Validate + deduct the named batch lot (when the caller names
             # one). Unbatched damage/expiry drains FEFO (disposals may write
@@ -1711,7 +1711,10 @@ class StockOperationService:
             result = await self.stock_in(request, actor=actor)
         elif operation_type == "adjustment":
             if Decimal(payload.quantity) == 0:
-                raise ValidationError("Quantity cannot be zero")
+                raise ValidationError(
+                    "Quantity cannot be zero",
+                    field_errors={"quantity": "Quantity cannot be zero"},
+                )
             balance = await self.repo.ensure_balance(product.id)
             request = StockAdjustmentRequest(
                 transaction_date=payload.transaction_date,
@@ -1728,7 +1731,10 @@ class StockOperationService:
             result = await self.adjust(request, actor=actor)
         elif operation_type in ("damage", "expiry"):
             if base_quantity <= 0:
-                raise ValidationError("Quantity must be greater than zero")
+                raise ValidationError(
+                    "Quantity must be greater than zero",
+                    field_errors={"quantity": "Quantity must be greater than zero"},
+                )
             if operation_type == "expiry":
                 request = StockExpireRequest(
                     transaction_date=payload.transaction_date,

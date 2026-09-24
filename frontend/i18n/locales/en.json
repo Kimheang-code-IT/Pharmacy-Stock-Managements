@@ -1335,7 +1335,10 @@
       "stockIns": {
         "title": "Purchase Report",
         "singular": "Purchase",
-        "description": "Stock-in and purchase history per supplier."
+        "description": "Stock-in and purchase history per supplier.",
+        "fields": {
+          "remaining": "Remaining Amount"
+        }
       },
       "customerDebts": {
         "title": "Customer Debt Report",

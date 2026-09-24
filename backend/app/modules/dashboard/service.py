@@ -2,9 +2,11 @@
 
 Definitions (aligned with the Finance Report, spec 2.1.10):
 - Income        = sum of confirmed sale grand totals in the period.
-- Expense       = sum of operating expenses (Add Expense on the Finance
-                  Report) in the period — NOT Stock In purchase cost, so the
-                  Dashboard and Finance Report always agree.
+- Expense       = cash actually paid out in the period: operating expenses
+                  (Add Expense on the Finance Report) PLUS supplier payments
+                  (stock-in payments and supplier-debt repayments). This
+                  matches the Finance Report ledger/cash view (spec 2.1.10);
+                  the accounting P&L keeps supplier payments out of COGS.
 - Gross Profit  = (Income - sale refunds) - COGS, where COGS is the sold
                   unit cost net of restocked sale returns.
 - Damage/Expiry = sum of |quantity_delta| x unit_cost over the matching
@@ -24,18 +26,20 @@ from decimal import Decimal
 
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.core.exceptions import ValidationError
 from app.core.permissions import user_has_permission
 from app.modules.auth.models import User
 from app.modules.customers.models import Customer, CustomerDebt
 from app.modules.delivery.models import DeliveryNote
-from app.modules.pos.models import Sale, SaleItem, SaleItemBatch, SaleReturn, SaleReturnItem
+from app.modules.pos.models import Payment, Sale, SaleItem, SaleItemBatch, SaleReturn, SaleReturnItem
 from app.modules.reports.models import Expense
 from app.modules.stock.models import (
     Product,
     StockBalance,
     StockMovement,
+    StockTransaction,
 )
 from app.modules.suppliers.models import SupplierDebt
 
@@ -116,14 +120,44 @@ class DashboardService:
         return int(result.scalar_one())
 
     async def _operating_expenses(self, start_at: datetime, end_at: datetime) -> Decimal:
-        """Operating expenses recorded via Add Expense (Finance Report).
-        The Expense KPI/chart intentionally EXCLUDES Stock In purchase cost so
-        Dashboard and Finance Report agree (spec 2.1.10)."""
+        """Operating expenses recorded via Add Expense (Finance Report)."""
         result = await self.session.execute(
             select(func.coalesce(func.sum(_usd(Expense.amount, Expense.currency, Expense.exchange_rate)), 0)).where(
                 Expense.status == "POSTED",
                 Expense.expense_date >= start_at.date(),
                 Expense.expense_date < end_at.date(),
+            )
+        )
+        return Decimal(result.scalar_one())
+
+    async def _supplier_payments(self, start_at: datetime, end_at: datetime) -> Decimal:
+        """Cash actually paid to suppliers in [start_at, end_at): stock-in
+        payments plus later supplier-debt repayments.
+
+        Same rule as the Finance Report cash view — the Dashboard Expense
+        KPI/chart includes purchases (spec 2.1.10), while the accounting P&L
+        keeps inventory cost out of it (recognized through COGS instead)."""
+        purchase = aliased(StockTransaction)
+        result = await self.session.execute(
+            select(
+                func.coalesce(
+                    func.sum(
+                        _usd(
+                            Payment.amount,
+                            func.coalesce(SupplierDebt.currency, purchase.currency, "USD"),
+                            func.coalesce(SupplierDebt.exchange_rate, purchase.exchange_rate, 1),
+                        )
+                    ),
+                    0,
+                )
+            )
+            .select_from(Payment)
+            .outerjoin(SupplierDebt, SupplierDebt.id == Payment.supplier_debt_id)
+            .outerjoin(purchase, purchase.document_no == Payment.reference_no)
+            .where(
+                Payment.payment_type.in_(("STOCK_IN_PAYMENT", "SUPPLIER_DEBT_PAYMENT")),
+                Payment.created_at >= start_at,
+                Payment.created_at < end_at,
             )
         )
         return Decimal(result.scalar_one())
@@ -254,9 +288,35 @@ class DashboardService:
             )
             .group_by(Expense.expense_date)
         )
+        purchase = aliased(StockTransaction)
+        supplier_rows = await self.session.execute(
+            select(
+                func.date(Payment.created_at).label("day"),
+                func.coalesce(
+                    func.sum(
+                        _usd(
+                            Payment.amount,
+                            func.coalesce(SupplierDebt.currency, purchase.currency, "USD"),
+                            func.coalesce(SupplierDebt.exchange_rate, purchase.exchange_rate, 1),
+                        )
+                    ),
+                    0,
+                ),
+            )
+            .select_from(Payment)
+            .outerjoin(SupplierDebt, SupplierDebt.id == Payment.supplier_debt_id)
+            .outerjoin(purchase, purchase.document_no == Payment.reference_no)
+            .where(
+                Payment.payment_type.in_(("STOCK_IN_PAYMENT", "SUPPLIER_DEBT_PAYMENT")),
+                Payment.created_at >= start_at,
+                Payment.created_at < end_at,
+            )
+            .group_by(func.date(Payment.created_at))
+        )
         income = {row.day: (Decimal(row[1]), int(row[2])) for row in income_rows.all()}
         refunds = {row.day: Decimal(row[1]) for row in refund_rows.all()}
         expense = {row.day: Decimal(row[1]) for row in expense_rows.all()}
+        supplier = {row.day: Decimal(row[1]) for row in supplier_rows.all()}
         series = []
         day = start
         while day <= end:
@@ -266,7 +326,7 @@ class DashboardService:
                     "date": day,
                     "sales_count": day_count,
                     "income": day_income - refunds.get(day, Decimal("0.00")),
-                    "expense": expense.get(day, Decimal("0.00")),
+                    "expense": expense.get(day, Decimal("0.00")) + supplier.get(day, Decimal("0.00")),
                 }
             )
             day += timedelta(days=1)
@@ -381,7 +441,11 @@ class DashboardService:
         today_end = _day_start(_today() + timedelta(days=1))
         today_sales, today_sales_count = await self._sales_stats(today_start, today_end)
         total_income, _period_sales_count = await self._sales_stats(start_at, end_at)
-        total_expense = await self._operating_expenses(start_at, end_at)
+        operating_expenses = await self._operating_expenses(start_at, end_at)
+        supplier_payments = await self._supplier_payments(start_at, end_at)
+        # Expense KPI/chart = cash out (operating expenses + supplier payments),
+        # matching the Finance Report ledger (spec 2.1.10).
+        total_expense = operating_expenses + supplier_payments
         customer_debt, supplier_debt = await self._debt_totals()
         damage_loss = await self._loss_totals("DAMAGE", start_at, end_at)
         expiry_loss = await self._loss_totals("EXPIRE", start_at, end_at)
@@ -394,8 +458,9 @@ class DashboardService:
             cogs = await self._cogs(start_at, end_at)
             gross_profit = total_income - cogs
             # Net income = gross profit - losses - operating expenses
-            # (finance net_result, spec 2.1.10).
-            net_income = gross_profit - damage_loss - expiry_loss - total_expense
+            # (finance net_result, spec 2.1.10). Supplier payments are NOT
+            # subtracted here — inventory cost is already in COGS.
+            net_income = gross_profit - damage_loss - expiry_loss - operating_expenses
 
         product_count = await self.session.execute(
             select(func.count()).select_from(Product).where(Product.status == "ACTIVE")

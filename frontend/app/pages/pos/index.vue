@@ -8,7 +8,8 @@ import { useConfirm } from '~/composables/common/useConfirm'
 import { usePosChrome } from '~/composables/layout/usePosChrome'
 import { usePosScanner } from '~/composables/pos/usePosScanner'
 import { usePageSeo } from '~/composables/usePageSeo'
-import { useDeliveryCommands, usePosCommands, useSettingsRepositories } from '~/repositories/index'
+import { useDeliveryCommands, useEntityRepository, usePosCommands, useSettingsRepositories } from '~/repositories/index'
+import type { AppRecord } from '~/config/admin-seed'
 import type { PosCartLine } from '~/utils/pos/cart'
 import {
   allocateBatches,
@@ -48,6 +49,7 @@ definePageMeta({ titleKey: 'app.nav.pos', permission: 'pos.access' })
 type PosStep = 'cart' | 'checkout'
 
 const store = useAppDataStore()
+const entityRepository = useEntityRepository()
 const route = useRoute()
 const preferences = usePreferencesStore()
 const auth = useAuthStore()
@@ -197,7 +199,8 @@ hidePosAppHeader.value = true
 
 onMounted(async () => {
   void store.fetchList('products')
-  void store.fetchList('customers')
+  await store.fetchList('customers')
+  await loadWalkInCustomer()
   void store.fetchList('categories')
   try {
     const info = await appInfo.get()
@@ -218,7 +221,12 @@ onMounted(async () => {
     return
   }
   const editId = String(route.query.editSaleId || '')
-  if (editId) await loadEditSale(editId)
+  if (editId) {
+    await loadEditSale(editId)
+    return
+  }
+  // Fresh POS session: default the customer selector to the walk-in customer.
+  applyDefaultCustomer()
 })
 
 const canOperate = computed(() =>
@@ -278,8 +286,44 @@ const customerOptions = computed(() =>
     })),
 )
 
+/** Seeded system walk-in customer (is_walk_in) — the POS default selection. */
+const walkInCustomerId = ref<string | undefined>(undefined)
+
+/** True when no registered customer is chosen (empty or the walk-in). */
+const isWalkInCustomer = computed(() =>
+  !customerId.value || String(customerId.value) === walkInCustomerId.value)
+
+/** Resolve the walk-in customer and make sure it is in the cached list so the
+ *  checkout selector can default to and display it (it may be off-page on
+ *  large customer lists — fall back to a server search). */
+async function loadWalkInCustomer() {
+  const isWalkIn = (row: AppRecord) => Boolean(row.is_walk_in ?? row.isWalkIn)
+  const fromList = store.list('customers').find(isWalkIn)
+  if (fromList) {
+    walkInCustomerId.value = String(fromList.id)
+    return
+  }
+  try {
+    const matches = await entityRepository.list('customers', { q: 'Walk-in Customer' })
+    const found = matches.items.find(isWalkIn)
+    if (found) {
+      await store.fetchOne('customers', String(found.id))
+      walkInCustomerId.value = String(found.id)
+    }
+  }
+  catch {
+    // Walk-in default is best-effort; the backend still resolves it on submit.
+  }
+}
+
+/** Default the checkout customer selector to the system walk-in customer. */
+function applyDefaultCustomer() {
+  if (customerId.value || !walkInCustomerId.value) return
+  customerId.value = walkInCustomerId.value
+}
+
 const openDebts = computed<CheckoutDebtRow[]>(() => {
-  if (!customerId.value) return []
+  if (isWalkInCustomer.value) return []
   const salesById = Object.fromEntries(
     store.list('sales').map(row => [String(row.id), row]),
   )
@@ -552,6 +596,7 @@ function clearCart() {
   depositInput.value = 0
   paymentMethod.value = 'Cash'
   step.value = 'cart'
+  applyDefaultCustomer()
 }
 
 function goNext() {
@@ -596,7 +641,7 @@ watch(paymentMethod, (method) => {
 /** Walk-in customers cannot take debt (spec §5.11): switching to Credit
  *  without a registered customer is blocked with a hint. */
 watch(isCredit, (credit) => {
-  if (credit && !customerId.value) {
+  if (credit && isWalkInCustomer.value) {
     toast.add({ title: t('app.pos.creditRequiresCustomer'), color: 'warning' })
     paymentMethod.value = 'Cash'
   }
@@ -669,6 +714,7 @@ function exitReturnMode() {
   customerId.value = undefined
   customerName.value = ''
   step.value = 'cart'
+  applyDefaultCustomer()
 }
 
 /** Submit the return against the original invoice (immutable Sale Return). */
@@ -816,6 +862,7 @@ function exitEditMode() {
   customerId.value = undefined
   customerName.value = ''
   step.value = 'cart'
+  applyDefaultCustomer()
 }
 
 /** Load an invoice into checkout for view-only detail (Sales Report Sale No). */
@@ -873,6 +920,7 @@ async function exitViewMode() {
   customerId.value = undefined
   customerName.value = ''
   step.value = 'cart'
+  applyDefaultCustomer()
   await navigateTo('/reports/sales')
 }
 
@@ -966,7 +1014,7 @@ async function completeSale() {
     return
   }
   if (!cart.value.length || !canOperate.value || completing.value) return
-  if (outstandingAmount.value > 0 && !customerId.value) {
+  if (outstandingAmount.value > 0 && isWalkInCustomer.value) {
     toast.add({ title: t('app.pos.creditRequiresCustomer'), color: 'warning' })
     return
   }
@@ -978,8 +1026,10 @@ async function completeSale() {
   try {
     const snapshot = cart.value.map(line => ({ ...line }))
     const sale = await posCommands.completeSale({
-      customerId: customerId.value ? String(customerId.value) : null,
-      customerName: customerName.value || null,
+      // A walk-in selection is sent as "no customer" so the backend resolves
+      // the seeded walk-in record itself (spec §5.11).
+      customerId: isWalkInCustomer.value ? null : String(customerId.value),
+      customerName: isWalkInCustomer.value ? null : (customerName.value || null),
       items: cart.value.map(line => ({
         productId: line.productId,
         quantity: line.quantity,
@@ -1071,6 +1121,7 @@ async function completeSale() {
     saleCurrency.value = 'USD'
     exchangeRateInput.value = undefined
     step.value = 'cart'
+    applyDefaultCustomer()
     void store.fetchList('products')
     void store.fetchList('sales')
     void store.fetchList('customers')

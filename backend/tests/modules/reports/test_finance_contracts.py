@@ -76,8 +76,9 @@ async def test_finance_entry_rows_expose_mapper_fields(client):
 
 
 @pytest.mark.asyncio
-async def test_dashboard_expense_matches_finance_operating_expenses(client):
-    """Dashboard Expense KPI == Finance operating expenses for the same dates."""
+async def test_dashboard_expense_matches_finance_total_expense(client):
+    """Dashboard Expense KPI == Finance cash expense (operating + supplier
+    payments) for the same dates."""
     headers = await admin_headers(client)
     tag = uuid.uuid4().hex[:6]
     product = await make_stocked_product(client, headers, sku=f"DASHF-{tag}", name=f"Dash Fin {tag}")
@@ -105,7 +106,10 @@ async def test_dashboard_expense_matches_finance_operating_expenses(client):
         )
     ).json()["data"]
 
-    assert Decimal(dashboard["summary"]["total_expense"]) == Decimal(finance["operating_expenses"])
+    assert Decimal(dashboard["summary"]["total_expense"]) == Decimal(finance["total_expense"])
+    assert Decimal(dashboard["summary"]["total_expense"]) == (
+        Decimal(finance["operating_expenses"]) + Decimal(finance["supplier_payments"])
+    )
     assert Decimal(dashboard["summary"]["total_income"]) == Decimal(finance["total_sales"])
     # Chart expense series agrees with the summary on the last day.
     chart_day = next(row for row in dashboard["chart"] if str(row["date"]) == str(dashboard["period_end"]))

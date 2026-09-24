@@ -111,8 +111,9 @@ function selectUom(uomId: string) {
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto">
-      <!-- Column headers: image · product · UOM · unit price · qty · discount · amount · remove. -->
+      <!-- Column headers: UOM · image · product · unit price · qty · discount · amount · remove. -->
       <div class="flex items-center gap-x-2 border-b border-default bg-elevated/40 px-2 text-[10px] font-semibold uppercase tracking-wide text-muted">
+        <span class="w-7 shrink-0" />
         <span class="size-9 shrink-0" />
         <span class="min-w-0 flex-1">{{ t('app.pos.product') }}</span>
         <span class="w-32 shrink-0 text-right">{{ t('app.pos.unitPrice') }}</span>
@@ -122,15 +123,28 @@ function selectUom(uomId: string) {
           class="w-28 shrink-0 text-right"
         >{{ t('app.pos.discount') }}</span>
         <span class="w-28 shrink-0 text-right">{{ t('app.pos.amount') }}</span>
-        <span class="w-16 shrink-0" />
+        <span class="w-7 shrink-0" />
       </div>
 
-      <!-- One row per line: image · name · UOM · unit price · qty · discount · total · remove. -->
+      <!-- One row per line: UOM · image · name · unit price · qty · discount · total · remove. -->
       <div
         v-for="line in cart"
         :key="line.productId"
         class="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-default px-2 py-2"
       >
+        <!-- UOM selection (settings icon) — left of the product image. -->
+        <UButton
+          size="sm"
+          color="neutral"
+          variant="ghost"
+          icon="i-lucide-settings-2"
+          square
+          class="w-7 shrink-0"
+          :disabled="disabled || returnMode"
+          :aria-label="t('app.pos.selectUom')"
+          @click="openUomDialog(line)"
+        />
+
         <div class="size-9 shrink-0 overflow-hidden rounded-sm bg-elevated">
           <img
             v-if="line.imageUrl"
@@ -209,19 +223,6 @@ function selectUom(uomId: string) {
           {{ money(lineNet(line)) }}
         </span>
 
-        <!-- UOM selection (settings icon) — replaces the inline UOM select. -->
-        <UButton
-          size="sm"
-          color="neutral"
-          variant="ghost"
-          icon="i-lucide-settings-2"
-          square
-          class="w-7 shrink-0"
-          :disabled="disabled || returnMode"
-          :aria-label="t('app.pos.selectUom')"
-          @click="openUomDialog(line)"
-        />
-
         <!-- Remove line (end of row, red). -->
         <UButton
           size="sm"
@@ -279,9 +280,28 @@ function selectUom(uomId: string) {
       size="sm"
     >
       <div class="grid gap-2">
-        <p class="text-sm font-medium">
-          {{ uomLine?.name }}
-        </p>
+        <div class="flex items-center gap-2">
+          <div class="size-9 shrink-0 overflow-hidden rounded-sm bg-elevated">
+            <img
+              v-if="uomLine?.imageUrl"
+              :src="uomLine.imageUrl"
+              :alt="uomLine.name"
+              class="h-full w-full object-cover"
+            >
+            <div
+              v-else
+              class="flex h-full w-full items-center justify-center text-muted"
+            >
+              <UIcon
+                name="i-lucide-package"
+                class="size-4 opacity-40"
+              />
+            </div>
+          </div>
+          <p class="min-w-0 flex-1 truncate text-sm font-medium">
+            {{ uomLine?.name }}
+          </p>
+        </div>
         <UButton
           v-for="option in uomLine?.uomOptions || []"
           :key="option.value"

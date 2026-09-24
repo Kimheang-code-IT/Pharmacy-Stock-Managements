@@ -283,7 +283,7 @@ export const stockModules: ModuleConfig[] = [
       col('supplier', 'Supplier'),
       col('total', 'Total'),
       col('paidAmount', 'Paid'),
-      col('remaining', 'Remaining'),
+      col('remaining', 'Remaining Amount'),
       col('paymentMethodLabel', 'Payment Method'),
       col('user', 'User'),
       col('status', 'Status'),

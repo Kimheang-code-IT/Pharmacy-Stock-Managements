@@ -8,6 +8,7 @@ import type { ProductBatchRow, ProductHistoryRow, SaleReceipt, StockHistoryKind 
 import { usePosCommands, useStockQueries } from '~/repositories/index'
 import { formatMoney } from '~/utils/format/format-service'
 import { apiErrorMessage, isApiErrorHandled } from '~/utils/api/errors'
+import { useFormErrors } from '~/composables/useFormErrors'
 import { conversionForUom, convertToBase, multiplyDecimalSafe } from '~/utils/stock/uom-conversions'
 
 /**
@@ -44,6 +45,20 @@ const stockQueries = useStockQueries()
 const posCommands = usePosCommands()
 const toast = useToast()
 const { t } = useI18n()
+// The nested add dialog shows validation inline on the offending field rather
+// than a toast: client-side checks use `localErrors`, server `field_errors`
+// land in the shared store via `errorFor`.
+const { errorFor, claim } = useFormErrors()
+claim('productId')
+claim('batchNo')
+claim('quantity')
+claim('expiryDate')
+claim('note')
+const localErrors = reactive<Record<string, string>>({})
+
+function clearLocalErrors() {
+  for (const key of Object.keys(localErrors)) Reflect.deleteProperty(localErrors, key)
+}
 
 const KIND_TITLE_KEYS: Record<StockHistoryKind, string> = {
   stock_in: 'app.stock.historyTitleStockIn',
@@ -153,10 +168,16 @@ async function loadBatches() {
 }
 
 watch(addOpen, (open) => {
+  clearLocalErrors()
   if (open && (addKind.value === 'damage' || addKind.value === 'stock_in') && tracksBatch.value) {
     addBatchNo.value = ''
     void loadBatches()
   }
+})
+
+// Editing a value clears the inline message for it (fresh validation on submit).
+watch([addBatchNo, addQuantity, addExpiryDate, addNote], () => {
+  clearLocalErrors()
 })
 
 /** Live product row (UOM / cost) — prefer store cache, fall back to prop. */
@@ -265,12 +286,13 @@ watch(addUomId, (uomId) => {
 async function submitAdd() {
   if (!productRecord.value || !addKind.value || !addQuantity.value) return
   if (!addCanSubmit.value) {
-    if (selectedBatchDepleted.value) toast.add({ title: t('app.stock.batchDepletedError'), color: 'error' })
-    else if (batchQtyExceeded.value) toast.add({ title: t('app.stock.batchQtyExceeds'), color: 'error' })
-    else if (tracksBatch.value && !addBatchNo.value.trim()) toast.add({ title: t('app.stock.batchRequired'), color: 'error' })
-    else if (addKind.value === 'stock_in' && tracksExpiry.value && !addExpiryDate.value) toast.add({ title: t('app.stock.expiryRequired'), color: 'error' })
+    if (selectedBatchDepleted.value) localErrors.batchNo = t('app.stock.batchDepletedError')
+    else if (batchQtyExceeded.value) localErrors.batchNo = t('app.stock.batchQtyExceeds')
+    else if (tracksBatch.value && !addBatchNo.value.trim()) localErrors.batchNo = t('app.stock.batchRequired')
+    else if (addKind.value === 'stock_in' && tracksExpiry.value && !addExpiryDate.value) localErrors.expiryDate = t('app.stock.expiryRequired')
     return
   }
+  clearLocalErrors()
   addBusy.value = true
   try {
     const record = await posCommands.createStockOperation({
@@ -721,6 +743,7 @@ const nestedDialogUi = {
         :model-value="productLabel"
         :label="t('app.pos.product')"
         :disabled="true"
+        :error="errorFor('productId')"
         class="w-full"
       />
       <!-- Batch selector: Active lots only, nearest expiry first (spec §13).
@@ -732,6 +755,7 @@ const nestedDialogUi = {
         :label="t('app.stock.batch')"
         :required="true"
         :loading="batchLoading"
+        :error="localErrors.batchNo || errorFor('batchNo')"
         class="w-full"
       />
       <p
@@ -765,6 +789,7 @@ const nestedDialogUi = {
         :required="true"
         :min="0"
         :step="1"
+        :error="localErrors.quantity || errorFor('quantity')"
         class="w-full"
       />
       <p
@@ -794,6 +819,7 @@ const nestedDialogUi = {
         v-model="addNote"
         :label="t('app.fields.note')"
         :rows="2"
+        :error="localErrors.note || errorFor('note')"
         class="w-full"
       />
       <p

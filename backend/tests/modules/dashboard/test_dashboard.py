@@ -30,9 +30,10 @@ async def dashboard_viewer_headers(client, db_session):
 
 
 async def _seed_transactions(client, headers):
-    """1 product: stock in 10@2, cash sale 3@10, debt sale 2@10 (no deposit),
-    damage 1 unit, operating expense 20. Deltas: income +50, expense +20,
-    damage loss +2, COGS +10, gross profit +40, customer debt +20."""
+    """1 product: stock in 10@2 (paid 20), cash sale 3@10, debt sale 2@10
+    (no deposit), damage 1 unit, operating expense 20. Deltas: income +50,
+    expense +40 (operating 20 + supplier payment 20), damage loss +2,
+    COGS +10, gross profit +40, customer debt +20."""
     import uuid as _uuid
 
     tag = _uuid.uuid4().hex[:6]
@@ -92,7 +93,8 @@ async def _seed_transactions(client, headers):
     )
     assert damage.status_code == 201, damage.text
 
-    # Dashboard Expense = operating expenses (aligned with Finance, spec 2.1.10).
+    # Dashboard Expense = operating expenses + supplier payments
+    # (aligned with the Finance cash view, spec 2.1.10).
     expense = await client.post(
         "/api/v1/reports/finance/expenses",
         json={
@@ -142,10 +144,11 @@ async def test_dashboard_summary_reconciles_with_transactions(client, dashboard_
     assert _delta(dashboard_baseline, data, "cards", "gross_profit") == Decimal("40.00")
 
     assert _delta(dashboard_baseline, data, "summary", "total_income") == Decimal("50.00")
-    assert _delta(dashboard_baseline, data, "summary", "total_expense") == Decimal("20.00")
+    # Expense = operating expenses (20) + supplier payment from the stock-in (20).
+    assert _delta(dashboard_baseline, data, "summary", "total_expense") == Decimal("40.00")
     assert _delta(dashboard_baseline, data, "summary", "gross_profit") == Decimal("40.00")
     # Net income = gross profit (40) - damage loss (2) - expiry loss (0)
-    # - operating expenses (20).
+    # - operating expenses (20). Supplier payments are NOT subtracted (in COGS).
     assert _delta(dashboard_baseline, data, "summary", "net_income") == Decimal("18.00")
     # Both seeded sales happened today, i.e. inside the calendar month.
     assert _delta(dashboard_baseline, data, "summary", "sales_this_month_count") == Decimal("2")
@@ -159,7 +162,7 @@ async def test_dashboard_summary_reconciles_with_transactions(client, dashboard_
     chart = data["chart"]
     assert len(chart) == 7
     assert Decimal(chart[-1]["income"]) - Decimal(dashboard_baseline["chart"][-1]["income"]) == Decimal("50.00")
-    assert Decimal(chart[-1]["expense"]) - Decimal(dashboard_baseline["chart"][-1]["expense"]) == Decimal("20.00")
+    assert Decimal(chart[-1]["expense"]) - Decimal(dashboard_baseline["chart"][-1]["expense"]) == Decimal("40.00")
     assert int(chart[-1]["sales_count"]) - int(dashboard_baseline["chart"][-1]["sales_count"]) == 2
 
     extras = data["extras"]

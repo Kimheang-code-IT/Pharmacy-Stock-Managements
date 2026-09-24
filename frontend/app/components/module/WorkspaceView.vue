@@ -35,7 +35,9 @@ import { deliveryStatusOf } from '~/utils/delivery/notes'
 import { downloadTableExport } from '~/utils/export/table'
 import { fetchAllListRows } from '~/utils/export/fetch-all'
 import type { ExportFieldOption, ExportRequest } from '~/types/stock-pos/export'
-import { useDeliveryCommands, useEntityRepository, usePosCommands } from '~/repositories/index'
+import { useDeliveryCommands, useEntityRepository, usePosCommands, useStockQueries } from '~/repositories/index'
+import { useFormErrors } from '~/composables/useFormErrors'
+import type { ProductBatchRow } from '~/repositories/contracts/entities'
 import { productImageUrl } from '~/utils/pos/cart'
 import { stockBreakdownLabel } from '~/utils/stock/uom-conversions'
 import { STOCK_OPERATION_META, STOCK_OPERATION_PERMISSIONS, STOCK_OPERATION_TYPES, type StockHistoryKind, type StockOperationType } from '~/config/pos-options'
@@ -52,7 +54,15 @@ const toast = useToast()
 const posCommands = usePosCommands()
 const deliveryCommands = useDeliveryCommands()
 const entityRepository = useEntityRepository()
+const stockQueries = useStockQueries()
 const { localization } = useAppLocalization()
+// Ad-hoc stock-operation dialog renders backend field errors inline instead of
+// a toast (see useFormErrors); claim the keys it can display.
+const { errorFor, claim } = useFormErrors()
+claim('productId')
+claim('quantity')
+claim('batchNo')
+claim('note')
 
 const q = ref('')
 /** Debounced copy of the search box: the list filters instantly (in-memory)
@@ -72,6 +82,9 @@ const stockOperationProduct = ref('')
 const stockOperationQuantity = ref<number | undefined>()
 const stockOperationNote = ref('')
 const stockOperationBusy = ref(false)
+const stockOperationBatchNo = ref('')
+const stockOperationBatchRows = ref<ProductBatchRow[]>([])
+const stockOperationBatchLoading = ref(false)
 const dateFrom = ref('')
 const dateTo = ref('')
 const debtPayOpen = ref(false)
@@ -1093,6 +1106,69 @@ const productOptions = computed(() => store.list('products').map(product => ({
   value: String(product.id),
 })))
 
+/** Live row for the product selected in the stock-operation dialog. */
+const stockOperationProductRow = computed(() =>
+  store.list('products').find(row => String(row.id) === String(stockOperationProduct.value || '')) || null)
+
+/** Batch-tracked products (spec §5.9 toggles) need a named lot for damage. */
+const stockOperationTracksBatch = computed(() => {
+  const row = stockOperationProductRow.value
+  if (!row) return false
+  return row.trackBatch === true
+    || (row.trackBatch == null && (row.expiryTracking === true || row.expiryTracking === 'true'))
+})
+
+const stockOperationBatchOptions = computed(() => stockOperationBatchRows.value
+  .filter(row => Number(row.remainingQty) > 0)
+  .map(row => ({
+    label: `${row.batchNo} — ${t('app.stock.expiryDateCol')} ${row.expiryDate || '—'} — ${row.remainingQty} ${String(stockOperationProductRow.value?.uomSymbol || stockOperationProductRow.value?.uom || '')}`,
+    value: row.batchNo,
+  })))
+
+const stockOperationSelectedBatch = computed(() =>
+  stockOperationBatchRows.value.find(row => row.batchNo === stockOperationBatchNo.value) || null)
+
+const stockOperationSelectedBatchExpired = computed(() =>
+  stockOperationSelectedBatch.value?.status === 'Expired')
+
+const stockOperationBatchDepleted = computed(() =>
+  stockOperationSelectedBatch.value != null && Number(stockOperationSelectedBatch.value.remainingQty) <= 0)
+
+const stockOperationBatchQtyExceeded = computed(() => {
+  const batch = stockOperationSelectedBatch.value
+  if (!batch || !stockOperationQuantity.value) return false
+  return Number(stockOperationQuantity.value) > Number(batch.remainingQty)
+})
+
+async function loadStockOperationBatches() {
+  if (!stockOperationTracksBatch.value) {
+    stockOperationBatchRows.value = []
+    return
+  }
+  stockOperationBatchLoading.value = true
+  try {
+    const result = await stockQueries.listProductBatches(String(stockOperationProduct.value), { limit: 500 })
+    stockOperationBatchRows.value = result.items
+    // Default to the nearest-expiry lot with stock (spec §13/§14).
+    if (!stockOperationBatchNo.value) {
+      stockOperationBatchNo.value = result.items.find(row => Number(row.remainingQty) > 0)?.batchNo ?? ''
+    }
+  }
+  catch {
+    stockOperationBatchRows.value = []
+  }
+  finally {
+    stockOperationBatchLoading.value = false
+  }
+}
+
+// Changing the product in the dialog reloads its lots (nearest expiry first).
+watch(stockOperationProduct, () => {
+  if (!stockOperationOpen.value) return
+  stockOperationBatchNo.value = ''
+  void loadStockOperationBatches()
+})
+
 function openStockOperation(type: StockOperationType, productId = '') {
   // Stock In = the full-page New Purchase flow: many product lines, supplier
   // and payment stored on ONE stock-in document (POST /stock/in, items[]);
@@ -1107,7 +1183,10 @@ function openStockOperation(type: StockOperationType, productId = '') {
   stockOperationProduct.value = productId
   stockOperationQuantity.value = undefined
   stockOperationNote.value = ''
+  stockOperationBatchNo.value = ''
+  stockOperationBatchRows.value = []
   stockOperationOpen.value = true
+  if (stockOperationTracksBatch.value) void loadStockOperationBatches()
 }
 
 const stockOperationMeta = computed(() => STOCK_OPERATION_META[stockOperationType.value])
@@ -1125,6 +1204,10 @@ async function submitStockOperation() {
       productId: stockOperationProduct.value,
       quantity: Number(stockOperationQuantity.value),
       note: stockOperationNote.value || null,
+      // Batch-tracked damage/expiry drains the named lot (spec §13/§14).
+      ...(stockOperationTracksBatch.value && stockOperationBatchNo.value.trim()
+        ? { batchNo: stockOperationBatchNo.value.trim() }
+        : {}),
     })
     stockOperationOpen.value = false
     void store.fetchList('products')
@@ -1273,20 +1356,52 @@ function filterItems(filter: { options?: readonly ModuleSelectOption[] | ModuleS
           :items="productOptions"
           :label="t('app.pos.product')"
           :required="true"
+          :error="errorFor('productId')"
           class="w-full"
         />
+        <!-- Batch-tracked damage drains a named lot (spec §13/§14). -->
+        <CommonAppSelectMenuField
+          v-if="stockOperationType === 'damage' && stockOperationTracksBatch"
+          v-model="stockOperationBatchNo"
+          :items="stockOperationBatchOptions"
+          :label="t('app.stock.batch')"
+          :required="true"
+          :loading="stockOperationBatchLoading"
+          :error="errorFor('batchNo')"
+          class="w-full"
+        />
+        <p
+          v-if="stockOperationType === 'damage' && stockOperationTracksBatch && stockOperationSelectedBatchExpired"
+          class="text-xs text-warning"
+        >
+          {{ t('app.stock.batchExpiredError') }}
+        </p>
+        <p
+          v-if="stockOperationType === 'damage' && stockOperationBatchDepleted"
+          class="text-xs text-error"
+        >
+          {{ t('app.stock.batchDepletedError') }}
+        </p>
+        <p
+          v-if="stockOperationType === 'damage' && stockOperationBatchQtyExceeded"
+          class="text-xs text-error"
+        >
+          {{ t('app.stock.batchQtyExceeds') }}
+        </p>
         <CommonAppNumberField
           v-model="stockOperationQuantity"
           :label="`${t('app.fields.quantity')} (${stockOperationType === 'adjustment' ? '+/âˆ’' : 'âˆ’'})`"
           :required="true"
           :min="stockOperationType === 'adjustment' ? undefined : 0"
           :step="1"
+          :error="errorFor('quantity')"
           class="w-full"
         />
         <CommonAppTextareaField
           v-model="stockOperationNote"
           :label="t('app.fields.note')"
           :rows="2"
+          :error="errorFor('note')"
           class="w-full"
         />
         <p v-if="stockOperationType === 'damage'" class="text-xs text-muted">

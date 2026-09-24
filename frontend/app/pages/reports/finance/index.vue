@@ -7,6 +7,7 @@ import { useAppHeader } from '~/composables/layout/useAppHeader'
 import { useCurrencyRateDialog } from '~/composables/common/useCurrencyRateDialog'
 import { usePageSeo } from '~/composables/usePageSeo'
 import { formatMoney } from '~/composables/module/useModule'
+import { useAppLocalization } from '~/composables/settings/useAppLocalization'
 import { PAYMENT_METHODS } from '~/config/pos-options'
 import { downloadTableExport, type ExportTableColumn } from '~/utils/export/table'
 import type { ExportRequest } from '~/types/stock-pos/export'
@@ -28,6 +29,7 @@ definePageMeta({ titleKey: 'app.pages.financeReport', permission: 'report.financ
  */
 const preferences = usePreferencesStore()
 const auth = useAuthStore()
+const { localization, formatDate } = useAppLocalization()
 const financeRepository = useFinanceRepository()
 const toast = useToast()
 const { t } = useI18n()
@@ -149,62 +151,68 @@ const typeBadge = (type: FinanceEntryType) => ({
   expense: { color: 'warning' as const, label: t('app.finance.typeExpense') },
 })[type]
 
-const columns = computed<TableColumn<FinanceRow>[]>(() => [
-  {
-    accessorKey: 'date',
-    header: t('app.fields.date'),
-    enableSorting: false,
-    meta: { class: { td: 'whitespace-nowrap', th: '' } },
-  },
-  {
-    accessorKey: 'type',
-    header: t('app.fields.type'),
-    enableSorting: false,
-    cell: ({ row }) => {
-      const badge = typeBadge(row.original.type)
-      return h(UBadge, { color: badge.color, variant: 'subtle', size: 'sm' }, () => badge.label)
+const columns = computed<TableColumn<FinanceRow>[]>(() => {
+  // Reference the localization format so the table re-renders when the
+  // Date format changes in Settings > Localization.
+  void localization.value.dateFormat
+  return [
+    {
+      accessorKey: 'date',
+      header: t('app.fields.date'),
+      enableSorting: false,
+      meta: { class: { td: 'whitespace-nowrap', th: '' } },
+      cell: ({ row }) => h('span', { class: 'whitespace-nowrap text-default' }, formatDate(row.original.date)),
     },
-  },
-  {
-    accessorKey: 'reference',
-    header: t('app.finance.referenceCategory'),
-    enableSorting: false,
-    cell: ({ row }) => h('span', {
-      class: 'block max-w-44 truncate text-default',
-      title: row.original.type === 'income' ? row.original.reference : row.original.category,
-    }, row.original.type === 'income'
-      ? (row.original.reference || '—')
-      : (row.original.category || '—')),
-  },
-  {
-    accessorKey: 'description',
-    header: t('app.fields.description'),
-    enableSorting: false,
-    cell: ({ row }) => h('span', {
-      class: 'block max-w-64 truncate text-muted',
-      title: row.original.description,
-    }, row.original.description || '—'),
-  },
-  {
-    accessorKey: 'amount',
-    header: t('app.fields.amount'),
-    enableSorting: false,
-    meta: { class: { td: 'text-end tabular-nums whitespace-nowrap', th: 'text-end' } },
-    cell: ({ row }) => h('span', { class: 'font-medium' }, formatMoney(row.original.amount, row.original.currency)),
-  },
-  {
-    accessorKey: 'paymentMethod',
-    header: t('app.fields.paymentMethod'),
-    enableSorting: false,
-    cell: ({ row }) => h('span', { class: 'whitespace-nowrap text-default' }, row.original.paymentMethod || '—'),
-  },
-  {
-    accessorKey: 'user',
-    header: t('app.fields.user'),
-    enableSorting: false,
-    cell: ({ row }) => h('span', { class: 'whitespace-nowrap text-default' }, row.original.user || '—'),
-  },
-])
+    {
+      accessorKey: 'type',
+      header: t('app.fields.type'),
+      enableSorting: false,
+      cell: ({ row }) => {
+        const badge = typeBadge(row.original.type)
+        return h(UBadge, { color: badge.color, variant: 'subtle', size: 'sm' }, () => badge.label)
+      },
+    },
+    {
+      accessorKey: 'reference',
+      header: t('app.finance.referenceCategory'),
+      enableSorting: false,
+      cell: ({ row }) => h('span', {
+        class: 'block max-w-44 truncate text-default',
+        title: row.original.type === 'income' ? row.original.reference : row.original.category,
+      }, row.original.type === 'income'
+        ? (row.original.reference || '—')
+        : (row.original.category || '—')),
+    },
+    {
+      accessorKey: 'description',
+      header: t('app.fields.description'),
+      enableSorting: false,
+      cell: ({ row }) => h('span', {
+        class: 'block max-w-64 truncate text-muted',
+        title: row.original.description,
+      }, row.original.description || '—'),
+    },
+    {
+      accessorKey: 'amount',
+      header: t('app.fields.amount'),
+      enableSorting: false,
+      meta: { class: { td: 'text-end tabular-nums whitespace-nowrap', th: 'text-end' } },
+      cell: ({ row }) => h('span', { class: 'font-medium' }, formatMoney(row.original.amount, row.original.currency)),
+    },
+    {
+      accessorKey: 'paymentMethod',
+      header: t('app.fields.paymentMethod'),
+      enableSorting: false,
+      cell: ({ row }) => h('span', { class: 'whitespace-nowrap text-default' }, row.original.paymentMethod || '—'),
+    },
+    {
+      accessorKey: 'user',
+      header: t('app.fields.user'),
+      enableSorting: false,
+      cell: ({ row }) => h('span', { class: 'whitespace-nowrap text-default' }, row.original.user || '—'),
+    },
+  ]
+})
 
 /* ------------------------------ export (Excel / PDF) ------------------ */
 
@@ -310,6 +318,32 @@ const {
     set: value => { expenseForm.exchangeRate = value },
   }),
 })
+
+/** Convert the entered amount when the document currency switches so the
+ *  value keeps its worth (USD→KHR multiply; KHR→USD divide by the rate). */
+function convertExpenseAmount(from: 'USD' | 'KHR', to: 'USD' | 'KHR', rate: number) {
+  const amount = Number(expenseForm.amount || 0)
+  if (from === to || !amount || !(rate > 0)) return
+  const converted = from === 'USD' ? amount * rate : amount / rate
+  expenseForm.amount = Math.round(converted * 100) / 100
+}
+
+/** Currency toggle from the amount field: convert once the new rate is known. */
+function onExpenseCurrencySelect(value: 'USD' | 'KHR') {
+  const from = expenseForm.currency
+  const knownRate = Number(expenseForm.exchangeRate || 0)
+  toggleExpenseCurrency(value)
+  if (expenseForm.currency !== from) {
+    convertExpenseAmount(from, expenseForm.currency, Number(expenseForm.exchangeRate || knownRate))
+  }
+}
+
+/** Rate dialog confirmed: apply it, then convert the amount to KHR. */
+function onExpenseRateConfirm(rate: number) {
+  const from = expenseForm.currency
+  confirmExpenseExchangeRate(rate)
+  convertExpenseAmount(from, expenseForm.currency, rate)
+}
 
 function openAddExpense() {
   expenseForm.date = new Date().toISOString().slice(0, 10)
@@ -463,7 +497,7 @@ async function submitExpense() {
           :step="0.01"
           :help="Number(expenseForm.amount || 0) <= 0 ? t('app.finance.amountPositive') : ''"
           class="w-full"
-          @update:currency="toggleExpenseCurrency"
+          @update:currency="onExpenseCurrencySelect"
         />
         <CommonAppSelectMenuField
           v-model="expenseForm.paymentMethod"
@@ -511,7 +545,7 @@ async function submitExpense() {
     <!-- Shared KHR exchange-rate dialog: opened by the amount currency toggle. -->
     <CommonAppExchangeRateDialog
       v-model:open="expenseRateDialogOpen"
-      @confirm="confirmExpenseExchangeRate"
+      @confirm="onExpenseRateConfirm"
     />
   </div>
 </template>
