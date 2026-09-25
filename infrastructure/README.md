@@ -43,6 +43,7 @@ the host at all — they stay on the internal Docker network.
 | Restart | `scripts\stockpos\restart-system.bat` |
 | Start automatically at sign-in | `scripts\stockpos\install-autostart.bat` |
 | Desktop shortcut only | `scripts\stockpos\install-desktop-shortcut.bat` |
+| Open over the LAN (other devices) | `scripts\stockpos\install-lan-shortcut.bat` |
 | Remove auto-start | `scripts\stockpos\remove-autostart.bat` |
 
 `Start Stock POS.bat` waits for Docker Desktop and for `GET /health/ready`
@@ -59,6 +60,20 @@ anywhere. Change it with e.g.:
 ```powershell
 scripts\stockpos\install-desktop-shortcut.bat -Hotkey "CTRL+ALT+P"
 ```
+
+### Open the LAN shortcut (other devices)
+
+`install-lan-shortcut.bat` creates a *Yoeun Sokhon Pharmacy (LAN)* Desktop +
+Start Menu shortcut with the hotkey **Ctrl+Alt+L**. It resolves the server's LAN
+URL now (or uses `LAN_BASE_URL` / `-Url`), embeds it in the shortcut and opens it
+in the browser automatically once `/health/ready` is ok:
+
+```powershell
+scripts\stockpos\install-lan-shortcut.bat -Url "http://192.168.1.50" -Hotkey "CTRL+ALT+L"
+```
+
+Copy the Desktop shortcut to another PC on the same Wi-Fi — it needs no `.env`
+or Docker there. See **LAN access** below for the server-side requirements.
 
 ### Start automatically when Windows signs in
 
@@ -98,6 +113,11 @@ To open the app from another device (iPad, phone, laptop) on the same Wi-Fi:
    `scripts\allow-lan-access.ps1` — it adds the inbound rule and prints the
    URLs to use, e.g. `http://192.168.1.50/`.
 3. On the other device, connect to the **same Wi-Fi** and open that URL.
+
+To get a ready-made shortcut (with the auto-open browser and the Ctrl+Alt+L
+hotkey), run `scripts\stockpos\install-lan-shortcut.bat` on the server PC, then
+copy the Desktop shortcut to the other devices. Set `LAN_BASE_URL` in `.env` (or
+pass `-Url`) if the auto-detected LAN IP is not the one you want.
 
 Add your frontend URL to `CORS_ORIGINS` if you keep `ENVIRONMENT=production`.
 Set `FRONTEND_BASE_URL` to the LAN URL too if you use Telegram password resets
@@ -223,6 +243,9 @@ in step by restoring the backup taken before the upgrade.
 | `scripts\deploy-from-registry.ps1` / `.sh` | Pull prebuilt GHCR images and start (remote prod). |
 | `scripts\start-docker.ps1` / `.sh` | Start the **development** stack (`docker compose up -d --build`). |
 | `scripts\prepare-production.ps1` | First-time local prep (creates `.env`, cleans caches). |
+| `scripts\stockpos\install-desktop-shortcut.bat` | Desktop + Start Menu shortcuts, Ctrl+Alt+S hotkey. |
+| `scripts\stockpos\install-lan-shortcut.bat` | "LAN" shortcuts + Ctrl+Alt+L hotkey (opens the server from other devices). |
+| `scripts\stockpos\open-lan-system.bat` | Open the LAN URL in the browser after `/health/ready`. |
 | `scripts\stockpos\*` | Daily-use helpers behind the `.bat` files. |
 
 Advanced Compose usage (run from this folder, where `.env` lives):

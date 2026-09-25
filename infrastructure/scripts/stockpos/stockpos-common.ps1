@@ -173,44 +173,103 @@ function Get-ApiHealthUrl($Root) {
   return "http://localhost:$(Get-FrontendPort $Root)/health/ready"
 }
 
-function Test-AppHealthy($Root) {
+# The PC's usable LAN IPv4 addresses, excluding loopback/link-local and virtual
+# adapters (WSL/Hyper-V 172.16-31.x, VirtualBox host-only 192.168.56.x, ICS
+# hotspot 192.168.137.x) so only addresses other devices can use remain.
+function Get-LanIPv4Addresses {
+  return @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.IPAddress -notmatch '^(127\.|169\.254\.|192\.168\.(56|137)\.|172\.(1[6-9]|2[0-9]|3[01])\.)' -and
+      $_.InterfaceAlias -notmatch 'Loopback|vEthernet|WSL|Hyper-V|VirtualBox|VMware'
+    } |
+    Select-Object -ExpandProperty IPAddress -Unique)
+}
+
+# Resolve the URL other devices use to reach the app.
+# Order: explicit -Url, then LAN_BASE_URL, then FRONTEND_BASE_URL (unless it is
+# localhost), then the first detected LAN IPv4 + FRONTEND_PORT.
+function Get-LanBaseUrl {
+  param([string]$Url = "")
+
+  if ($Url -and $Url.Trim()) { return $Url.Trim().TrimEnd('/') }
+
+  $root = Get-DeployRoot
+  $envFile = Join-Path $root ".env"
+  if (Test-Path -LiteralPath $envFile) {
+    $lanUrl = $null
+    $frontendUrl = $null
+    foreach ($line in (Get-Content -LiteralPath $envFile)) {
+      if (-not $lanUrl -and $line -match '^\s*LAN_BASE_URL\s*=\s*(.+?)\s*$') { $lanUrl = $Matches[1].Trim() }
+      if (-not $frontendUrl -and $line -match '^\s*FRONTEND_BASE_URL\s*=\s*(.+?)\s*$') { $frontendUrl = $Matches[1].Trim() }
+    }
+    if ($lanUrl) { return $lanUrl.TrimEnd('/') }
+    if ($frontendUrl -and $frontendUrl -notmatch '//(localhost|127\.0\.0\.1)(:\d+)?$') {
+      return $frontendUrl.TrimEnd('/')
+    }
+  }
+
+  $ip = Get-LanIPv4Addresses | Select-Object -First 1
+  if ($ip) { return "http://${ip}:$(Get-FrontendPort $root)" }
+  return $null
+}
+
+# Poll any base URL's deep-health endpoint (localhost or a LAN target).
+function Test-UrlHealthy {
+  param([string]$BaseUrl)
+  if (-not $BaseUrl) { return $false }
   try {
-    $response = Invoke-WebRequest -Uri (Get-ApiHealthUrl $Root) -UseBasicParsing -TimeoutSec 4
-    $ok = $response.Content -match '"status"\s*:\s*"ok"'
-    if ($ok) { return $true }
+    $response = Invoke-WebRequest -Uri "$($BaseUrl.TrimEnd('/'))/health/ready" -UseBasicParsing -TimeoutSec 4
+    return ($response.Content -match '"status"\s*:\s*"ok"')
   } catch { }
   return $false
 }
 
-# Create the Desktop + Start Menu shortcuts that open the app, and assign the
-# global keyboard hotkey to the Desktop one (Windows registers hotkeys for
+function Test-AppHealthy($Root) {
+  return Test-UrlHealthy (Get-ApiHealthUrl $Root)
+}
+
+# Icon used by every shortcut: the shipped .ico when present, else a stock icon.
+function Get-StockPosIconLocation {
+  $icon = Join-Path $PSScriptRoot "stockpos.ico"
+  if (Test-Path -LiteralPath $icon) { return "$icon,0" }
+  return "%SystemRoot%\System32\SHELL32.dll,13"
+}
+
+# Create the Desktop + Start Menu shortcuts that run a batch wrapper, and assign
+# the global keyboard hotkey to the Desktop one (Windows registers hotkeys for
 # Desktop/Start Menu shortcuts). Returns the created paths and hotkey.
-function New-StockPosShortcuts {
-  param([string]$Hotkey = "CTRL+ALT+S")
+function New-StockPosShortcutPair {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$ScriptPath,
+    [string]$Description = "Open the Yoeun Sokhon Pharmacy stock & POS system",
+    [string]$Hotkey = "",
+    [string]$ScriptArguments = ""
+  )
 
   $shell = New-Object -ComObject WScript.Shell
-  $icon = Join-Path $PSScriptRoot "stockpos.ico"
-  $iconLocation = if (Test-Path -LiteralPath $icon) { "$icon,0" } else { "%SystemRoot%\System32\SHELL32.dll,13" }
+  $iconLocation = Get-StockPosIconLocation
   $target = "$env:SystemRoot\System32\cmd.exe"
-  $arguments = "/c `"$PSScriptRoot\open-system.bat`""
+  $arguments = "/c `"$ScriptPath`""
+  if ($ScriptArguments.Trim()) { $arguments = "$arguments $($ScriptArguments.Trim())" }
+  $hotkeyValue = $Hotkey.Trim().ToUpper()
 
-  $desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) "Yoeun Sokhon Pharmacy.lnk"
+  $desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) "$Name.lnk"
   $desktopShortcut = $shell.CreateShortcut($desktopLink)
   $desktopShortcut.TargetPath = $target
   $desktopShortcut.Arguments = $arguments
   $desktopShortcut.WorkingDirectory = $PSScriptRoot
-  $desktopShortcut.Description = "Open the Yoeun Sokhon Pharmacy stock & POS system"
+  $desktopShortcut.Description = $Description
   $desktopShortcut.IconLocation = $iconLocation
-  $hotkeyValue = $Hotkey.Trim().ToUpper()
   if ($hotkeyValue) { $desktopShortcut.Hotkey = $hotkeyValue }
   $desktopShortcut.Save()
 
-  $startMenuLink = Join-Path ([Environment]::GetFolderPath("Programs")) "Yoeun Sokhon Pharmacy.lnk"
+  $startMenuLink = Join-Path ([Environment]::GetFolderPath("Programs")) "$Name.lnk"
   $startMenuShortcut = $shell.CreateShortcut($startMenuLink)
   $startMenuShortcut.TargetPath = $target
   $startMenuShortcut.Arguments = $arguments
   $startMenuShortcut.WorkingDirectory = $PSScriptRoot
-  $startMenuShortcut.Description = "Open the Yoeun Sokhon Pharmacy stock & POS system"
+  $startMenuShortcut.Description = $Description
   $startMenuShortcut.IconLocation = $iconLocation
   $startMenuShortcut.Save()
 
@@ -219,6 +278,34 @@ function New-StockPosShortcuts {
     StartMenu = $startMenuLink
     Hotkey    = $hotkeyValue
   }
+}
+
+# Localhost shortcuts (Ctrl+Alt+S) — the daily shortcut on the server PC.
+function New-StockPosShortcuts {
+  param([string]$Hotkey = "CTRL+ALT+S")
+
+  return New-StockPosShortcutPair `
+    -Name "Yoeun Sokhon Pharmacy" `
+    -ScriptPath (Join-Path $PSScriptRoot "open-system.bat") `
+    -Description "Open the Yoeun Sokhon Pharmacy stock & POS system" `
+    -Hotkey $Hotkey
+}
+
+# LAN shortcuts (Ctrl+Alt+L) — open the server's LAN URL, for other devices.
+function New-StockPosLanShortcuts {
+  param(
+    [string]$Hotkey = "CTRL+ALT+L",
+    [string]$Url = ""
+  )
+
+  $extra = ""
+  if ($Url -and $Url.Trim()) { $extra = "-Url `"$($Url.Trim())`"" }
+  return New-StockPosShortcutPair `
+    -Name "Yoeun Sokhon Pharmacy (LAN)" `
+    -ScriptPath (Join-Path $PSScriptRoot "open-lan-system.bat") `
+    -Description "Open the Yoeun Sokhon Pharmacy stock & POS system over the LAN" `
+    -Hotkey $Hotkey `
+    -ScriptArguments $extra
 }
 
 function Start-Stack {
