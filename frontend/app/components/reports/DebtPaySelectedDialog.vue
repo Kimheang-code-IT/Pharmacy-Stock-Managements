@@ -87,6 +87,7 @@ function onSubmit() {
 
       <CommonAppMoneyField
         v-model="amount"
+        name="amount"
         :label="t('app.reports.paymentAmount')"
         :required="true"
         :min="0"
@@ -96,6 +97,7 @@ function onSubmit() {
       />
       <CommonAppSelectMenuField
         v-model="paymentMethod"
+        name="paymentMethod"
         :items="methodOptions.map(method => ({ label: method, value: method }))"
         :label="t('app.fields.paymentMethod')"
         :required="true"
@@ -103,6 +105,7 @@ function onSubmit() {
       />
       <CommonAppTextField
         v-model="reference"
+        name="reference"
         :label="t('app.fields.reference')"
         :placeholder="t('app.reports.paymentReferenceHint')"
         class="w-full"

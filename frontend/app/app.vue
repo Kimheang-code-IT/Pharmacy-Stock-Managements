@@ -5,6 +5,7 @@ import { useAppBranding } from '~/composables/settings/useAppBranding'
 import { useAppLocalization } from '~/composables/settings/useAppLocalization'
 import { useAuth } from '~/composables/auth/useAuth'
 import { usePreferencesStore } from '~/stores/preferences'
+import { clearPublishedFieldErrors } from '~/composables/useFormErrors'
 
 const colorMode = useColorMode()
 const { locale, t } = useI18n()
@@ -14,6 +15,11 @@ const auth = useAuthStore()
 const { appInfo } = useSettingsRepositories()
 const { hydrateSessionFromApi } = useAuth()
 const runtimeConfig = useRuntimeConfig()
+const route = useRoute()
+
+// Field errors are published globally (see useFormErrors); clear them on
+// navigation so an error from one page never lingers on the next.
+watch(() => route.fullPath, () => clearPublishedFieldErrors())
 
 const uiLocales: Record<string, typeof en> = { en, km }
 

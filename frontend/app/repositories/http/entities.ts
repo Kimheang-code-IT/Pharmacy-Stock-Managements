@@ -100,7 +100,9 @@ function adaptUserOut(user: Record<string, unknown>): Record<string, unknown> {
 /** Only the fields UserCreate / UserUpdate accept (`full_name`, `role_id`). */
 function adaptUserIn(input: Record<string, unknown>): Record<string, unknown> {
   const output: Record<string, unknown> = {}
-  const fullName = String(input.fullName ?? input.full_name ?? input.displayName ?? '').trim()
+  // The form binds `displayName`; the record still carries the raw backend
+  // `full_name`, so the UI value must win or an edited name is silently lost.
+  const fullName = String(input.displayName ?? input.fullName ?? input.full_name ?? '').trim()
   const email = String(input.email ?? '').trim()
   const status = String(input.status ?? '').trim()
   const password = String(input.password ?? '')

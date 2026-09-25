@@ -4,6 +4,7 @@ import type { FormSubmitEvent } from '@nuxt/ui'
 import { useAuth } from '~/composables/auth/useAuth'
 import { useAuthStore } from '~/stores/auth'
 import { resolveUserAvatar } from '~/utils/auth/user-avatar'
+import { useFormErrors } from '~/composables/useFormErrors'
 
 const open = defineModel<boolean>('open', { default: false })
 
@@ -11,6 +12,9 @@ const auth = useAuthStore()
 const { changePassword, createTelegramLinkCode, removeProfileAvatar, updateProfileAvatar } = useAuth()
 const { t } = useI18n()
 const toast = useToast()
+// Backend change-password errors (`current_password`, `new_password`,
+// `confirm_password`) render inline on their fields.
+const { errorFor, clear, setFromError } = useFormErrors()
 
 const submitting = ref(false)
 const avatarSubmitting = ref(false)
@@ -147,12 +151,14 @@ async function onRemoveAvatar() {
 async function onPasswordSubmit(event: FormSubmitEvent<PasswordSchema>) {
   if (submitting.value) return
   submitting.value = true
+  clear()
   try {
     await changePassword({
       currentPassword: event.data.currentPassword,
       password: event.data.password,
       passwordConfirmation: event.data.passwordConfirmation,
     })
+    clear()
     toast.add({
       title: t('core.userProfile.passwordChanged'),
       description: t('core.userProfile.passwordChangedDesc'),
@@ -162,12 +168,15 @@ async function onPasswordSubmit(event: FormSubmitEvent<PasswordSchema>) {
     passwordState.password = ''
     passwordState.passwordConfirmation = ''
   }
-  catch {
-    toast.add({
-      title: t('core.userProfile.passwordChangeFailed'),
-      description: t('core.userProfile.passwordChangeFailedDesc'),
-      color: 'error',
-    })
+  catch (error: unknown) {
+    const fieldErrors = setFromError(error)
+    if (!Object.keys(fieldErrors).length) {
+      toast.add({
+        title: t('core.userProfile.passwordChangeFailed'),
+        description: t('core.userProfile.passwordChangeFailedDesc'),
+        color: 'error',
+      })
+    }
   }
   finally {
     submitting.value = false
@@ -307,6 +316,7 @@ async function generateTelegramLinkCode() {
               :label="t('core.userProfile.currentPassword')"
               name="currentPassword"
               required
+              :error="errorFor('currentPassword')"
               :help="t('core.userProfile.currentPasswordHelp')"
             >
               <UInput
@@ -321,6 +331,7 @@ async function generateTelegramLinkCode() {
               :label="t('pages.forgetPassword.newPassword')"
               name="password"
               required
+              :error="errorFor('new_password') || errorFor('password')"
               :help="t('core.userProfile.newPasswordHelp')"
             >
               <UInput
@@ -335,6 +346,7 @@ async function generateTelegramLinkCode() {
               :label="t('pages.forgetPassword.confirmPassword')"
               name="passwordConfirmation"
               required
+              :error="errorFor('confirm_password') || errorFor('passwordConfirmation')"
               :help="t('core.userProfile.confirmPasswordHelp')"
             >
               <UInput

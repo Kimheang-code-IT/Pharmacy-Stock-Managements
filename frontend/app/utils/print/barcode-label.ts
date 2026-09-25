@@ -55,6 +55,7 @@ export const DEFAULT_BARCODE_LABEL_SETTINGS: BarcodeLabelSettings = {
 
 /** Common sticker sizes — the panel also offers a fully custom width/height. */
 export const BARCODE_LABEL_PRESETS: Array<{ id: string, label: string, widthMm: number, heightMm: number }> = [
+  { id: '15x20', label: '15 × 20 mm', widthMm: 15, heightMm: 20 },
   { id: '30x20', label: '30 × 20 mm', widthMm: 30, heightMm: 20 },
   { id: '40x30', label: '40 × 30 mm', widthMm: 40, heightMm: 30 },
   { id: '50x25', label: '50 × 25 mm', widthMm: 50, heightMm: 25 },

@@ -1,11 +1,13 @@
 <script setup lang="ts" generic="T extends Record<string, unknown>">
-import type { TableColumn, TableRow } from '@nuxt/ui'
+import type { TableColumn, TableRow, DropdownMenuItem } from '@nuxt/ui'
 import type { PaginationState } from '@tanstack/vue-table'
 import { getPaginationRowModel } from '@tanstack/vue-table'
 import type { DatePickerGranularity } from '~/utils/date-picker'
 import { parsePageLimit, TABLE_PAGE_SIZES } from '~/utils/pagination'
 import { listTableSelectedIds, listTableVirtualize } from '~/utils/table/list-table'
 import { appTableFillUi } from '~/utils/table/theme'
+import { isDateFieldKey, isDateTimeFieldKey, isNumericKey } from '~/utils/module/field-keys'
+import { normalizeTimestampInput } from '~/utils/format/format-service'
 
 export type ListTableEmptyAction = {
   icon?: string
@@ -36,6 +38,8 @@ const props = withDefaults(defineProps<{
   emptyTitle?: string
   emptyDescription?: string
   emptyActions?: ListTableEmptyAction[]
+  /** Show the toolbar sort menu (derived from the table's own columns). */
+  sortable?: boolean
 }>(), {
   loading: false,
   getRowId: (row: T) => String(row.id || ''),
@@ -48,6 +52,7 @@ const props = withDefaults(defineProps<{
   emptyTitle: '',
   emptyDescription: '',
   emptyActions: () => [],
+  sortable: true,
 })
 
 const emit = defineEmits<{
@@ -56,9 +61,116 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
+/* --------------------------------- sorting -------------------------------- */
+// Client-side sort menu derived from the table's own columns. Date columns
+// offer oldest/newest, numeric + document-number columns offer smallest/
+// largest, the rest A→Z / Z→A. Header click-sorting stays disabled — the
+// toolbar icon is the only sort affordance.
+type SortKind = 'date' | 'number' | 'text'
+type SortOption = { key: string, label: string, kind: SortKind }
+
+const MEDIA_KEY = /image|avatar|photo|logo|icon|file/i
+
+function sortKindFor(key: string): SortKind {
+  if (isDateTimeFieldKey(key) || isDateFieldKey(key) || /(^|_)date$/i.test(key) || /At$/.test(key)) return 'date'
+  if (isNumericKey(key)) return 'number'
+  if (/total|amount|price|qty|quantity|count|balance|debt|stock|discount|paid|due|cost|value|rate|length/i.test(key)) return 'number'
+  // Document / sequence numbers ("Sale No", "Next Number Preview", codes…).
+  const lower = key.toLowerCase()
+  if (/(no|number|code|reference|preview)$/.test(lower) || /number|sequence|seqno/.test(lower)) return 'number'
+  return 'text'
+}
+
+const sortOptions = computed<SortOption[]>(() => {
+  if (!props.sortable) return []
+  const seen = new Set<string>()
+  const options: SortOption[] = []
+  for (const column of props.columns) {
+    const rawKey = 'accessorKey' in column ? column.accessorKey : undefined
+    const key = typeof rawKey === 'string' ? rawKey : ''
+    if (!key || seen.has(key) || key.startsWith('__') || MEDIA_KEY.test(key)) continue
+    if (typeof column.header !== 'string' || !column.header.trim()) continue
+    seen.add(key)
+    options.push({ key, label: column.header, kind: sortKindFor(key) })
+  }
+  return options
+})
+
+const sortKey = ref('')
+const sortDesc = ref(false)
+const sortActive = computed(() => sortOptions.value.some(option => option.key === sortKey.value))
+
+function ascLabel(option: SortOption) {
+  if (option.kind === 'date') return t('app.ui.sortOldest')
+  if (option.kind === 'number') return t('app.ui.sortSmallest')
+  return t('app.ui.sortAsc')
+}
+
+function descLabel(option: SortOption) {
+  if (option.kind === 'date') return t('app.ui.sortNewest')
+  if (option.kind === 'number') return t('app.ui.sortLargest')
+  return t('app.ui.sortDesc')
+}
+
+function applySort(key: string, desc: boolean) {
+  sortKey.value = key
+  sortDesc.value = desc
+}
+
+function clearSort() {
+  sortKey.value = ''
+  sortDesc.value = false
+}
+
+// Drop a stale sort when the columns change (e.g. switching pages/modules).
+watch(sortOptions, (options) => {
+  if (sortKey.value && !options.some(option => option.key === sortKey.value)) clearSort()
+})
+
+function compareSortValues(a: unknown, b: unknown, key: string): number {
+  const emptyA = a == null || a === ''
+  const emptyB = b == null || b === ''
+  if (emptyA || emptyB) return emptyA && emptyB ? 0 : (emptyA ? -1 : 1)
+  if (sortKindFor(key) === 'date') {
+    const at = Date.parse(normalizeTimestampInput(String(a)))
+    const bt = Date.parse(normalizeTimestampInput(String(b)))
+    if (!Number.isNaN(at) && !Number.isNaN(bt)) return at - bt
+  }
+  const an = typeof a === 'number' ? a : Number(a)
+  const bn = typeof b === 'number' ? b : Number(b)
+  if (!Number.isNaN(an) && !Number.isNaN(bn)) return an - bn
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' })
+}
+
+const sortedData = computed<T[]>(() => {
+  if (!sortActive.value) return props.data
+  const key = sortKey.value
+  const factor = sortDesc.value ? -1 : 1
+  return [...props.data].sort((a, b) => factor * compareSortValues(a[key], b[key], key))
+})
+
+const sortMenuItems = computed<DropdownMenuItem[][]>(() => {
+  if (!sortOptions.value.length) return []
+  const fields: DropdownMenuItem[] = sortOptions.value.map(option => ({
+    label: option.label,
+    icon: sortActive.value && sortKey.value === option.key
+      ? (sortDesc.value ? 'i-lucide-arrow-down' : 'i-lucide-arrow-up')
+      : 'i-lucide-arrows-up-down',
+    children: [[
+      { label: ascLabel(option), onSelect: () => applySort(option.key, false) },
+      { label: descLabel(option), onSelect: () => applySort(option.key, true) },
+    ]],
+  }))
+  const groups: DropdownMenuItem[][] = [fields]
+  if (sortActive.value) {
+    groups.push([{ label: t('app.ui.sortClear'), icon: 'i-lucide-x', onSelect: clearSort }])
+  }
+  return groups
+})
+
 const paginationOptions = { getPaginationRowModel: getPaginationRowModel() }
 const selectedIds = computed(() => listTableSelectedIds(rowSelection.value))
-const total = computed(() => props.data.length)
+const total = computed(() => sortedData.value.length)
 const virtualize = computed(() => listTableVirtualize(total.value, pagination.value.pageSize))
 const searchPlaceholderText = computed(() => props.searchPlaceholder || t('app.ui.search'))
 const dateLabelText = computed(() => props.dateLabel || t('app.ui.date'))
@@ -108,6 +220,22 @@ function onSelect(event: Event, row: TableRow<T>) {
             </template>
           </CommonAppFilterMenu>
 
+          <UDropdownMenu
+            v-if="sortOptions.length"
+            :items="sortMenuItems"
+            :content="{ align: 'end' }"
+          >
+            <UButton
+              color="neutral"
+              :variant="sortActive ? 'soft' : 'outline'"
+              size="sm"
+              icon="i-lucide-arrow-up-down"
+              :class="sortActive ? 'text-primary' : ''"
+              :aria-label="t('app.ui.sort')"
+              :title="t('app.ui.sort')"
+            />
+          </UDropdownMenu>
+
           <slot name="actions" :selected-ids="selectedIds" />
         </div>
       </div>
@@ -118,7 +246,7 @@ function onSelect(event: Event, row: TableRow<T>) {
           v-model:global-filter="search"
           v-model:row-selection="rowSelection"
           v-model:pagination="pagination"
-          :data="data"
+          :data="sortedData"
           :columns="columns"
           :loading="loading"
           :get-row-id="rowId"

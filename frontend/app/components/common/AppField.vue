@@ -1,7 +1,15 @@
 <script setup lang="ts">
+import { useFormErrors } from '~/composables/useFormErrors'
+
 /**
  * Shared form field wrapper: consistent label, required mark, help and error.
  * All App*Field controls render inside this wrapper.
+ *
+ * Backend validation errors (`{ detail: { field_errors } }`) are wired in here
+ * automatically: every field registers the form as an inline-error sink, claims
+ * its `name`, and falls back to the published message when the caller did not
+ * pass an explicit `error`. That is why any page using App*Field controls shows
+ * errors at the field location with no extra per-page code.
  */
 const props = withDefaults(defineProps<{
   label?: string
@@ -21,6 +29,15 @@ const props = withDefaults(defineProps<{
 })
 
 const { t, te } = useI18n()
+const { errorFor, claim } = useFormErrors()
+if (props.name) claim(props.name)
+
+// An explicit `error` (including `false`) always wins; otherwise show whatever
+// the backend published for this field name.
+const resolvedError = computed<string | boolean | undefined>(() => {
+  if (props.error !== undefined) return props.error
+  return props.name ? errorFor(props.name) : undefined
+})
 
 const labelText = computed(() => {
   if (props.label) return props.label
@@ -35,8 +52,8 @@ const helpText = computed(() => {
 })
 
 const errorText = computed(() => {
-  if (!props.error) return undefined
-  return typeof props.error === 'string' ? props.error : ' '
+  if (!resolvedError.value) return undefined
+  return typeof resolvedError.value === 'string' ? resolvedError.value : ' '
 })
 </script>
 
@@ -51,6 +68,6 @@ const errorText = computed(() => {
     :description="description"
     :ui="{ label: required && hideRequiredMark ? '[&_.text-error]:hidden' : undefined }"
   >
-    <slot :error="Boolean(error)" />
+    <slot :error="Boolean(resolvedError)" />
   </UFormField>
 </template>

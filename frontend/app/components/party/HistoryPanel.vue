@@ -38,7 +38,14 @@ const canReturn = computed(() => props.kind === 'customer'
   ? auth.canAccessPage('pos.return')
   : auth.canAccessPage('stock.in'))
 
-const showActions = computed(() => canEdit.value || canReturn.value)
+/** Reprint the sales invoice (customer history only — purchase history has none). */
+const canPrint = computed(() => props.kind === 'customer'
+  && auth.canAccessPage('pos.print'))
+
+const showActions = computed(() => canEdit.value || canReturn.value || canPrint.value)
+
+const printOpen = ref(false)
+const printSaleId = ref('')
 
 const rows = ref<PartyHistory[]>([])
 const loading = ref(false)
@@ -177,6 +184,16 @@ const columns = computed<TableColumn<PartyHistory & Record<string, unknown>>[]>(
 function rowMenu(row: PartyHistory): DropdownMenuItem[][] {
   if (!row.id) return []
   const items: DropdownMenuItem[] = []
+  if (canPrint.value) {
+    items.push({
+      label: t('app.reports.printInvoice'),
+      icon: 'i-lucide-printer',
+      onSelect: () => {
+        printSaleId.value = row.id
+        printOpen.value = true
+      },
+    })
+  }
   if (canEdit.value) {
     const to = props.kind === 'customer'
       ? `/pos?editSaleId=${encodeURIComponent(row.id)}`
@@ -233,5 +250,10 @@ function rowMenu(row: PartyHistory): DropdownMenuItem[][] {
         />
       </template>
     </TableAppListTable>
+
+    <CommonAppInvoicePrintDialog
+      v-model:open="printOpen"
+      :sale-id="printSaleId"
+    />
   </div>
 </template>

@@ -567,6 +567,7 @@ watch(() => props.field.key, () => {
   <CommonAppSecretInput
     v-else-if="isSecret"
     v-model="secretValue"
+    :name="field.key"
     :label="labelText"
     :help="helpText"
     :disabled="disabled || field.readOnly"

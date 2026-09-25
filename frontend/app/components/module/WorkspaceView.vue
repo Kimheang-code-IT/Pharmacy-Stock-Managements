@@ -94,6 +94,10 @@ const debtPayBusy = ref(false)
 const debtSelectedOpen = ref(false)
 const debtSelectedKind = ref<DebtPaymentKind>('customer')
 const debtSelectedRows = ref<AppRecord[]>([])
+// "Print Invoice" chooser (A4/A5) for a stored sale — reopened from the Sales
+// Report row menu.
+const printSaleOpen = ref(false)
+const printSaleId = ref('')
 
 const current = computed(() => module.value)
 const pending = computed(() => Boolean(current.value && store.isLoading(current.value.collection)))
@@ -609,6 +613,16 @@ function rowMenuItems(row: Record<string, unknown>): DropdownMenuItem[][] {
   const collection = current.value?.collection
   if (collection === 'sales') {
     const items: DropdownMenuItem[] = []
+    if (auth.canAccessPage('pos.print')) {
+      items.push({
+        label: t('app.reports.printInvoice'),
+        icon: 'i-lucide-printer',
+        onSelect: () => {
+          printSaleId.value = String(row.id || '')
+          printSaleOpen.value = true
+        },
+      })
+    }
     if (canEditSale.value) {
       items.push({
         label: t('app.reports.edit'),
@@ -1452,6 +1466,11 @@ function filterItems(filter: { options?: readonly ModuleSelectOption[] | ModuleS
       :debts="debtSelectedRows"
       :currency="String(debtSelectedRows[0]?.currency || preferences.currency)"
       @submit="submitSelectedDebtPayment"
+    />
+
+    <CommonAppInvoicePrintDialog
+      v-model:open="printSaleOpen"
+      :sale-id="printSaleId"
     />
 
   </div>

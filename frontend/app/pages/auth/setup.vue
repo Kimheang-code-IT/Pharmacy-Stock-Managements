@@ -3,6 +3,8 @@ import * as z from 'zod'
 import type { FormSubmitEvent } from '@nuxt/ui'
 import { useAuth } from '~/composables/auth/useAuth'
 import { usePageSeo } from '~/composables/usePageSeo'
+import { useFormErrors } from '~/composables/useFormErrors'
+import { apiErrorMessage } from '~/utils/api/errors'
 
 /**
  * Initial administrator setup (`POST /auth/setup`); the backend allows this
@@ -17,6 +19,10 @@ const router = useRouter()
 const toast = useToast()
 const auth = useAuthStore()
 const { setupAdministrator } = useAuth()
+// Backend `POST /auth/setup` returns field_errors (e.g. `password`); surface them
+// inline on the matching fields instead of one opaque toast.
+const { errorFor, clear, setFromError } = useFormErrors()
+clear()
 const submitting = ref(false)
 
 usePageSeo({
@@ -25,10 +31,15 @@ usePageSeo({
   robots: 'index, nofollow',
 })
 
+// Mirrors the backend strong-password policy (`validate_password_strength`):
+// min 8 characters including at least one letter and one digit.
 const schema = z.object({
   email: z.email({ error: t('pages.auth.emailRequired') }),
-  password: z.string().min(8, { error: t('pages.auth.passwordRequired') }),
-  passwordConfirmation: z.string().min(8, { error: t('pages.auth.passwordRequired') }),
+  password: z.string()
+    .min(8, { error: t('pages.auth.passwordPolicyMin') })
+    .regex(/[A-Za-z]/, { error: t('pages.auth.passwordPolicyLetter') })
+    .regex(/\d/, { error: t('pages.auth.passwordPolicyDigit') }),
+  passwordConfirmation: z.string().min(1, { error: t('pages.auth.passwordRequired') }),
 }).refine(data => data.password === data.passwordConfirmation, {
   message: t('pages.auth.passwordMismatch'),
   path: ['passwordConfirmation'],
@@ -48,6 +59,7 @@ const showPasswordConfirmation = ref(false)
 async function onSubmit(payload: FormSubmitEvent<Schema>) {
   if (submitting.value) return
   submitting.value = true
+  clear()
   try {
     const email = payload.data.email.trim()
     const fullName = email.split('@')[0]?.trim() || 'Administrator'
@@ -63,12 +75,16 @@ async function onSubmit(payload: FormSubmitEvent<Schema>) {
     toast.add({ title: t('pages.auth.setupDone'), color: 'success' })
     await router.replace('/')
   }
-  catch {
-    toast.add({
-      title: t('pages.auth.setupFailed'),
-      description: t('pages.auth.setupFailedDesc'),
-      color: 'error',
-    })
+  catch (error: unknown) {
+    const fieldErrors = setFromError(error)
+    // Only toast when the error has no matching field (e.g. a conflict).
+    if (!Object.keys(fieldErrors).length) {
+      toast.add({
+        title: t('pages.auth.setupFailed'),
+        description: apiErrorMessage(error, t('pages.auth.setupFailedDesc')),
+        color: 'error',
+      })
+    }
   }
   finally {
     submitting.value = false
@@ -89,7 +105,11 @@ async function onSubmit(payload: FormSubmitEvent<Schema>) {
         <h1 class="mt-3 text-xl font-semibold text-highlighted">{{ t('core.brand.name') }}</h1>
       </div>
 
-      <UFormField :label="t('pages.auth.email')" name="email" required>
+      <UFormField
+:label="t('pages.auth.email')"
+name="email"
+required
+:error="errorFor('email')">
         <UInput
 v-model="state.email"
 name="email"
@@ -98,7 +118,11 @@ size="lg"
 class="w-full"
 placeholder="admin@stockpos.local" />
       </UFormField>
-      <UFormField :label="t('pages.auth.password')" name="password" required>
+      <UFormField
+:label="t('pages.auth.password')"
+name="password"
+required
+:error="errorFor('password')">
         <UInput
 v-model="state.password"
 name="password"
@@ -118,7 +142,11 @@ size="sm"
           </template>
         </UInput>
       </UFormField>
-      <UFormField :label="t('pages.auth.passwordConfirm')" name="passwordConfirmation" required>
+      <UFormField
+:label="t('pages.auth.passwordConfirm')"
+name="passwordConfirmation"
+required
+:error="errorFor('confirm_password') || errorFor('passwordConfirmation')">
         <UInput
 v-model="state.passwordConfirmation"
 name="passwordConfirmation"

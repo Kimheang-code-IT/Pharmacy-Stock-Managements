@@ -179,6 +179,8 @@ const editNote = ref('')
 const viewMode = ref(false)
 const viewSaleId = ref('')
 const viewInvoiceNo = ref('')
+// "Print Invoice" chooser (A4/A5) — reprint from the edit/view banners.
+const reprintOpen = ref(false)
 
 /** Canonical backend tender method → the POS checkout label. */
 const SALE_METHOD_TO_UI: Record<string, string> = {
@@ -1211,15 +1213,25 @@ async function completeSale() {
       <UIcon name="i-lucide-eye" class="size-4" />
       <span>{{ t('app.pos.viewMode') }}</span>
       <span v-if="viewInvoiceNo" class="text-muted">· {{ viewInvoiceNo }}</span>
-      <UButton
-        class="ms-auto"
-        color="neutral"
-        variant="ghost"
-        size="xs"
-        icon="i-lucide-x"
-        :label="t('common.close')"
-        @click="exitViewMode"
-      />
+      <div class="ms-auto flex items-center gap-2">
+        <UButton
+          v-if="canPrint && viewSaleId"
+          color="neutral"
+          variant="soft"
+          size="xs"
+          icon="i-lucide-printer"
+          :label="t('app.reports.printInvoice')"
+          @click="reprintOpen = true"
+        />
+        <UButton
+          color="neutral"
+          variant="ghost"
+          size="xs"
+          icon="i-lucide-x"
+          :label="t('common.close')"
+          @click="exitViewMode"
+        />
+      </div>
     </div>
 
     <div
@@ -1229,15 +1241,25 @@ async function completeSale() {
       <UIcon name="i-lucide-pencil" class="size-4" />
       <span>{{ t('app.pos.editMode') }}</span>
       <span v-if="editInvoiceNo" class="text-muted">· {{ editInvoiceNo }}</span>
-      <UButton
-        class="ms-auto"
-        color="neutral"
-        variant="ghost"
-        size="xs"
-        icon="i-lucide-x"
-        :label="t('common.cancel')"
-        @click="exitEditMode"
-      />
+      <div class="ms-auto flex items-center gap-2">
+        <UButton
+          v-if="canPrint && editSaleId"
+          color="neutral"
+          variant="soft"
+          size="xs"
+          icon="i-lucide-printer"
+          :label="t('app.reports.printInvoice')"
+          @click="reprintOpen = true"
+        />
+        <UButton
+          color="neutral"
+          variant="ghost"
+          size="xs"
+          icon="i-lucide-x"
+          :label="t('common.cancel')"
+          @click="exitEditMode"
+        />
+      </div>
     </div>
 
     <div
@@ -1317,6 +1339,11 @@ async function completeSale() {
     <CommonAppExchangeRateDialog
       v-model:open="exchangeRateDialogOpen"
       @confirm="onConfirmSaleRate"
+    />
+
+    <CommonAppInvoicePrintDialog
+      v-model:open="reprintOpen"
+      :sale-id="editSaleId || viewSaleId"
     />
   </div>
 </template>
