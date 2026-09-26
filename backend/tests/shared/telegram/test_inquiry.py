@@ -219,13 +219,13 @@ async def test_disabled_setting_refuses_inquiry(client, db_session):
 @pytest.mark.asyncio
 async def test_current_stock_returns_read_data(client, db_session):
     tag = uuid.uuid4().hex[:8]
-    product = await make_stocked_product(
+    await make_stocked_product(
         client, await admin_headers(client), sku=f"CUR-{tag}", name=f"Current {tag}", qty="7"
     )
     text, total_pages = await run_tool(db_session, InquiryAction(tool="current_stock"))
-    assert f"Current {tag}" in text
-    assert product["barcode"] in text
-    assert "7" in text
+    assert "🧾 Current Stock" in text
+    assert "Total Current Stock:" in text
+    assert f"- Current {tag} : 7" in text
     assert total_pages >= 1
 
 
@@ -263,8 +263,9 @@ async def test_low_stock_lists_products_at_or_below_minimum(client, db_session):
     assert stock_in.status_code == 201, stock_in.text
 
     text, _ = await run_tool(db_session, InquiryAction(tool="low_stock"))
-    assert f"Low Widget {tag}" in text
-    assert "LOW" in text
+    assert "🪫 Low Stock" in text
+    assert "Total Low :" in text
+    assert f"- Low Widget {tag} : 3" in text
 
 
 @pytest.mark.asyncio
@@ -288,12 +289,13 @@ async def test_expiring_uses_settings_alert_windows(client, db_session):
     )
 
     text, _ = await run_tool(db_session, InquiryAction(tool="expiring"))
-    assert f"Inquiry Widget a{tag}" in text
-    assert "ALERT 2" in text
-    assert f"Inquiry Widget b{tag}" in text
-    assert "ALERT 1" in text
+    assert "⏱️ Expiring Soon" in text
+    assert "Total Expiring :" in text
+    assert f"- Inquiry Widget a{tag} :" in text
+    assert "[ALERT 2]" in text
+    assert f"- Inquiry Widget b{tag} :" in text
+    assert "[ALERT 1]" in text
     assert f"Inquiry Widget c{tag}" not in text  # outside the configured windows
-    assert "Alert 1 = 90d" in text and "Alert 2 = 7d" in text
     assert soon["barcode"] and mid["barcode"]
 
 
@@ -305,7 +307,10 @@ async def test_sales_summary_period_totals(client, db_session):
     def totals(text: str) -> tuple[int, Decimal]:
         count = int(next(line for line in text.splitlines() if line.startswith("Invoices:")).split(":")[1])
         gross = Decimal(
-            next(line for line in text.splitlines() if line.startswith("Gross sales:")).split(":")[1].strip()
+            next(line for line in text.splitlines() if line.startswith("Gross sales:"))
+            .split(":")[1]
+            .strip()
+            .split()[-1]
         )
         return count, gross
 
@@ -355,6 +360,13 @@ def test_period_bounds_windows():
     assert start.day == 1 and start < end
     with pytest.raises(ValueError):
         period_bounds("yesterday")
+
+
+def test_fmt_qty_avoids_scientific_notation():
+    from app.shared.telegram.inquiry import _fmt_qty
+
+    assert _fmt_qty(Decimal("10.0000")) == "10"
+    assert _fmt_qty(Decimal("2.5000")) == "2.5"
 
 
 def test_render_page_caps_and_paginates():

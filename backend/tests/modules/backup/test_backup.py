@@ -126,6 +126,19 @@ def test_cell_serialization_is_stable():
     assert cell([1, "x"]) == '[1, "x"]'
 
 
+def test_sheet_not_found_is_not_retried():
+    """A 404 (wrong ID / unshared sheet) is terminal, not a transient outage."""
+    from app.modules.backup.sheets import _is_retryable
+
+    class SpreadsheetNotFound(Exception):
+        pass
+
+    assert _is_retryable(SpreadsheetNotFound("<Response [404]>")) is False
+    assert _is_retryable(Exception("Could not open the Google Sheet: <Response [404]>")) is False
+    assert _is_retryable(Exception("403: permission denied")) is False
+    assert _is_retryable(Exception("503: backend error")) is True
+
+
 @pytest.mark.asyncio
 async def test_run_handles_a_new_column(db_session):
     """A schema change updates the header without re-appending untouched rows."""

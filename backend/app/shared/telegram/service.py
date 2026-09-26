@@ -16,6 +16,7 @@ test message. Rules:
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 from datetime import date, datetime, timezone
@@ -58,6 +59,8 @@ _LABELS: dict[str, dict[str, str]] = {
         "test": "Test Notification",
         "invoice_id": "Invoice ID",
         "document": "Document",
+        "purchase_no": "Purchase",
+        "payment_no": "Payment No",
         "customer": "Customer",
         "supplier": "Supplier",
         "phone": "Phone",
@@ -102,6 +105,8 @@ _LABELS: dict[str, dict[str, str]] = {
         "test": "សារសាកល្បង",
         "invoice_id": "លេខវិក្កយបត្រ",
         "document": "ឯកសារ",
+        "purchase_no": "ការទិញ",
+        "payment_no": "លេខបង់ប្រាក់",
         "customer": "អតិថិជន",
         "supplier": "អ្នកផ្គត់ផ្គង់",
         "phone": "ទូរស័ព្ទ",
@@ -198,16 +203,15 @@ def _product_lines(items, currency, label: dict) -> list[str]:
         quantity_text = f"{quantity} {unit}".strip()
         price = _money(item.get("unit_price", item.get("unit_cost")), currency)
         line_total = _money(item.get("line_total"), currency)
-        lines.append(f"{index}. {name} {quantity_text} @ {price} = {line_total}")
+        lines.append(f"{index}. {name} {quantity_text} x {price} = {line_total}")
     return lines
 
 
 async def telegram_enabled(session: AsyncSession) -> bool:
-    """Master switch: settings.telegram.enabled and a saved/env bot token."""
-    from app.core.config import settings as app_settings
+    """Master switch: settings.telegram.enabled and a token saved in Settings."""
     from app.shared.telegram.client import resolve_bot_token
 
-    if not app_settings.telegram_enabled or not await resolve_bot_token(session):
+    if not await resolve_bot_token(session):
         return False
     return bool(await get_setting_value(session, "telegram", "enabled", True))
 
@@ -230,17 +234,29 @@ async def recipients(session: AsyncSession) -> list[str]:
     return recipient_list
 
 
+# Sends run concurrently so a group + many private chats are not serialized by
+# one slow connection. The cap protects Telegram's per-chat rate limits.
+_BROADCAST_CONCURRENCY = 8
+
+
 async def _broadcast(session: AsyncSession, text: str, *, sender=None) -> int:
-    """Send one text to every recipient. Returns the delivered count."""
+    """Send one text to every recipient concurrently. Returns the delivered count."""
     sender = sender or _default_sender
-    delivered = 0
-    for chat_id in await recipients(session):
-        try:
-            if await sender(chat_id, text):
-                delivered += 1
-        except Exception:  # noqa: BLE001 — one bad recipient must not stop the broadcast
-            logger.exception("Telegram send failed for chat %s", chat_id)
-    return delivered
+    chat_ids = await recipients(session)
+    if not chat_ids:
+        return 0
+    semaphore = asyncio.Semaphore(_BROADCAST_CONCURRENCY)
+
+    async def _send_one(chat_id: str) -> bool:
+        async with semaphore:
+            try:
+                return await sender(chat_id, text)
+            except Exception:  # noqa: BLE001 — one bad recipient must not stop the broadcast
+                logger.exception("Telegram send failed for chat %s", chat_id)
+                return False
+
+    results = await asyncio.gather(*(_send_one(chat_id) for chat_id in chat_ids))
+    return sum(1 for delivered in results if delivered)
 
 
 async def _default_sender(chat_id: str, text: str) -> bool:
@@ -508,15 +524,15 @@ def format_sale_text(payload: dict, *, timezone_name: str = "UTC", lang: str = "
     label = _LABELS[lang]
     currency = payload.get("currency") or "USD"
     lines = [f"{_EMOJI['sale']} <b>{label['sale']}</b>", ""]
-    lines.append(f"{label['invoice_id']}: {_esc(payload.get('invoice_no', '-'))}")
-    lines.append(f"{label['customer']}: {_esc(payload.get('customer') or label['walkin'])}")
+    lines.append(f"- {label['invoice_id']}: {_esc(payload.get('invoice_no', '-'))}")
+    lines.append(f"- {label['customer']}: {_esc(payload.get('customer') or label['walkin'])}")
     if payload.get("customer_phone"):
-        lines.append(f"{label['phone']}: {_esc(payload['customer_phone'])}")
+        lines.append(f"- {label['phone']}: {_esc(payload['customer_phone'])}")
     lines.append(
-        f"{label['payment_method']}: {_esc(_method_label(payload.get('payment_method'), lang))}"
+        f"- {label['payment_method']}: {_esc(_method_label(payload.get('payment_method'), lang))}"
     )
     if _nonzero(payload.get("delivery_price")):
-        lines.append(f"{label['delivery']}: {_money(payload['delivery_price'], currency)}")
+        lines.append(f"- {label['delivery']}: {_money(payload['delivery_price'], currency)}")
 
     lines.extend(_product_lines(payload.get("items"), currency, label))
 
@@ -525,13 +541,11 @@ def format_sale_text(payload: dict, *, timezone_name: str = "UTC", lang: str = "
         lines.append(f"{label['subtotal']}: {_money(payload['subtotal'], currency)}")
     if _nonzero(payload.get("delivery_price")):
         lines.append(f"{label['delivery_fee']}: {_money(payload['delivery_price'], currency)}")
-    if _nonzero(payload.get("discount")):
-        lines.append(f"{label['discount']}: {_money(payload['discount'], currency)}")
+    lines.append(f"{label['discount']}: {_money(payload.get('discount'), currency)}")
     lines.append(f"<b>{label['total']}: {_money(payload.get('total'), currency)}</b>")
     if payload.get("paid") is not None:
         lines.append(f"{label['paid']}: {_money(payload['paid'], currency)}")
-    if _nonzero(payload.get("debt")):
-        lines.append(f"{label['debt']}: {_money(payload['debt'], currency)}")
+    lines.append(f"{label['debt']}: {_money(payload.get('debt'), currency)}")
     lines.append("")
     lines.append(f"{label['date']}: {_esc(_stamp(payload.get('occurred_at', ''), timezone_name))}")
     if payload.get("cashier"):
@@ -545,7 +559,7 @@ def format_purchase_text(payload: dict, *, timezone_name: str = "UTC", lang: str
     label = _LABELS[lang]
     currency = payload.get("currency") or "USD"
     lines = [f"{_EMOJI['purchase']} <b>{label['purchase']}</b>", ""]
-    lines.append(f"{label['document']}: {_esc(payload.get('document_no', '-'))}")
+    lines.append(f"{label['purchase_no']}: {_esc(payload.get('document_no', '-'))}")
     if payload.get("supplier"):
         lines.append(f"{label['supplier']}: {_esc(payload['supplier'])}")
 
@@ -554,15 +568,13 @@ def format_purchase_text(payload: dict, *, timezone_name: str = "UTC", lang: str
     lines.append("")
     if payload.get("subtotal") is not None:
         lines.append(f"{label['subtotal']}: {_money(payload['subtotal'], currency)}")
-    if _nonzero(payload.get("discount")):
-        lines.append(f"{label['discount']}: {_money(payload['discount'], currency)}")
+    lines.append(f"{label['discount']}: {_money(payload.get('discount'), currency)}")
     if _nonzero(payload.get("tax")):
         lines.append(f"{label['tax']}: {_money(payload['tax'], currency)}")
     lines.append(f"<b>{label['total']}: {_money(payload.get('total'), currency)}</b>")
     if payload.get("paid") is not None:
         lines.append(f"{label['paid']}: {_money(payload['paid'], currency)}")
-    if _nonzero(payload.get("debt")):
-        lines.append(f"{label['debt']}: {_money(payload['debt'], currency)}")
+    lines.append(f"{label['debt']}: {_money(payload.get('debt'), currency)}")
     lines.append("")
     lines.append(f"{label['date']}: {_esc(_stamp(payload.get('occurred_at', ''), timezone_name))}")
     if payload.get("user"):
@@ -578,7 +590,7 @@ def format_payment_text(payload: dict, *, timezone_name: str = "UTC", lang: str 
     lines = [f"{_EMOJI['payment']} <b>{label['payment']}</b>", ""]
     lines.append(f"{label['invoice_id']}: {_esc(payload.get('invoice_no', '-'))}")
     if payload.get("payment_no"):
-        lines.append(f"{label['document']}: {_esc(payload['payment_no'])}")
+        lines.append(f"{label['payment_no']}: {_esc(payload['payment_no'])}")
     lines.append(f"{label['customer']}: {_esc(payload.get('customer') or label['walkin'])}")
     lines.append(
         f"{label['payment_method']}: {_esc(_method_label(payload.get('payment_method'), lang))}"
@@ -604,7 +616,7 @@ def format_supplier_payment_text(payload: dict, *, timezone_name: str = "UTC", l
     lines = [f"{_EMOJI['supplier_payment']} <b>{label['supplier_payment']}</b>", ""]
     lines.append(f"{label['document']}: {_esc(payload.get('document_no') or '-')}")
     if payload.get("payment_no"):
-        lines.append(f"{label['invoice_id']}: {_esc(payload['payment_no'])}")
+        lines.append(f"{label['payment_no']}: {_esc(payload['payment_no'])}")
     if payload.get("supplier"):
         lines.append(f"{label['supplier']}: {_esc(payload['supplier'])}")
     lines.append(
@@ -766,17 +778,17 @@ def format_daily_summary_text(summary: dict, *, lang: str = "en") -> str:
     lines.append(f"{label['sales']}: {sale_count}")
     for currency in ("USD", "KHR"):
         if sales.get(currency):
-            lines.append(f"  {currency} {label['sales']}: {sales[currency]['total']}")
+            lines.append(f"  {currency} {label['sales']}: {_money(sales[currency]['total'], currency)}")
 
     purchases = summary.get("purchases") or {}
     purchase_count = sum(int(row["count"]) for row in purchases.values())
     lines.append(f"{label['purchases']}: {purchase_count}")
     for currency in ("USD", "KHR"):
         if purchases.get(currency):
-            lines.append(f"  {currency} {label['purchases']}: {purchases[currency]['total']}")
+            lines.append(f"  {currency} {label['purchases']}: {_money(purchases[currency]['total'], currency)}")
 
-    lines.append(f"{label['customer_debt']}: {summary.get('customer_debt_total', '-')}")
-    lines.append(f"{label['supplier_debt']}: {summary.get('supplier_debt_total', '-')}")
+    lines.append(f"{label['customer_debt']}: {_money(summary.get('customer_debt_total'), 'USD')}")
+    lines.append(f"{label['supplier_debt']}: {_money(summary.get('supplier_debt_total'), 'USD')}")
     lines.append(f"{label['delivered']}: {summary.get('delivered_count', 0)}")
     lines.append(f"{label['pending_deliveries']}: {summary.get('pending_delivery_count', 0)}")
     lines.append(f"{label['out_of_stock']}: {summary.get('out_of_stock_count', 0)}")
@@ -802,35 +814,31 @@ async def send_daily_summary(session: AsyncSession, *, sender=None, day: date | 
 # --------------------------------------------------------------------- backup
 
 
-def format_backup_text(job, *, lang: str = "en", spreadsheet: str = "") -> str:
+def format_backup_text(
+    job, *, lang: str = "en", spreadsheet: str = "", timezone_name: str = "UTC"
+) -> str:
     """Compact Google Sheets backup result card (success / partial / failed)."""
     lang = normalize_language(lang)
     label = _LABELS[lang]
-    status = str(getattr(job, "status", "") or "")
-    title_key = {
-        "success": "backup_ok",
-        "partial": "backup_partial",
-        "failed": "backup_failed",
-    }.get(status, "backup_failed")
-    lines = [f"{_EMOJI['backup']} <b>{label['backup']}</b>", "", f"<b>{label[title_key]}</b>"]
-    if spreadsheet:
-        lines.append(f"{label['backup_sheet']}: {_esc(spreadsheet)}")
+    status = str(getattr(job, "status", "") or "failed").strip().lower() or "failed"
+    lines = [f"{_EMOJI['backup']} <b>{label['backup']} ( {_esc(status)} )</b>", ""]
     lines.append(
-        f"{label['backup_tables']}: {int(getattr(job, 'tables_succeeded', 0) or 0)}/"
+        f"- {label['backup_tables']}: {int(getattr(job, 'tables_succeeded', 0) or 0)}/"
         f"{int(getattr(job, 'tables_total', 0) or 0)}"
     )
-    lines.append(f"{label['backup_new']}: {int(getattr(job, 'rows_appended', 0) or 0)}")
-    lines.append(f"{label['backup_updated']}: {int(getattr(job, 'rows_updated', 0) or 0)}")
-    lines.append(f"{label['backup_skipped']}: {int(getattr(job, 'rows_skipped', 0) or 0)}")
-    failed = int(getattr(job, "tables_failed", 0) or 0)
-    if failed:
-        lines.append(f"{label['backup_failed_tables']}: {failed}")
+    lines.append(f"- {label['backup_new']}: {int(getattr(job, 'rows_appended', 0) or 0)}")
+    lines.append(f"- {label['backup_updated']}: {int(getattr(job, 'rows_updated', 0) or 0)}")
+    lines.append(f"- {label['backup_skipped']}: {int(getattr(job, 'rows_skipped', 0) or 0)}")
+    lines.append(f"- {label['backup_failed_tables']}: {int(getattr(job, 'tables_failed', 0) or 0)}")
     if getattr(job, "error_message", None):
+        lines.append("")
         lines.append(_esc(str(job.error_message)[:300]))
     finished = getattr(job, "finished_at", None)
     if finished is not None:
         lines.append("")
-        lines.append(f"{label['date']}: {_esc(finished.isoformat(timespec='seconds'))}")
+        lines.append(
+            f"{label['date']}: {_esc(_stamp(finished.isoformat(timespec='seconds'), timezone_name))}"
+        )
     return "\n".join(lines)
 
 
@@ -839,8 +847,12 @@ async def notify_backup_result(session: AsyncSession, *, job, spreadsheet: str =
     try:
         if not await telegram_enabled(session):
             return 0
+        tz_name = await get_setting_value(session, "system", "timezone", "UTC")
         text = format_backup_text(
-            job, lang=await notification_language(session), spreadsheet=spreadsheet
+            job,
+            lang=await notification_language(session),
+            spreadsheet=spreadsheet,
+            timezone_name=str(tz_name or "UTC"),
         )
         return await _broadcast(session, text, sender=sender)
     except Exception:

@@ -57,9 +57,6 @@ def queue_reset_code_delivery(
     Returns True when a send task was scheduled. Delivery errors must never
     leak to the HTTP caller beyond a logged failure.
     """
-    if not settings.telegram_enabled:
-        logger.warning("Telegram reset-code delivery skipped: Telegram is disabled")
-        return False
     ttl = minutes if minutes and minutes > 0 else settings.telegram_reset_code_expire_minutes
     base = settings.frontend_base_url.rstrip("/") if settings.frontend_base_url else ""
     handoff_url = (

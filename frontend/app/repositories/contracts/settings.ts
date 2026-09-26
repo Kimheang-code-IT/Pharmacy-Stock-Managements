@@ -25,9 +25,10 @@ export interface MaintenanceConfirmation {
   expiresIn: number
 }
 
-/** Body required by every guarded destructive endpoint. */
+/** Confirmation supplied to a guarded destructive endpoint. */
 export interface DestructiveActionInput {
-  confirmationToken: string
+  /** Required for database restore; reset/clear only require the phrase. */
+  confirmationToken?: string
   confirmationPhrase: string
 }
 
@@ -46,8 +47,6 @@ export interface ClearTransactionsResult {
 export interface AppConfigRepository {
   get: () => Promise<AppConfig>
   update: (input: Partial<AppConfig>) => Promise<AppConfig>
-  /** Reauthenticate (password) and mint a one-use confirmation token. */
-  requestMaintenanceConfirmation: (password: string, action: MaintenanceAction) => Promise<MaintenanceConfirmation>
   resetAllData: (input: DestructiveActionInput) => Promise<ResetAllDataResult>
   /** Delete all sales + purchases and zero stock (master data kept). */
   clearTransactions: (input: DestructiveActionInput) => Promise<ClearTransactionsResult>
@@ -68,7 +67,7 @@ export interface BackupRepository {
   /** Reauthenticate (password) and mint a one-use restore token. */
   requestRestoreConfirmation: (password: string) => Promise<MaintenanceConfirmation>
   restore: (
-    input: DestructiveActionInput & { tables?: string[] },
+    input: DestructiveActionInput & { confirmationToken: string, tables?: string[] },
   ) => Promise<{ restored: Record<string, number>, skipped: string[], totalRows: number }>
 }
 

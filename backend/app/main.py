@@ -74,7 +74,7 @@ def create_app() -> FastAPI:
     docs_enabled = not settings.is_production
     app = FastAPI(
         title=settings.app_name,
-        version="1.0.0",
+        version=settings.app_version,
         lifespan=lifespan,
         docs_url="/docs" if docs_enabled else None,
         redoc_url="/redoc" if docs_enabled else None,

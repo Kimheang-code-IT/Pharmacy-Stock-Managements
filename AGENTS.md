@@ -34,10 +34,15 @@ Docker (run from `infrastructure/`, where `.env` lives): `docker compose up -d -
 ## Non-obvious facts
 
 - `backend/tests/conftest.py` derives `DATABASE_URL` from `infrastructure/.env` and appends
-  `_test` to the DB name, then drops/recreates the schema and seeds. Don't export
-  `DATABASE_URL` unless you need a different database.
-- Alembic migrations are hand-sequenced `alembic/versions/0001…0029`. The `api` container
+  `_test` to the DB name, flushes test Redis DB 5, drops stale tables, recreates the schema,
+  and seeds admin `admin@gmail.com`/`123456` plus a fixed "Each" UOM. `pytest.ini` sets
+  `asyncio_mode = auto` (no `@pytest.mark.asyncio` needed). Don't export `DATABASE_URL`
+  unless you need a different database.
+- Alembic migrations are hand-sequenced `alembic/versions/0001…0042`. The `api` container
   runs `alembic upgrade head` on start (compose `command`), not the Dockerfile CMD.
+- `app/modules/backup/` is an app-level **Google Sheets** backup/restore (`sheets.py` gateway,
+  `BACKUP_SCHEMA_VERSION`), distinct from the `scripts/backup.ps1` pg_dump/media backups
+  documented in `infrastructure/README.md` §4.
 - Despite `celery`/`celery_broker_url` in config, there is no Celery/RabbitMQ at runtime:
   scheduled jobs run in the API process (`SCHEDULER_ENABLED`); Telegram runs in-process plus
   a separate `telegram-bot` container.
@@ -55,8 +60,9 @@ Docker (run from `infrastructure/`, where `.env` lives): `docker compose up -d -
   `tests/support/` for unit tests.
 - E2E is not in CI. It needs the running Docker stack and a real API: `pnpm e2e:install` then
   `E2E_BASE_URL=http://localhost:80 pnpm e2e`. Credentials default to `admin@gmail.com` / `123456`.
-- No CI/CD pipeline is configured. Run the backend, frontend, and Compose checks locally
-  with the commands above before committing or deploying.
+- No CI/CD pipeline is configured (`.github/workflows/` was removed; `infrastructure/README.md`
+  §8 still describes one — trust the absence). Run the backend, frontend, and Compose checks
+  locally with the commands above before committing or deploying.
 
 ## Repo conventions
 

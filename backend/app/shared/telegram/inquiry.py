@@ -264,44 +264,80 @@ async def expiring_rows(session: AsyncSession, page: int, page_size: int = PAGE_
 
 
 async def sales_summary(session: AsyncSession, period: str) -> dict:
-    """Period sales totals: invoice count, gross sales, paid, debt."""
+    """Period sales totals per document currency: invoices, gross, paid, debt.
+
+    USD and KHR are reported separately and never summed together.
+    """
     start, end = period_bounds(period)
     result = await session.execute(
         select(
-            func.count().label("invoices"),
-            func.coalesce(func.sum(Sale.grand_total), 0).label("gross"),
-            func.coalesce(func.sum(Sale.paid_amount), 0).label("paid"),
-            func.coalesce(func.sum(Sale.debt_amount), 0).label("debt"),
-        ).where(
+            Sale.currency,
+            func.count(),
+            func.coalesce(func.sum(Sale.grand_total), 0),
+            func.coalesce(func.sum(Sale.paid_amount), 0),
+            func.coalesce(func.sum(Sale.debt_amount), 0),
+        )
+        .where(
             Sale.sale_date >= start,
             Sale.sale_date < end,
             Sale.sale_status.in_(("COMPLETED", "PARTIAL_RETURN")),
         )
+        .group_by(Sale.currency)
     )
-    row = result.one()
-    return {
-        "period": period,
-        "invoices": int(row.invoices),
-        "gross": Decimal(row.gross),
-        "paid": Decimal(row.paid),
-        "debt": Decimal(row.debt),
-    }
+    buckets = []
+    invoices = 0
+    for currency, count, gross, paid, debt in result.all():
+        invoices += int(count)
+        buckets.append(
+            {
+                "currency": str(currency or "USD").upper(),
+                "invoices": int(count),
+                "gross": Decimal(gross),
+                "paid": Decimal(paid),
+                "debt": Decimal(debt),
+            }
+        )
+    return {"period": period, "invoices": invoices, "buckets": buckets}
 
 
 # ---------------------------------------------------------------- formatting
 
 
-def _fmt_qty(value: Decimal) -> str:
-    return str(value.normalize())
+def _fmt_qty(value) -> str:
+    """Trim trailing zeros without scientific notation (10.0000 → 10)."""
+    try:
+        return format(Decimal(str(value)).normalize(), "f")
+    except (ValueError, ArithmeticError):
+        return str(value if value is not None else "-")
 
 
-def render_page(title: str, lines: list[str], page: int, total: int, page_size: int = PAGE_SIZE) -> tuple[str, int]:
+def _money(amount, currency="USD") -> str:
+    """Document-currency amount, e.g. ``USD 13.00`` (never sums currencies)."""
+    try:
+        value = f"{Decimal(str(amount if amount is not None else 0)):.2f}"
+    except (ValueError, ArithmeticError):
+        value = str(amount)
+    return f"{str(currency or 'USD').upper()} {value}"
+
+
+def render_page(
+    title: str,
+    lines: list[str],
+    page: int,
+    total: int,
+    page_size: int = PAGE_SIZE,
+    *,
+    title_only: bool = False,
+) -> tuple[str, int]:
     """Render one compact page. Returns (text, total_pages)."""
     total_pages = max(1, -(-total // page_size))
     page = min(max(1, page), total_pages)
-    header = f"{title} (page {page}/{total_pages}, {total} rows)"
-    body = "\n".join(lines[: MAX_MESSAGE_CHARS]) if lines else ["(no data)"]
-    text = f"{header}\n{'-' * len(header)}\n{body}"
+    body = "\n".join(lines[: MAX_MESSAGE_CHARS]) if lines else "(no data)"
+    if title_only:
+        text = f"{title}\n\n{body}"
+    else:
+        header = f"{title} (page {page}/{total_pages}, {total} rows)"
+        text = f"{header}\n{'-' * len(header)}\n{body}"
     if len(text) > MAX_MESSAGE_CHARS:
         text = text[: MAX_MESSAGE_CHARS - 3] + "..."
     return text, total_pages
@@ -318,39 +354,51 @@ async def run_tool(session: AsyncSession, action: InquiryAction, *, user=None) -
     page = max(1, action.page)
     if action.tool == "current_stock":
         rows, total = await current_stock_rows(session, page)
-        lines = [f"{r['name']} ({r['barcode']}) — {_fmt_qty(r['quantity'])} {r['uom']}" for r in rows]
-        return render_page("Current Stock", lines, page, total)
+        lines = [f"Total Current Stock: {total}", ""]
+        lines.extend(f"- {r['name']} : {_fmt_qty(r['quantity'])} {r['uom']}".rstrip() for r in rows)
+        return render_page("🧾 Current Stock", lines, page, total, title_only=True)
     if action.tool == "low_stock":
         rows, total = await low_stock_rows(session, page)
-        lines = []
-        for r in rows:
-            level = "OUT" if r["quantity"] <= 0 else "LOW"
-            lines.append(
-                f"[{level}] {r['name']} ({r['barcode']}) — {_fmt_qty(r['quantity'])}/{_fmt_qty(r['minimum_stock'])} {r['uom']}"
-            )
-        return render_page("Low Stock", lines, page, total)
+        lines = [f"Total Low : {total}", ""]
+        lines.extend(f"- {r['name']} : {_fmt_qty(r['quantity'])} {r['uom']}".rstrip() for r in rows)
+        return render_page("🪫 Low Stock", lines, page, total, title_only=True)
     if action.tool == "expiring":
-        rows, total, alert1, alert2 = await expiring_rows(session, page)
-        lines = []
+        rows, total, *_ = await expiring_rows(session, page)
+        alert1_lines: list[str] = []
+        alert2_lines: list[str] = []
         for lot in rows:
-            level = "ALERT 2" if lot["expiry_date"] <= lot["cutoff2"] else "ALERT 1"
-            batch = f", batch {lot['batch_no']}" if lot["batch_no"] else ""
-            lines.append(
-                f"[{level}] {lot['product_name']} ({lot['barcode']}) — {_fmt_qty(lot['remaining_qty'])} {lot['uom']}, exp {lot['expiry_date'].isoformat()}{batch}"
+            line = (
+                f"- {lot['product_name']} : {lot['expiry_date'].isoformat()} "
+                f": batch: {lot['batch_no'] or '-'}"
             )
-        return render_page(f"Expiring Soon (Alert 1 = {alert1}d, Alert 2 = {alert2}d)", lines, page, total)
+            if lot["expiry_date"] <= lot["cutoff2"]:
+                alert2_lines.append(line)
+            else:
+                alert1_lines.append(line)
+        lines = [f"Total Expiring : {total}"]
+        if alert1_lines:
+            lines.extend(["", "[ALERT 1]", *alert1_lines])
+        if alert2_lines:
+            lines.extend(["", "[ALERT 2]", *alert2_lines])
+        return render_page("⏱️ Expiring Soon", lines, page, total, title_only=True)
     if action.tool == "sales":
         if not action.period:
             raise ValueError("Sales summary requires a period")
         summary = await sales_summary(session, action.period)
         label = {"today": "Today", "7d": "Last 7 days", "month": "This month"}[action.period]
-        lines = [
-            f"Invoices: {summary['invoices']}",
-            f"Gross sales: {summary['gross'].quantize(Decimal('0.01'))}",
-            f"Paid: {summary['paid'].quantize(Decimal('0.01'))}",
-            f"Debt: {summary['debt'].quantize(Decimal('0.01'))}",
+        lines = [f"Invoices: {summary['invoices']}"]
+        buckets = summary["buckets"] or [
+            {"currency": "USD", "gross": Decimal("0"), "paid": Decimal("0"), "debt": Decimal("0")}
         ]
-        return render_page(f"Sales Summary — {label}", lines, 1, 1)
+        for index, bucket in enumerate(buckets):
+            if len(buckets) > 1:
+                if index:
+                    lines.append("")
+                lines.append(f"{bucket['currency']}:")
+            lines.append(f"Gross sales: {_money(bucket['gross'], bucket['currency'])}")
+            lines.append(f"Paid: {_money(bucket['paid'], bucket['currency'])}")
+            lines.append(f"Debt: {_money(bucket['debt'], bucket['currency'])}")
+        return render_page(f"Sales Summary — {label}", lines, 1, 1, title_only=True)
     raise ValueError(f"Unknown tool '{action.tool}'")
 
 

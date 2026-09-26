@@ -1,17 +1,17 @@
 """Guarded destructive maintenance operations.
 
-A destructive action (clear transactions, reset all business data) requires ALL
-of the following, enforced server-side:
+A destructive action is protected server-side by:
 
 1. an Administrator-level permission (`system.data_reset` / `system.maintenance`);
-2. a recent password reauthentication;
-3. a short-lived, single-use confirmation token bound to the actor + action;
-4. an exact confirmation phrase;
-5. a verified backup created immediately before deletion (abort if it fails);
-6. protected audit events written before AND after the operation.
+2. an exact confirmation phrase;
+3. a verified backup created immediately before deletion (abort if it fails);
+4. protected audit events written before AND after the operation.
 
-The confirmation token lives in Redis and FAILS CLOSED when Redis is
-unavailable — a destructive action must never run without it.
+Database restore additionally requires recent password reauthentication and a
+short-lived, single-use confirmation token bound to the actor and action.
+
+The restore confirmation token lives in Redis and FAILS CLOSED when Redis is
+unavailable — a database restore must never run without it.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
-from datetime import datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
@@ -83,8 +83,9 @@ class MaintenanceService:
             ) from exc
         return token, CONFIRMATION_TTL_SECONDS
 
-    async def consume_confirmation(self, *, actor, action: str, token: str | None, phrase: str | None) -> None:
-        """Validate + consume the one-use token and the exact confirmation phrase."""
+    @staticmethod
+    def verify_confirmation_phrase(*, action: str, phrase: str | None) -> None:
+        """Require the exact phrase for a destructive maintenance action."""
         action = (action or "").strip().upper()
         expected_phrase = CONFIRMATION_PHRASES.get(action)
         if expected_phrase is None:
@@ -94,6 +95,11 @@ class MaintenanceService:
                 f'Type "{expected_phrase}" exactly to confirm',
                 field_errors={"confirmation_phrase": "Confirmation phrase does not match"},
             )
+
+    async def consume_confirmation(self, *, actor, action: str, token: str | None, phrase: str | None) -> None:
+        """Validate the phrase and consume a password-issued one-use token."""
+        action = (action or "").strip().upper()
+        self.verify_confirmation_phrase(action=action, phrase=phrase)
         if not token:
             raise ValidationError(
                 "A confirmation token is required",
@@ -136,7 +142,12 @@ class MaintenanceService:
             return str(value)
         if isinstance(value, Decimal):
             return str(value)
+        # datetime is a subclass of date, so it must be checked first.
         if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, time):
             return value.isoformat()
         if isinstance(value, (bytes, bytearray)):
             return value.hex()
@@ -178,7 +189,12 @@ class MaintenanceService:
                 payload["tables"][model.__tablename__] = serialized
                 expected_total += len(serialized)
             payload["total_rows"] = expected_total
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+            # `default=str` is a safety net: any exotic column type that the
+            # explicit serializer misses must not abort a correct restore.
+            path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=1, default=str),
+                encoding="utf-8",
+            )
         except Exception as exc:
             raise MaintenanceError(f"Backup failed; destructive action aborted: {exc}") from exc
 

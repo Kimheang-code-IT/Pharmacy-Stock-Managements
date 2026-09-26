@@ -140,7 +140,7 @@ class SettingsOut(BaseModel):
 
 
 class MaintenanceReauthRequest(BaseModel):
-    """POST /settings/maintenance/reauth � verify the password, mint a token."""
+    """Verify the password and mint a token for database restore."""
 
     password: str = Field(min_length=1, max_length=128)
     action: str = Field(min_length=1, max_length=40)
@@ -163,15 +163,10 @@ class MaintenanceReauthResponse(BaseModel):
 
 
 class DestructiveActionRequest(BaseModel):
-    """Body for a guarded destructive action (reset-data / clear-transactions)."""
+    """Confirmation phrase for reset-data / clear-transactions."""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    confirmation_token: str = Field(
-        min_length=1,
-        max_length=256,
-        validation_alias=AliasChoices("confirmation_token", "confirmationToken"),
-    )
     confirmation_phrase: str = Field(
         min_length=1,
         max_length=80,

@@ -57,6 +57,11 @@ class BackupJob(Base):
     rows_updated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     rows_skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Schema/version markers so a future restore can adapt an older Google Sheet
+    # to the current database shape (see BACKUP_SCHEMA_VERSION in service.py).
+    backup_schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    app_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    database_revision: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

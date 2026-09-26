@@ -54,3 +54,8 @@ data/
 infrastructure/backups/
 backups/
 *.dump
+
+# DB cleanup artifacts and service-account keys (may contain secrets)
+db_archive/
+db.sql
+infrastructure/*.json

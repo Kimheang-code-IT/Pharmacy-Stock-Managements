@@ -20,6 +20,7 @@ No stock mutation ever happens in this job.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import date
@@ -47,24 +48,21 @@ ALERT_LEVEL_LABELS = {ALERT_LEVEL_1: "Alert 1 (early warning)", ALERT_LEVEL_2: "
 
 def format_expiry_alert_text(lot: dict, *, alert_level: int, days_until_expiry: int) -> str:
     """Plain-text alert: product name, barcode, batch, expiry, qty, level."""
-    lines = [
-        "Stock & POS — Product Expiry Alert",
-        f"Level: {ALERT_LEVEL_LABELS.get(alert_level, f'Alert {alert_level}')}",
-        f"Product: {lot.get('product_name', '-')}",
-    ]
+    lines = [f"⌛ Product Expiry Alert {alert_level:02d}", ""]
+    lines.append(f"- Product: {lot.get('product_name', '-')}")
     if lot.get("barcode"):
-        lines.append(f"Barcode: {lot['barcode']}")
+        lines.append(f"- Barcode: {lot['barcode']}")
     if lot.get("batch_no"):
-        lines.append(f"Batch: {lot['batch_no']}")
-    lines.append(f"Expiry date: {lot.get('expiry_date', '-')}")
+        lines.append(f"- Batch: {lot['batch_no']}")
+    lines.append(f"- Expiry date: {lot.get('expiry_date', '-')}")
     remaining = lot.get("remaining_qty")
-    lines.append(f"Remaining qty: {remaining if remaining is not None else '-'}")
+    lines.append(f"- Remaining qty: {remaining if remaining is not None else '-'}")
     if days_until_expiry < 0:
-        lines.append(f"Status: EXPIRED {-days_until_expiry} day(s) ago")
+        lines.append(f"- Status: EXPIRED {-days_until_expiry} day(s) ago")
     elif days_until_expiry == 0:
-        lines.append("Status: expires TODAY")
+        lines.append("- Status: expires TODAY")
     else:
-        lines.append(f"Days remaining: {days_until_expiry}")
+        lines.append(f"- Days remaining: {days_until_expiry}")
     return "\n".join(lines)
 
 
@@ -145,13 +143,7 @@ class ExpiryAlertService:
                 text = format_expiry_alert_text(
                     lot, alert_level=level, days_until_expiry=days_until
                 )
-                delivered = 0
-                for chat_id in await self._recipients():
-                    try:
-                        if await sender(chat_id, text):
-                            delivered += 1
-                    except Exception:  # noqa: BLE001 — one bad recipient must not stop the sweep
-                        logger.exception("Expiry alert send failed for chat %s", chat_id)
+                delivered = await _deliver(text, await self._recipients(), sender)
                 if delivered == 0:
                     # Nothing delivered (no recipients or Telegram down):
                     # leave state unwritten so the next scan retries.
@@ -178,3 +170,25 @@ async def _default_sender(chat_id: str, text: str) -> bool:
     from app.shared.telegram.client import send_message
 
     return await send_message(chat_id, text)
+
+
+# Sends run concurrently so a group + many private chats are not serialized.
+_DELIVERY_CONCURRENCY = 8
+
+
+async def _deliver(text: str, chat_ids: list[str], sender: Sender) -> int:
+    """Send one alert to every recipient concurrently; never raises."""
+    if not chat_ids:
+        return 0
+    semaphore = asyncio.Semaphore(_DELIVERY_CONCURRENCY)
+
+    async def _send_one(chat_id: str) -> bool:
+        async with semaphore:
+            try:
+                return await sender(chat_id, text)
+            except Exception:  # noqa: BLE001 — one bad recipient must not stop the sweep
+                logger.exception("Expiry alert send failed for chat %s", chat_id)
+                return False
+
+    results = await asyncio.gather(*(_send_one(chat_id) for chat_id in chat_ids))
+    return sum(1 for delivered in results if delivered)

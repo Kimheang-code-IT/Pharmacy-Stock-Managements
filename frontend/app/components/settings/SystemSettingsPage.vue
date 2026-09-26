@@ -205,9 +205,9 @@ async function testTelegram() {
 }
 
 /**
- * Guarded destructive flow: password reauthentication mints a one-use token,
- * then the exact confirmation phrase unlocks the action. The backend also
- * requires a verified pre-deletion backup and records protected audit events.
+ * Guarded destructive flow: the exact confirmation phrase unlocks the action.
+ * The backend also requires a verified pre-deletion backup and records
+ * protected audit events.
  */
 const MAINTENANCE_PHRASES: Record<MaintenanceAction, string> = {
   RESET_ALL_DATA: 'RESET ALL DATA',
@@ -215,7 +215,6 @@ const MAINTENANCE_PHRASES: Record<MaintenanceAction, string> = {
 }
 const maintenanceOpen = ref(false)
 const maintenanceAction = ref<MaintenanceAction>('CLEAR_TRANSACTIONS')
-const maintenancePassword = ref('')
 const maintenancePhrase = ref('')
 const maintenanceBusy = ref(false)
 const maintenanceTitleKey = computed(() => maintenanceAction.value === 'RESET_ALL_DATA'
@@ -224,14 +223,11 @@ const maintenanceTitleKey = computed(() => maintenanceAction.value === 'RESET_AL
 
 function openMaintenance(action: MaintenanceAction) {
   maintenanceAction.value = action
-  maintenancePassword.value = ''
   maintenancePhrase.value = ''
   maintenanceOpen.value = true
 }
 
-const canSubmitMaintenance = computed(() => Boolean(
-  maintenancePassword.value && maintenancePhrase.value.trim(),
-))
+const canSubmitMaintenance = computed(() => Boolean(maintenancePhrase.value.trim()))
 
 async function submitMaintenance() {
   if (!canSubmitMaintenance.value || maintenanceBusy.value) return
@@ -242,9 +238,7 @@ async function submitMaintenance() {
   }
   maintenanceBusy.value = true
   try {
-    const confirmation = await appConfig.requestMaintenanceConfirmation(maintenancePassword.value, action)
     const input = {
-      confirmationToken: confirmation.confirmationToken,
       confirmationPhrase: maintenancePhrase.value.trim(),
     }
     if (action === 'RESET_ALL_DATA') {
@@ -273,30 +267,6 @@ async function submitMaintenance() {
     clearingTransactions.value = false
   }
 }
-
-/** Destructive maintenance actions live behind the header ⋯ menu. */
-const dangerItems = computed<DropdownMenuItem[][]>(() => {
-  const items: DropdownMenuItem[] = []
-  if (canResetData.value) {
-    items.push({
-      label: t('core.settings.resetDataAction'),
-      icon: 'i-lucide-database-zap',
-      color: 'error',
-      disabled: resettingData.value,
-      onSelect: () => { openMaintenance('RESET_ALL_DATA') },
-    })
-  }
-  if (canClearTransactions.value) {
-    items.push({
-      label: t('core.settings.clearTransactionsAction'),
-      icon: 'i-lucide-trash-2',
-      color: 'error',
-      disabled: clearingTransactions.value,
-      onSelect: () => { openMaintenance('CLEAR_TRANSACTIONS') },
-    })
-  }
-  return items.length ? [items] : []
-})
 
 /* ------------------------------ backup actions ------------------------------ */
 
@@ -416,6 +386,61 @@ async function submitBackupRestore() {
   }
 }
 
+/**
+ * Header ⋯ menu: backup actions (reachable from any settings tab) plus the
+ * destructive maintenance actions, all gated by their own permissions.
+ */
+const headerMenuItems = computed<DropdownMenuItem[][]>(() => {
+  const backupItems: DropdownMenuItem[] = []
+  if (canBackup.value) {
+    backupItems.push({
+      label: t('core.settings.backupNow'),
+      icon: 'i-lucide-play',
+      disabled: backupRunning.value || !backupModel.value?.configured,
+      onSelect: () => { void runBackup() },
+    })
+  }
+  backupItems.push({
+    label: t('core.settings.backupHistory'),
+    icon: 'i-lucide-history',
+    onSelect: () => { void openBackupHistory() },
+  })
+  if (canRestore.value) {
+    backupItems.push({
+      label: t('core.settings.backupRestore'),
+      icon: 'i-lucide-database-backup',
+      color: 'error',
+      disabled: backupRestoreBusy.value || !backupModel.value?.configured,
+      onSelect: () => { openBackupRestore() },
+    })
+  }
+
+  const dangerItems: DropdownMenuItem[] = []
+  if (canResetData.value) {
+    dangerItems.push({
+      label: t('core.settings.resetDataAction'),
+      icon: 'i-lucide-database-zap',
+      color: 'error',
+      disabled: resettingData.value,
+      onSelect: () => { openMaintenance('RESET_ALL_DATA') },
+    })
+  }
+  if (canClearTransactions.value) {
+    dangerItems.push({
+      label: t('core.settings.clearTransactionsAction'),
+      icon: 'i-lucide-trash-2',
+      color: 'error',
+      disabled: clearingTransactions.value,
+      onSelect: () => { openMaintenance('CLEAR_TRANSACTIONS') },
+    })
+  }
+
+  const groups: DropdownMenuItem[][] = []
+  if (backupItems.length) groups.push(backupItems)
+  if (dangerItems.length) groups.push(dangerItems)
+  return groups
+})
+
 onMounted(() => void load())
 useAppPageTitle(() => t('app.pages.settings'))
 </script>
@@ -431,7 +456,7 @@ useAppPageTitle(() => t('app.pages.settings'))
     :read-only="activeReadOnly"
     :can-save="activeCanSave"
     :show-list-nav="false"
-    :more-items="dangerItems"
+    :more-items="headerMenuItems"
     content-wide
     @save="save"
     @refresh="load"
@@ -447,43 +472,12 @@ useAppPageTitle(() => t('app.pages.settings'))
         :loading="testingTelegram"
         @click="testTelegram"
       />
-      <template v-if="activeTab === 'backup'">
-        <UButton
-          icon="i-lucide-play"
-          size="sm"
-          :label="t('core.settings.backupNow')"
-          :loading="backupRunning"
-          :disabled="!canBackup || !backupModel?.configured"
-          @click="runBackup"
-        />
-        <UButton
-          icon="i-lucide-plug-zap"
-          color="neutral"
-          variant="soft"
-          size="sm"
-          :label="t('core.settings.backupTest')"
-          :loading="backupTesting"
-          :disabled="!canBackup || !backupModel?.configured"
-          @click="testBackupConnection"
-        />
-        <UButton
-          icon="i-lucide-history"
-          color="neutral"
-          variant="ghost"
-          size="sm"
-          :label="t('core.settings.backupHistory')"
-          @click="openBackupHistory"
-        />
-        <UButton
-          icon="i-lucide-database-backup"
-          color="error"
-          variant="soft"
-          size="sm"
-          :label="t('core.settings.backupRestore')"
-          :disabled="!canRestore || !backupModel?.configured"
-          @click="openBackupRestore"
-        />
-      </template>
+      <CommonAppConnectionTestButton
+        v-if="activeTab === 'backup' && canBackup"
+        :loading="backupTesting"
+        :disabled="!backupModel?.configured"
+        @click="testBackupConnection"
+      />
     </template>
 
     <template #form>
@@ -509,15 +503,6 @@ useAppPageTitle(() => t('app.pages.settings'))
       <p class="text-sm text-muted">
         {{ t('core.settings.maintenanceConfirmHelp') }}
       </p>
-      <UFormField :label="t('core.settings.maintenancePassword')" required>
-        <UInput
-          v-model="maintenancePassword"
-          type="password"
-          autocomplete="current-password"
-          size="lg"
-          class="w-full"
-        />
-      </UFormField>
       <UFormField
         :label="t('core.settings.maintenancePhrase')"
         :help="t('core.settings.maintenancePhraseHint', { phrase: MAINTENANCE_PHRASES[maintenanceAction] })"

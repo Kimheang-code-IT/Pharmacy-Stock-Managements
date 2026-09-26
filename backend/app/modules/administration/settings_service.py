@@ -171,22 +171,19 @@ async def clear_transactions(
     service: AdministrationService,
     *,
     actor: Any,
-    confirmation_token: str | None = None,
     confirmation_phrase: str | None = None,
 ) -> dict:
     """Delete all sale + purchase history and zero every product's stock.
 
-    Guarded by reauthentication, a one-use confirmation token, an exact phrase
-    and a verified pre-deletion backup. Master data (products, customers,
+    Guarded by an exact confirmation phrase and a verified pre-deletion backup.
+    Master data (products, customers,
     suppliers, categories, settings) and document sequences are kept, as is the
     audit trail and the protected system-event store.
     """
     session = service.session
     maintenance = MaintenanceService(session)
-    await maintenance.consume_confirmation(
-        actor=actor,
+    maintenance.verify_confirmation_phrase(
         action="CLEAR_TRANSACTIONS",
-        token=confirmation_token,
         phrase=confirmation_phrase,
     )
     backup = await maintenance.create_backup(
@@ -227,7 +224,7 @@ async def clear_transactions(
     await session.commit()
     return {
         "cleared": True,
-        "requiresReauth": True,
+        "requiresReauth": False,
         "backup": backup,
         "message": "Sales and purchase transactions cleared",
     }
@@ -237,13 +234,12 @@ async def reset_all_data(
     service: AdministrationService,
     *,
     actor: Any,
-    confirmation_token: str | None = None,
     confirmation_phrase: str | None = None,
 ) -> dict:
     """Wipe every business record and re-seed the bootstrap defaults.
 
-    Guarded by reauthentication, a one-use confirmation token, an exact phrase
-    and a verified pre-deletion backup. The audit trail and the protected
+    Guarded by an exact confirmation phrase and a verified pre-deletion backup.
+    The audit trail and the protected
     system-event store are preserved so the initiator's evidence survives the
     reset. The current administrator, roles/permissions, system settings and the
     unit-of-measure catalogue are kept so the app stays usable; the walk-in
@@ -251,10 +247,8 @@ async def reset_all_data(
     """
     session = service.session
     maintenance = MaintenanceService(session)
-    await maintenance.consume_confirmation(
-        actor=actor,
+    maintenance.verify_confirmation_phrase(
         action="RESET_ALL_DATA",
-        token=confirmation_token,
         phrase=confirmation_phrase,
     )
     backup = await maintenance.create_backup(
@@ -306,7 +300,7 @@ async def reset_all_data(
     await session.commit()
     return {
         "message": "All business data has been reset",
-        "requiresReauth": True,
+        "requiresReauth": False,
         "backup": backup,
     }
 
@@ -330,12 +324,10 @@ def _localization(groups: dict[str, dict[str, object]]) -> dict:
     }
 
 
-def _telegram(
-    groups: dict[str, dict[str, object]], *, shop_name: str, environment_token_configured: bool
-) -> dict:
+def _telegram(groups: dict[str, dict[str, object]], *, shop_name: str) -> dict:
     telegram = groups.get("telegram", {})
     language = _str(telegram.get("notification_language"), "en")
-    token_configured = bool(_str(telegram.get("bot_token"))) or environment_token_configured
+    token_configured = bool(_str(telegram.get("bot_token")))
     return {
         "enabled": _bool(telegram.get("enabled")),
         "botDisplayName": shop_name,
@@ -391,7 +383,6 @@ def build_app_config(
     groups: dict[str, dict[str, object]],
     *,
     environment: str = "development",
-    environment_token_configured: bool = False,
 ) -> dict:
     shop = groups.get("shop", {})
     shop_name = _str(shop.get("shop_name"), _DEFAULT_SHOP_NAME) or _DEFAULT_SHOP_NAME
@@ -419,11 +410,7 @@ def build_app_config(
             "timeoutSeconds": 15,
             "connectionStatus": "disabled",
         },
-        "telegram": _telegram(
-            groups,
-            shop_name=shop_name,
-            environment_token_configured=environment_token_configured,
-        ),
+        "telegram": _telegram(groups, shop_name=shop_name),
         "stock": _stock(groups),
         "notifications": {
             "inAppEnabled": True,

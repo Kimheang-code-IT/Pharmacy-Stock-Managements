@@ -15,14 +15,14 @@ Inbound (long polling), view-only (spec sections 3.6 / 3.6.1):
 Outbound password-reset delivery is sent in-process by the API
 (`app.shared.telegram.delivery`) — no Celery/RabbitMQ worker.
 
-The bot token may be saved from Administration > Settings; the environment
-value remains a fallback. The client secret remains environment-only.
+The bot token and group ID are configured entirely from Administration >
+Settings (SPA); the bot watches the saved token and reloads within seconds when
+an operator changes it, without a container restart.
 """
 
 import asyncio
 import logging
 
-from app.core.config import settings
 from app.shared.telegram import keyboards as kb
 from app.shared.telegram.inquiry import (
     HELP_TEXT,
@@ -62,16 +62,10 @@ _STOCK_TOOLS = (kb.ACTION_CURRENT_STOCK, kb.ACTION_LOW_STOCK, kb.ACTION_EXPIRING
 _DATE_PROMPT = "Send the date in YYYY-MM-DD format (e.g. 2026-09-30)."
 
 
-async def _wait_for_bot_token() -> str:
-    """Wait until a saved or environment token is available."""
-    from app.shared.telegram.client import resolve_bot_token
-
-    logger.warning("Telegram bot token is not configured; telegram bot is idle")
-    while True:
-        token = await resolve_bot_token()
-        if token:
-            return token
-        await asyncio.sleep(60)
+# How long to wait before re-checking Settings when no token is saved yet, and
+# how often to watch for a token change while polling (fast pickup, no restart).
+_TOKEN_RETRY_SECONDS = 5
+_TOKEN_WATCH_SECONDS = 5
 
 
 async def _language(session) -> str:
@@ -327,22 +321,12 @@ def _import_all_models() -> None:
     import app.shared.documents.models  # noqa: F401
 
 
-def run() -> None:
-    _import_all_models()
+async def _serve(token: str) -> None:
+    """Run long polling for one token until Settings changes it.
 
+    Reply-keyboard only: no callback_query (inline) updates are processed.
+    """
     from app.shared.telegram.client import resolve_bot_token
-
-    # Resolve the token and run polling on the *same* event loop. asyncio.run()
-    # would create and close its own loop, leaving pooled asyncpg connections
-    # bound to a dead loop; run_polling() (which calls asyncio.get_event_loop())
-    # would then reuse them and fail with "attached to a different loop".
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    token = loop.run_until_complete(resolve_bot_token())
-    if not token:
-        token = loop.run_until_complete(_wait_for_bot_token())
-
     from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
     application = Application.builder().token(token).build()
@@ -351,9 +335,75 @@ def run() -> None:
     application.add_handler(CommandHandler("menu", on_start))
     application.add_handler(CommandHandler("link", on_link))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    logger.info("Telegram bot started (mode=%s)", settings.telegram_bot_mode)
-    # Reply-keyboard only: no callback_query (inline) updates are processed.
-    application.run_polling(allowed_updates=["message"])
+
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(
+        allowed_updates=["message"],
+        drop_pending_updates=False,
+    )
+    logger.info("Telegram bot started (long polling)")
+
+    try:
+        # Pick up a token saved/changed from Administration > Settings without
+        # waiting for a container restart.
+        while True:
+            await asyncio.sleep(_TOKEN_WATCH_SECONDS)
+            if await resolve_bot_token() != token:
+                logger.info("Telegram bot token changed in Settings; reloading poller")
+                return
+    finally:
+        try:
+            await application.updater.stop()
+        finally:
+            await application.stop()
+            await application.shutdown()
+
+
+async def _run_bot() -> None:
+    """Supervise the poller: wait for a Settings token, then keep polling."""
+    from app.shared.telegram.client import resolve_bot_token
+
+    while True:
+        token = await resolve_bot_token()
+        if not token:
+            logger.warning(
+                "No Telegram bot token saved in Settings; retrying in %ss",
+                _TOKEN_RETRY_SECONDS,
+            )
+            await asyncio.sleep(_TOKEN_RETRY_SECONDS)
+            continue
+        try:
+            await _serve(token)
+        except Exception:  # noqa: BLE001 - keep the container alive and retry
+            logger.exception("Telegram bot poller stopped; restarting in %ss", _TOKEN_RETRY_SECONDS)
+            await asyncio.sleep(_TOKEN_RETRY_SECONDS)
+
+
+def run() -> None:
+    # The bot runs in its own process (no FastAPI), so configure logging here:
+    # without it the startup / token-reload messages are swallowed.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    _import_all_models()
+
+    # Run everything on one long-lived loop. asyncio.run() would create and
+    # close its own loop, leaving pooled asyncpg/httpx connections bound to a
+    # dead loop; the supervisor and the poller must share the loop the engine
+    # was first used on.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_run_bot())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        from app.shared.telegram.client import aclose_telegram_clients
+
+        loop.run_until_complete(aclose_telegram_clients())
+        loop.close()
 
 
 if __name__ == "__main__":

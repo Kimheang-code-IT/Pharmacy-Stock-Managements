@@ -321,11 +321,11 @@ async def test_daily_summary_format_separates_currencies():
     )
     assert "Daily Summary" in text
     assert "Sales: 5" in text
-    assert "USD Sales: 45.00" in text
-    assert "KHR Sales: 82000.00" in text
+    assert "USD Sales: $45.00" in text
+    assert "KHR Sales: \u17db82000.00" in text
     assert "Purchases: 1" in text
-    assert "USD Purchases: 100.00" in text
-    assert "Customer debt outstanding: 12.00" in text
+    assert "USD Purchases: $100.00" in text
+    assert "Customer debt outstanding: $12.00" in text
     assert "Pending deliveries: 2" in text
     assert "Out-of-stock products: 1" in text
     # Never a blind USD+KHR sum.
@@ -333,19 +333,16 @@ async def test_daily_summary_format_separates_currencies():
 
 
 @pytest.mark.asyncio
-async def test_daily_summary_send_gated_and_delivered(client, captured_sends, db_session, monkeypatch):
-    from app.core.config import settings as app_settings
-
+async def test_daily_summary_send_gated_and_delivered(client, captured_sends, db_session):
     from app.core.database import SessionFactory
     from app.shared.telegram.service import send_daily_summary
 
-    monkeypatch.setattr(app_settings, "telegram_bot_token", "test-token")
-    monkeypatch.setattr(app_settings, "telegram_enabled", True)
-
+    # No bot token saved in Settings yet -> master switch reports disabled.
     async with SessionFactory() as session:
         result = await send_daily_summary(session, day=datetime.now(timezone.utc).date())
     assert result == {"enabled": False, "sent": 0}
 
+    await _enable(db_session, "bot_token", "test-token")
     await _enable(db_session, "daily_summary_enabled")
     async with SessionFactory() as session:
         result = await send_daily_summary(session, day=datetime.now(timezone.utc).date())
@@ -355,7 +352,7 @@ async def test_daily_summary_send_gated_and_delivered(client, captured_sends, db
 
 
 @pytest.mark.asyncio
-async def test_test_notification_endpoint(client, captured_sends, db_session, monkeypatch):
+async def test_test_notification_endpoint(client, captured_sends, db_session):
     headers = await admin_headers(client)
 
     # Disabled by default → soft "enabled: False" result, nothing sent.
@@ -364,11 +361,8 @@ async def test_test_notification_endpoint(client, captured_sends, db_session, mo
     assert response.json()["data"]["enabled"] is False
     assert captured_sends == []
 
-    from app.core.config import settings as app_settings
-
-    monkeypatch.setattr(app_settings, "telegram_bot_token", "test-token")
-    monkeypatch.setattr(app_settings, "telegram_enabled", True)
-
+    # A token saved in Settings (DB) flips the master switch on.
+    await _enable(db_session, "bot_token", "test-token")
     await _enable(db_session, "enabled")
     response = await client.post("/api/v1/admin/settings/telegram-test", headers=headers)
     assert response.status_code == 200, response.text
@@ -435,7 +429,7 @@ def test_purchase_formatter_renders_fields():
         timezone_name="Asia/Phnom_Penh",
     )
     assert "Stock In Received" in text
-    assert "Document: STI-000001" in text
+    assert "Purchase: STI-000001" in text
     assert "Supplier: Angkor Wholesale" in text
     assert "<b>Total: \u17db400000.00</b>" in text
     assert "By: Sok" in text
@@ -470,4 +464,4 @@ def test_formatters_render_khmer_labels_and_products():
     assert "\u17a2\u178f\u17b7\u1790\u17b7\u1787\u1793\u1791\u17bc\u1791\u17c5" in text
     assert "\u1791\u17c6\u1793\u17b7\u1789:" in text
     # Decimals are trimmed in product rows.
-    assert "Paracetamol 2 pcs @ $5.00 = $10.00" in text
+    assert "Paracetamol 2 pcs x $5.00 = $10.00" in text

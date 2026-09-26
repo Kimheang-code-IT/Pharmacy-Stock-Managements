@@ -41,9 +41,8 @@ os.environ.setdefault("RATE_LIMIT_RESET_PER_HOUR", "1000")
 os.environ.setdefault("ENVIRONMENT", "development")
 os.environ.setdefault("DEBUG", "true")
 os.environ.setdefault("SCHEDULER_ENABLED", "false")
-# Telegram stays disabled in tests unless a test monkeypatches the token:
-# an operator .env with a real bot token must not flip notification gates.
-os.environ.setdefault("TELEGRAM_BOT_TOKEN", "")
+# Telegram stays disabled in tests unless a test saves a token in the
+# system_settings table (telegram.bot_token); no environment variable is read.
 os.environ.setdefault(
     "LOCAL_STORAGE_DIR",
     tempfile.mkdtemp(prefix="stock-pos-media-"),

@@ -121,8 +121,8 @@ async def test_both_levels_fire_once_per_lot(client, db_session, alert_settings)
     assert summary["enabled"] is True
 
     # Expiry in 5 days is within both windows (90 and 7): both levels fire.
-    level1 = [t for t in messages_for(first, tag) if "Alert 1" in t]
-    level2 = [t for t in messages_for(first, tag) if "Alert 2" in t]
+    level1 = [t for t in messages_for(first, tag) if "Alert 01" in t]
+    level2 = [t for t in messages_for(first, tag) if "Alert 02" in t]
     assert len(level1) == 1
     assert len(level2) == 1
     rows = await state_rows(db_session, product["id"])
@@ -159,7 +159,7 @@ async def test_alert_levels_are_independent_windows(client, db_session, alert_se
 
     # 60 days out: inside Alert 1 (90), outside Alert 2 (7). Unbatched lot dedupes too.
     assert len(messages_for(first, tag)) == 1
-    assert "Alert 1" in messages_for(first, tag)[0]
+    assert "Alert 01" in messages_for(first, tag)[0]
     rows = await state_rows(db_session, product["id"])
     assert [r.alert_level for r in rows] == [1]
     assert rows[0].batch_no is None
@@ -170,7 +170,7 @@ async def test_alert_levels_are_independent_windows(client, db_session, alert_se
     await ExpiryAlertService(db_session).scan_and_send(sender=second, today=today)
     win_messages = messages_for(second, tag)
     assert len(win_messages) == 1
-    assert "Alert 2" in win_messages[0]
+    assert "Alert 02" in win_messages[0]
     assert len(await state_rows(db_session, product["id"])) == 2
 
 
@@ -351,7 +351,6 @@ async def test_settings_surface_accepts_and_masks_bot_token(client):
 
 @pytest.mark.asyncio
 async def test_telegram_client_uses_saved_bot_token(db_session, monkeypatch):
-    from app.core.config import settings as app_settings
     from app.shared.telegram.client import send_message
 
     token = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ_saved"
@@ -363,8 +362,6 @@ async def test_telegram_client_uses_saved_bot_token(db_session, monkeypatch):
         updated_by=None,
     )
     await db_session.commit()
-    monkeypatch.setattr(app_settings, "telegram_enabled", True)
-    monkeypatch.setattr(app_settings, "telegram_bot_token", "")
 
     calls = []
 

@@ -29,9 +29,10 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import MetaData, Table, inspect, select
+from sqlalchemy import MetaData, Table, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.exceptions import ValidationError
 from app.core.security import utcnow
 from app.modules.administration.maintenance import MaintenanceService
@@ -55,6 +56,15 @@ BACKUP_DATE_COLUMN = "_backup_date"
 BACKUP_VERSION_COLUMN = "_backup_version"
 TABLE_NAME_COLUMN = "_table_name"
 RECORD_ID_COLUMN = "_record_id"
+
+# Bump this whenever a destructive schema change alters the shape of the data
+# written to Google Sheets, so a future restore can adapt an older sheet to the
+# current database schema (recorded on every BackupJob).
+BACKUP_SCHEMA_VERSION = 1
+
+# In-DB archives created by migration 0042 (legacy_archive_*). They are not
+# business data and must never be reflected into a spreadsheet.
+ARCHIVE_TABLE_PREFIX = "legacy_archive_"
 
 # The backup bookkeeping tables would recurse; Alembic's version table is not
 # business data. `system_settings` is excluded deliberately: it holds secrets
@@ -320,7 +330,7 @@ class BackupService:
             inspector = inspect(sync_connection)
             tables: dict[str, Table] = {}
             for name in inspector.get_table_names(schema="public"):
-                if name in EXCLUDED_TABLES:
+                if name in EXCLUDED_TABLES or name.startswith(ARCHIVE_TABLE_PREFIX):
                     continue
                 tables[name] = Table(
                     name, metadata, schema="public", autoload_with=sync_connection
@@ -328,6 +338,25 @@ class BackupService:
             return tables
 
         return await connection.run_sync(_reflect)
+
+    async def _database_revision(self) -> str | None:
+        """Alembic revision at backup time (metadata only; never fails a run).
+
+        Uses `to_regclass` first so a database without the Alembic table (e.g. a
+        test schema built via `create_all`) does not abort the transaction.
+        """
+        try:
+            present = (
+                await self.session.execute(
+                    text("SELECT to_regclass('public.alembic_version')")
+                )
+            ).scalar_one_or_none()
+            if present is None:
+                return None
+            result = await self.session.execute(text("SELECT version_num FROM alembic_version"))
+            return result.scalar_one_or_none()
+        except Exception:  # noqa: BLE001
+            return None
 
     # -------------------------------------------------------------------- run
 
@@ -344,6 +373,9 @@ class BackupService:
         job = await self.repo.create_job(
             trigger=trigger, created_by=getattr(actor, "id", None)
         )
+        job.backup_schema_version = BACKUP_SCHEMA_VERSION
+        job.app_version = settings.app_version
+        job.database_revision = await self._database_revision()
         # Persist the running job first so the UI can show progress.
         await self.session.commit()
 
@@ -802,5 +834,8 @@ def _job_out(job: BackupJob) -> dict:
         "rowsUpdated": job.rows_updated,
         "rowsSkipped": job.rows_skipped,
         "errorMessage": job.error_message,
+        "backupSchemaVersion": job.backup_schema_version,
+        "appVersion": job.app_version,
+        "databaseRevision": job.database_revision,
         "createdBy": str(job.created_by) if job.created_by else None,
     }

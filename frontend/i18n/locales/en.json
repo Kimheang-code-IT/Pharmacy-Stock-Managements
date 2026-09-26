@@ -303,7 +303,7 @@
       "clearTransactionsConfirmTitle": "Remove all transactions?",
       "clearTransactionsSuccess": "Transactions cleared",
       "clearTransactionsFailed": "Could not clear transactions",
-      "maintenanceConfirmHelp": "For your security, re-enter your password and type the exact confirmation phrase. A verified backup is created automatically before anything is deleted.",
+      "maintenanceConfirmHelp": "Type the exact confirmation phrase to continue. A verified backup is created automatically before anything is deleted.",
       "maintenancePassword": "Your password",
       "maintenancePhrase": "Confirmation phrase",
       "maintenancePhraseHint": "Type exactly: {phrase}",

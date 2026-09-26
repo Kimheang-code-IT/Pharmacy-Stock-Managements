@@ -3,8 +3,6 @@ import type {
   AppInfoRepository,
   ClearTransactionsResult,
   DestructiveActionInput,
-  MaintenanceAction,
-  MaintenanceConfirmation,
   ResetAllDataResult,
 } from '~/repositories/contracts/settings'
 import type { ApiResponse } from '~/types/stock-pos/common'
@@ -63,28 +61,13 @@ export function createHttpAppConfigRepository(): AppConfigRepository {
       }
       return model
     },
-    requestMaintenanceConfirmation: async (password: string, action: MaintenanceAction) => {
-      const data = unwrapApiData(
-        await api.post<MaintenanceConfirmation | ApiResponse<MaintenanceConfirmation>>(
-          ApiEndpoints.MAINTENANCE_REAUTH,
-          { password, action },
-        ),
-      ) as MaintenanceConfirmation & { confirmation_token?: string, expires_in?: number }
-      return {
-        confirmationToken: data.confirmationToken || data.confirmation_token || '',
-        phrase: data.phrase || '',
-        expiresIn: Number(data.expiresIn ?? data.expires_in ?? 0),
-      }
-    },
     resetAllData: async (input: DestructiveActionInput) => unwrapApiData(
       await api.post<ResetAllDataResult | ApiResponse<ResetAllDataResult>>(ApiEndpoints.RESET_ALL_DATA, {
-        confirmation_token: input.confirmationToken,
         confirmation_phrase: input.confirmationPhrase,
       }),
     ),
     clearTransactions: async (input: DestructiveActionInput) => unwrapApiData(
       await api.post<ClearTransactionsResult | ApiResponse<ClearTransactionsResult>>(ApiEndpoints.CLEAR_TRANSACTIONS, {
-        confirmation_token: input.confirmationToken,
         confirmation_phrase: input.confirmationPhrase,
       }),
     ),

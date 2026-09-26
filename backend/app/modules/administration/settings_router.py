@@ -11,12 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import envelope, get_current_user, get_db_session, require_permission
 from app.core.config import settings as app_settings
 from app.modules.administration import settings_service
-from app.modules.administration.maintenance import MaintenanceService, confirmation_phrase
-from app.modules.administration.schemas import (
-    DestructiveActionRequest,
-    MaintenanceReauthRequest,
-    MaintenanceReauthResponse,
-)
+from app.modules.administration.schemas import DestructiveActionRequest
 from app.modules.administration.service import AdministrationService
 from app.modules.auth.models import User
 
@@ -49,7 +44,6 @@ async def get_app_config(
         settings_service.build_app_config(
             groups,
             environment=app_settings.environment,
-            environment_token_configured=bool(app_settings.telegram_bot_token),
         )
     )
 
@@ -68,7 +62,6 @@ async def update_app_config(
         settings_service.build_app_config(
             await service.get_settings(),
             environment=app_settings.environment,
-            environment_token_configured=bool(app_settings.telegram_bot_token),
         )
     )
 
@@ -153,45 +146,6 @@ async def reset_app_info(
 # --------------------------------------------------------- Destructive actions
 
 
-async def _require_destructive_access(
-    actor: User = Depends(get_current_user),
-) -> User:
-    """Reauth is available to holders of either destructive permission."""
-    from app.core.exceptions import AccessDeniedError
-    from app.core.permissions import user_has_permission
-
-    if not (
-        user_has_permission(actor, "system.data_reset")
-        or user_has_permission(actor, "system.maintenance")
-    ):
-        raise AccessDeniedError()
-    return actor
-
-
-@router.post("/maintenance/reauth")
-async def maintenance_reauth(
-    payload: MaintenanceReauthRequest,
-    db: AsyncSession = Depends(get_db_session),
-    actor: User = Depends(_require_destructive_access),
-) -> dict:
-    """Reauthenticate with the account password and mint a one-use token.
-
-    A destructive action additionally requires this token plus the exact
-    confirmation phrase. Requires Administrator-level destructive permission.
-    """
-    service = MaintenanceService(db)
-    token, expires_in = await service.issue_confirmation_token(
-        actor=actor, action=payload.action, password=payload.password
-    )
-    return envelope(
-        MaintenanceReauthResponse(
-            confirmation_token=token,
-            expires_in=expires_in,
-            phrase=confirmation_phrase(payload.action),
-        )
-    )
-
-
 @router.post("/reset-data")
 async def reset_all_data(
     payload: DestructiveActionRequest,
@@ -200,16 +154,15 @@ async def reset_all_data(
 ) -> dict:
     """Delete every business record and re-seed bootstrap defaults.
 
-    Requires reauthentication (confirmation token), the exact phrase, and a
-    verified pre-deletion backup; the audit trail and protected system events
-    are preserved. The current administrator, roles, settings and the UOM
-    catalogue are kept. The walk-in customer is re-created.
+    Requires the exact phrase and a verified pre-deletion backup; the audit
+    trail and protected system events are preserved. The current administrator,
+    roles, settings and the UOM catalogue are kept. The walk-in customer is
+    re-created.
     """
     return envelope(
         await settings_service.reset_all_data(
             AdministrationService(db),
             actor=actor,
-            confirmation_token=payload.confirmation_token,
             confirmation_phrase=payload.confirmation_phrase,
         )
     )
@@ -224,13 +177,12 @@ async def clear_transactions(
     """Delete all sales + purchases (movements, returns, debts, payments,
     delivery notes) and zero product stock.
 
-    Requires reauthentication (confirmation token), the exact phrase, and a
-    verified pre-deletion backup. Master data and settings remain."""
+    Requires the exact phrase and a verified pre-deletion backup. Master data
+    and settings remain."""
     return envelope(
         await settings_service.clear_transactions(
             AdministrationService(db),
             actor=actor,
-            confirmation_token=payload.confirmation_token,
             confirmation_phrase=payload.confirmation_phrase,
         )
     )

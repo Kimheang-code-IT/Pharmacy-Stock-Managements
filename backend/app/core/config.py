@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "Stock & POS API"
+    app_version: str = "1.0.0"
     debug: bool = True
     environment: str = "development"
 
@@ -32,9 +33,9 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 1440
     refresh_token_expire_days: int = 7
 
-    telegram_bot_token: str = ""
-    telegram_bot_mode: str = "polling"
-    telegram_enabled: bool = True
+    # Telegram is configured entirely from Administration > Settings
+    # (system_settings: telegram.bot_token / telegram.chat_id / telegram.enabled).
+    # No environment fallback exists so the SPA is the single source of truth.
     telegram_reset_code_expire_minutes: int = 5
     telegram_reset_max_attempts: int = 5
     telegram_link_code_expire_minutes: int = 10

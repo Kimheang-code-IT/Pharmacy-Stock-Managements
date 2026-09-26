@@ -126,7 +126,6 @@ export const ApiEndpoints = {
 
   APP_INFO: '/api/v1/settings/app-info',
   APP_INFO_RESET: '/api/v1/settings/app-info/reset',
-  MAINTENANCE_REAUTH: '/api/v1/settings/maintenance/reauth',
   RESET_ALL_DATA: '/api/v1/settings/reset-data',
   CLEAR_TRANSACTIONS: '/api/v1/settings/clear-transactions',
   APP_CONFIG: '/api/v1/settings/app-config',

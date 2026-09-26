@@ -366,6 +366,9 @@ _LABELS: dict[str, dict[str, str]] = {
         "sale_returns": "Sale returns",
         "purchase_returns": "Purchase returns",
         "combined": "Total return documents",
+        "deliveries": "Deliveries",
+        "completed": "completed",
+        "not_completed": "not completed",
         "delivered": "Deliveries completed",
         "not_delivered": "Deliveries not completed",
         "failed": "Failed",
@@ -385,6 +388,9 @@ _LABELS: dict[str, dict[str, str]] = {
         "sale_returns": "ត្រឡប់ការលក់",
         "purchase_returns": "ត្រឡប់ការទិញ",
         "combined": "ឯកសារត្រឡប់សរុប",
+        "deliveries": "ការដឹកជញ្ជូន",
+        "completed": "បានសម្រេច",
+        "not_completed": "មិនបានសម្រេច",
         "delivered": "ការដឹកជញ្ជូនបានសម្រេច",
         "not_delivered": "ការដឹកជញ្ជូនមិនបានសម្រេច",
         "failed": "បរាជ័យ",
@@ -404,56 +410,66 @@ def _money_totals(totals: dict[str, Decimal]) -> str:
         for currency, amount in totals.items()
         if Decimal(amount or 0) != 0
     ]
-    return " / ".join(parts) if parts else "0.00"
+    return " / ".join(parts) if parts else "USD 0.00"
 
 
 def render_summary(summary: dict, *, lang: str = "en") -> str:
     """Compact plain-text summary (no markup, safe for any Telegram client)."""
     labels = _language(lang)
     lines = [
-        f"{labels['title']}",
-        f"{labels['period']}: {summary.get('period_start', '-')} .. {summary.get('period_end', '-')}",
+        f"📶 {labels['title']}",
+        "",
+        f"{labels['period']}: {summary.get('period_start', '-')} —> {summary.get('period_end', '-')}",
         "",
     ]
 
     if "sales" in summary:
         sales = summary["sales"]
-        lines.append(f"{labels['sales']}: {sales['count']} {labels['invoices']} — {_money_totals(sales['totals'])}")
+        lines.append(
+            f"- {labels['sales']}: {sales['count']} {labels['invoices']} = {_money_totals(sales['totals'])}"
+        )
 
     if "purchases" in summary:
         purchases = summary["purchases"]
-        lines.append(f"{labels['purchases']}: {purchases['count']} {labels['documents']} — {_money_totals(purchases['totals'])}")
+        lines.append(
+            f"- {labels['purchases']}: {purchases['count']} {labels['purchases']} = {_money_totals(purchases['totals'])}"
+        )
 
     if "expenses" in summary:
         expenses = summary["expenses"]
-        lines.append(f"{labels['expenses']}: {expenses['count']} {labels['entries']} — {_money_totals(expenses['totals'])}")
+        lines.append(
+            f"- {labels['expenses']}: {expenses['count']} {labels['expenses']} = {_money_totals(expenses['totals'])}"
+        )
+
+    if "deliveries" in summary:
+        deliveries = summary["deliveries"]
+        lines.append("")
+        lines.append(f"- {labels['deliveries']} ")
+        lines.append(f"  + {labels['completed']}: {deliveries['completed']}")
+        lines.append(f"  + {labels['not_completed']}: {deliveries['not_completed']}")
+        terminal = deliveries.get("terminal") or {}
+        if terminal.get("FAILED"):
+            lines.append(f"  + {labels['failed']}: {terminal['FAILED']}")
+        if terminal.get("RETURNED"):
+            lines.append(f"  + {labels['returned']}: {terminal['RETURNED']}")
 
     if "sale_returns" in summary or "purchase_returns" in summary:
-        lines.append(f"{labels['returns']}:")
+        lines.append("")
+        lines.append(f"- {labels['returns']}:")
         if "sale_returns" in summary:
             sale_returns = summary["sale_returns"]
             lines.append(
-                f"  {labels['sale_returns']}: {sale_returns['count']} — {_money_totals(sale_returns['totals'])}"
+                f"  + {labels['sale_returns']}: {sale_returns['count']} = {_money_totals(sale_returns['totals'])}"
             )
         if "purchase_returns" in summary:
             purchase_returns = summary["purchase_returns"]
             lines.append(
-                f"  {labels['purchase_returns']}: {purchase_returns['count']} — {_money_totals(purchase_returns['totals'])}"
+                f"  + {labels['purchase_returns']}: {purchase_returns['count']} = {_money_totals(purchase_returns['totals'])}"
             )
         if "sale_returns" in summary and "purchase_returns" in summary:
             combined = summary["sale_returns"]["count"] + summary["purchase_returns"]["count"]
             if combined:
-                lines.append(f"  {labels['combined']}: {combined}")
-
-    if "deliveries" in summary:
-        deliveries = summary["deliveries"]
-        lines.append(f"{labels['delivered']}: {deliveries['completed']}")
-        lines.append(f"{labels['not_delivered']}: {deliveries['not_completed']}")
-        terminal = deliveries.get("terminal") or {}
-        if terminal.get("FAILED"):
-            lines.append(f"  {labels['failed']}: {terminal['FAILED']}")
-        if terminal.get("RETURNED"):
-            lines.append(f"  {labels['returned']}: {terminal['RETURNED']}")
+                lines.append(f"  + {labels['combined']}: {combined}")
 
     if not visible_sections(summary):
         lines.append(labels["no_sections"])

@@ -69,7 +69,7 @@ export function createHttpBackupRepository(): BackupRepository {
       }
     },
 
-    restore: async (input: DestructiveActionInput & { tables?: string[] }) => unwrapApiData(
+    restore: async (input: DestructiveActionInput & { confirmationToken: string, tables?: string[] }) => unwrapApiData(
       await api.post<{ restored: Record<string, number>, skipped: string[], totalRows: number }>(
         ApiEndpoints.BACKUP_RESTORE,
         {

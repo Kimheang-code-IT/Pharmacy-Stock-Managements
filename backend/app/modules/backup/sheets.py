@@ -35,9 +35,10 @@ def _is_retryable(exc: Exception) -> bool:
     text = str(exc).lower()
     if isinstance(exc, (PermissionError, ValidationError)):
         return False
-    if "worksheetnotfound" in type(exc).__name__.lower():
+    type_name = type(exc).__name__.lower()
+    if "worksheetnotfound" in type_name or "spreadsheetnotfound" in type_name:
         return False
-    for marker in ("401", "403", "invalid_grant", "invalid credentials", "permission"):
+    for marker in ("401", "403", "404", "invalid_grant", "invalid credentials", "permission", "not found"):
         if marker in text:
             return False
     return True
@@ -82,6 +83,11 @@ class GoogleSheetsGateway:
         self.auto_retry = auto_retry
         self.retry_attempts = max(1, int(retry_attempts or 1))
         self.retry_base_delay = max(0.1, float(retry_base_delay or 1.5))
+        # Reopening the spreadsheet is a read request against the Sheets API.
+        # A backup run touches ~40 tabs, so cache the authorized client and the
+        # opened spreadsheet to stay well under the per-minute read quota.
+        self._client = None
+        self._spreadsheet = None
 
     # --------------------------------------------------------------- plumbing
 
@@ -120,10 +126,29 @@ class GoogleSheetsGateway:
             import gspread
         except ImportError as exc:  # pragma: no cover - dependency is declared
             raise SheetsGatewayError("The Google Sheets client library is not installed") from exc
-        client = gspread.authorize(self._credentials())
+        if self._spreadsheet is not None:
+            return self._spreadsheet
+        if self._client is None:
+            self._client = gspread.authorize(self._credentials())
         try:
-            return client.open_by_key(self.sheet_id)
-        except Exception as exc:
+            self._spreadsheet = self._client.open_by_key(self.sheet_id)
+            return self._spreadsheet
+        except gspread.exceptions.SpreadsheetNotFound as exc:
+            # Google returns 404 both when the ID is wrong and when the sheet was
+            # never shared with the service account. This is a configuration
+            # problem, not a transient outage: fail fast with an actionable hint.
+            raise ValidationError(
+                "Could not open the Google Sheet. Verify the spreadsheet ID and share the "
+                "sheet with the service account email (Editor access).",
+                field_errors={
+                    "sheet_id": "Spreadsheet not found or not shared with the service account"
+                },
+            ) from exc
+        except gspread.exceptions.APIError as exc:
+            raise SheetsGatewayError(
+                f"Could not open the Google Sheet: {exc}"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - network/auth errors
             raise SheetsGatewayError(
                 f"Could not open the Google Sheet: {exc}"
             ) from exc
@@ -149,6 +174,9 @@ class GoogleSheetsGateway:
                 )
                 time.sleep(delay)
         assert last_error is not None
+        if isinstance(last_error, (ValidationError, SheetsGatewayError)):
+            # Preserve the typed, already-actionable error instead of masking it.
+            raise last_error
         raise SheetsGatewayError(f"Google Sheets request failed: {last_error}") from last_error
 
     async def _run(self, operation):

@@ -1,9 +1,8 @@
 """Destructive-operation protection + audit hardening (spec: Phase 3).
 
-A reset/clear requires the dedicated permission, a recent password
-reauthentication (one-use confirmation token), the exact confirmation phrase and
-a verified pre-deletion backup. Denied attempts are audited, the audit trail has
-no update/delete route, and the protected system-event store survives a reset.
+A reset/clear requires the dedicated permission, the exact confirmation phrase,
+and a verified pre-deletion backup. Denied attempts are audited, the audit trail
+has no update/delete route, and the protected system-event store survives a reset.
 """
 
 import uuid
@@ -16,18 +15,12 @@ from tests.modules.pos.helpers import make_stocked_product
 from tests.utils import admin_headers, create_user_with_role, login
 
 
-async def _reauth(client, headers, action: str, password: str = "123456") -> dict:
-    response = await client.post(
-        "/api/v1/settings/maintenance/reauth",
-        json={"password": password, "action": action},
-        headers=headers,
-    )
-    assert response.status_code == 200, response.text
-    data = response.json()["data"]
-    return {
-        "confirmation_token": data["confirmationToken"],
-        "confirmation_phrase": data["phrase"],
+def _confirmation(action: str) -> dict:
+    phrases = {
+        "RESET_ALL_DATA": "RESET ALL DATA",
+        "CLEAR_TRANSACTIONS": "CLEAR TRANSACTIONS",
     }
+    return {"confirmation_phrase": phrases[action]}
 
 
 @pytest.mark.asyncio
@@ -47,23 +40,23 @@ async def test_reset_requires_system_permission(client, db_session):
 
     denied = await client.post("/api/v1/settings/reset-data", json={}, headers=headers)
     assert denied.status_code == 403, denied.text
-    reauth = await client.post(
-        "/api/v1/settings/maintenance/reauth",
-        json={"password": "SettingsOnly1", "action": "RESET_ALL_DATA"},
+    denied_with_phrase = await client.post(
+        "/api/v1/settings/reset-data",
+        json=_confirmation("RESET_ALL_DATA"),
         headers=headers,
     )
-    assert reauth.status_code == 403, reauth.text
+    assert denied_with_phrase.status_code == 403, denied_with_phrase.text
 
 
 @pytest.mark.asyncio
-async def test_reset_requires_token_and_exact_phrase(client):
+async def test_reset_requires_exact_phrase(client):
     admin = await admin_headers(client)
     product = await make_stocked_product(client, admin, sku="MAINT-1", name="Maint Widget")
 
-    # No token/phrase at all.
+    # No phrase at all.
     assert (await client.post("/api/v1/settings/reset-data", json={}, headers=admin)).status_code == 422
-    # Valid token but wrong phrase.
-    body = await _reauth(client, admin, "RESET_ALL_DATA")
+    # Wrong phrase.
+    body = _confirmation("RESET_ALL_DATA")
     body["confirmation_phrase"] = "please reset"
     wrong = await client.post("/api/v1/settings/reset-data", json=body, headers=admin)
     assert wrong.status_code == 422, wrong.text
@@ -76,7 +69,7 @@ async def test_reset_fails_when_backup_fails(client, monkeypatch):
     """No backup -> no deletion (abort before the wipe)."""
     admin = await admin_headers(client)
     product = await make_stocked_product(client, admin, sku="MAINT-2", name="Maint Widget 2")
-    body = await _reauth(client, admin, "RESET_ALL_DATA")
+    body = _confirmation("RESET_ALL_DATA")
 
     import app.modules.administration.maintenance as maintenance_module
     from app.core.exceptions import MaintenanceError
@@ -96,7 +89,7 @@ async def test_reset_fails_when_backup_fails(client, monkeypatch):
 async def test_reset_preserves_protected_audit_evidence(client, db_session):
     admin = await admin_headers(client)
     await make_stocked_product(client, admin, sku="MAINT-3", name="Maint Widget 3")
-    body = await _reauth(client, admin, "RESET_ALL_DATA")
+    body = _confirmation("RESET_ALL_DATA")
 
     response = await client.post("/api/v1/settings/reset-data", json=body, headers=admin)
     assert response.status_code == 200, response.text
@@ -183,3 +176,19 @@ async def test_mutation_audit_captures_request_id_and_result(client, db_session)
     assert entry.result == "success"
     assert entry.request_id == request_id
     assert entry.actor_email == "admin@gmail.com"
+
+
+def test_backup_serializer_handles_date_and_time_values():
+    """Regression: a Date/Time column must not break the pre-reset backup.
+
+    `datetime` is a subclass of `date`, so the old serializer left plain
+    `date`/`time` values untouched and `json.dumps` raised
+    "Object of type date is not JSON serializable" (HTTP 500)."""
+    from datetime import date, datetime, time
+
+    from app.modules.administration.maintenance import MaintenanceService
+
+    serialize = MaintenanceService._serialize
+    assert serialize(date(2026, 9, 26)) == "2026-09-26"
+    assert serialize(datetime(2026, 9, 26, 13, 30, 5)) == "2026-09-26T13:30:05"
+    assert serialize(time(13, 30, 5)) == "13:30:05"

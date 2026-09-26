@@ -79,29 +79,23 @@ async def test_email_and_telegram_connection_tests_report_status(client):
     assert telegram.json()["data"]["status"] == "disabled"
 
 
-async def _destructive_body(client, headers, action: str) -> dict:
-    """Reauthenticate and return the token + exact phrase for `action`."""
-    reauth = await client.post(
-        "/api/v1/settings/maintenance/reauth",
-        json={"password": "123456", "action": action},
-        headers=headers,
-    )
-    assert reauth.status_code == 200, reauth.text
-    data = reauth.json()["data"]
-    return {
-        "confirmation_token": data["confirmationToken"],
-        "confirmation_phrase": data["phrase"],
+def _destructive_body(action: str) -> dict:
+    """Return the exact phrase required for a destructive action."""
+    phrases = {
+        "RESET_ALL_DATA": "RESET ALL DATA",
+        "CLEAR_TRANSACTIONS": "CLEAR TRANSACTIONS",
     }
+    return {"confirmation_phrase": phrases[action]}
 
 
-async def test_reset_data_requires_permission_reauth_token_and_phrase(client):
+async def test_reset_data_requires_permission_and_phrase(client):
     headers = await admin_headers(client)
-    # Missing token/phrase body -> validation error, nothing deleted.
+    # Missing phrase body -> validation error, nothing deleted.
     missing = await client.post("/api/v1/settings/reset-data", headers=headers)
     assert missing.status_code == 422, missing.text
 
-    # Wrong phrase -> refused even with a valid token.
-    body = await _destructive_body(client, headers, "RESET_ALL_DATA")
+    # Wrong phrase -> refused.
+    body = _destructive_body("RESET_ALL_DATA")
     body["confirmation_phrase"] = "nope"
     wrong = await client.post("/api/v1/settings/reset-data", json=body, headers=headers)
     assert wrong.status_code == 422, wrong.text
@@ -129,10 +123,10 @@ async def test_reset_data_wipes_business_data_and_keeps_admin(client, db_session
     assert created.status_code == 201, created.text
     product_id = created.json()["data"]["id"]
 
-    body = await _destructive_body(client, headers, "RESET_ALL_DATA")
+    body = _destructive_body("RESET_ALL_DATA")
     response = await client.post("/api/v1/settings/reset-data", json=body, headers=headers)
     assert response.status_code == 200, response.text
-    assert response.json()["data"]["requiresReauth"] is True
+    assert response.json()["data"]["requiresReauth"] is False
     # A verified pre-deletion backup is recorded.
     assert response.json()["data"]["backup"]["total_rows"] >= 0
 
@@ -194,7 +188,7 @@ async def test_clear_transactions_removes_history_and_zeroes_stock(client):
     )
     assert note.status_code == 201, note.text
 
-    body = await _destructive_body(client, headers, "CLEAR_TRANSACTIONS")
+    body = _destructive_body("CLEAR_TRANSACTIONS")
     cleared = await client.post("/api/v1/settings/clear-transactions", json=body, headers=headers)
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["data"]["cleared"] is True

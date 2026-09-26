@@ -309,13 +309,16 @@ def test_render_summary_separates_currencies_and_shows_zero():
         },
         lang="en",
     )
-    assert "2026-09-01 .. 2026-09-07" in text
-    assert "Sales: 2 invoices" in text
+    assert "2026-09-01 —> 2026-09-07" in text
+    assert "- Sales: 2 invoices = USD 45.00 / KHR 82000.00" in text
     assert "USD 45.00" in text and "KHR 82000.00" in text
-    assert "Purchases: 0 documents" in text
-    assert "Deliveries completed: 4" in text
-    assert "Deliveries not completed: 2" in text
-    assert "Failed: 1" in text
+    assert "- Purchases: 0 Purchases = USD 0.00" in text
+    assert "- Deliveries" in text
+    assert "+ completed: 4" in text
+    assert "+ not completed: 2" in text
+    assert "+ Failed: 1" in text
+    assert "- Returns:" in text
+    assert "+ Sale returns: 1 = USD 10.00" in text
     # Never a blind USD+KHR sum.
     assert "82045" not in text
 
