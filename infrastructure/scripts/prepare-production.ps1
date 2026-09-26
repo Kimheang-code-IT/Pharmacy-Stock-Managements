@@ -56,7 +56,7 @@ if (-not $SkipCacheClean) {
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
 Write-Host "Next:"
-Write-Host "  1. (Optional) add TELEGRAM_BOT_TOKEN to infrastructure\.env for Telegram"
+Write-Host "  1. (Optional) configure Telegram in Administration > Settings after first login"
 Write-Host "  2. Build and start: .\infrastructure\scripts\install-client.ps1"
 Write-Host "     or for GHCR images: .\infrastructure\scripts\deploy-from-registry.ps1"
 Write-Host "  3. Daily use: double-click infrastructure\Start Stock POS.bat"

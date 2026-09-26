@@ -93,7 +93,7 @@ services:
       # 24-hour access token so users stay signed in through the day.
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-1440}
 
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      # Telegram bot token / group ID live in Administration > Settings (DB).
       LOCAL_STORAGE_DIR: /srv/data/media
       BACKUP_DIR: /srv/data/backups
       SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
@@ -159,9 +159,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stock_pos}:${POSTGRES_PASSWORD:-stock_pos}@db:5432/${POSTGRES_DB:-stock_pos}
       REDIS_URL: redis://redis:6379/0
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_BOT_MODE: ${TELEGRAM_BOT_MODE:-polling}
-
+      # Telegram bot token / group ID are read from Administration > Settings
+      # (system_settings) at runtime; no environment configuration needed.
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost}
     depends_on:
       db:
@@ -170,6 +169,14 @@ services:
         condition: service_healthy
       api:
         condition: service_started
+    healthcheck:
+      # Liveness only: the poller has no HTTP port. Re-checks the saved token
+      # every few seconds, so a Settings change needs no container restart.
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ---------------------------------------------------------------- backups
   # One-shot helpers, only run explicitly (profile "tools"):

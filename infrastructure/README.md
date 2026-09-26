@@ -98,7 +98,7 @@ No admin rights are required. Undo with `scripts\stockpos\remove-autostart.bat`.
 |---|---|
 | `FRONTEND_PORT` | host port for the app (default `80`). |
 | `FRONTEND_BIND` | `127.0.0.1` = this PC only (default); set a LAN IP or `0.0.0.0` for LAN access. |
-| `TELEGRAM_BOT_TOKEN` | optional; leave empty to disable Telegram. |
+| Telegram | configure the bot token and group ID in Administration > Settings (not in `.env`). |
 | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | unused at startup; kept only for an explicit `python -m app.seed` run. |
 | `COMPOSE_PROJECT_NAME` | defaults to `stock_pos`; set to `stockmanagement` only to reuse very old volumes. |
 
