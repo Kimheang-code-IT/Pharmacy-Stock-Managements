@@ -44,6 +44,7 @@ the host at all — they stay on the internal Docker network.
 | Start automatically at sign-in | `scripts\stockpos\install-autostart.bat` |
 | Desktop shortcut only | `scripts\stockpos\install-desktop-shortcut.bat` |
 | Open over the LAN (other devices) | `scripts\stockpos\install-lan-shortcut.bat` |
+| "Pharmacy" shortcut (open over Wi-Fi + copy address) | `scripts\stockpos\install-pharmacy-shortcut.bat` |
 | Remove auto-start | `scripts\stockpos\remove-autostart.bat` |
 
 `Start Stock POS.bat` waits for Docker Desktop and for `GET /health/ready`
@@ -74,6 +75,18 @@ scripts\stockpos\install-lan-shortcut.bat -Url "http://192.168.1.50" -Hotkey "CT
 
 Copy the Desktop shortcut to another PC on the same Wi-Fi — it needs no `.env`
 or Docker there. See **LAN access** below for the server-side requirements.
+
+### The "Pharmacy" shortcut (open + copy the Wi-Fi address)
+
+`install-pharmacy-shortcut.bat` creates a Desktop + Start Menu shortcut named
+**Pharmacy** with the hotkey **Ctrl+Alt+P**. Clicking it opens this PC's
+Wi-Fi/LAN address in the browser *and* copies that address to the clipboard, so
+you can paste it into a chat and open the system on a phone, iPad or laptop on
+the same Wi-Fi:
+
+```powershell
+scripts\stockpos\install-pharmacy-shortcut.bat -Url "http://192.168.1.50" -Hotkey "CTRL+ALT+P"
+```
 
 ### Start automatically when Windows signs in
 
@@ -245,7 +258,8 @@ in step by restoring the backup taken before the upgrade.
 | `scripts\prepare-production.ps1` | First-time local prep (creates `.env`, cleans caches). |
 | `scripts\stockpos\install-desktop-shortcut.bat` | Desktop + Start Menu shortcuts, Ctrl+Alt+S hotkey. |
 | `scripts\stockpos\install-lan-shortcut.bat` | "LAN" shortcuts + Ctrl+Alt+L hotkey (opens the server from other devices). |
-| `scripts\stockpos\open-lan-system.bat` | Open the LAN URL in the browser after `/health/ready`. |
+| `scripts\stockpos\install-pharmacy-shortcut.bat` | "Pharmacy" shortcut + Ctrl+Alt+P hotkey (opens over Wi-Fi and copies the address). |
+| `scripts\stockpos\open-lan-system.bat` | Open the LAN URL after `/health/ready` and copy it to the clipboard. |
 | `scripts\stockpos\*` | Daily-use helpers behind the `.bat` files. |
 
 Advanced Compose usage (run from this folder, where `.env` lives):

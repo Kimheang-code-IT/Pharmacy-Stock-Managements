@@ -25,6 +25,15 @@ if (-not $target) {
   exit 1
 }
 
+# Copy the address immediately so it can be pasted on another device on the
+# same Wi-Fi (phone/tablet/laptop) while the browser opens here.
+if (Set-ClipboardText $target) {
+  Write-Host "Address copied to clipboard: $target" -ForegroundColor Green
+  Write-Host "Paste it into a message and open it on another device on the same Wi-Fi." -ForegroundColor Cyan
+} else {
+  Write-Host "Open this address on another device on the same Wi-Fi: $target" -ForegroundColor Cyan
+}
+
 if (-not (Test-UrlHealthy $target)) {
   Write-Host "The system at $target is still starting up. The browser will open shortly..." -ForegroundColor Cyan
   $deadline = (Get-Date).AddSeconds(90)

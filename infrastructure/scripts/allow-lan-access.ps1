@@ -55,15 +55,9 @@ New-NetFirewallRule `
 Write-Host "Firewall rule '$ruleName' created (all profiles)." -ForegroundColor Green
 Write-Host ""
 
-# Real LAN IPv4 addresses, excluding loopback/link-local and virtual adapters
-# (WSL/Hyper-V 172.16-31.x, VirtualBox host-only 192.168.56.x, ICS hotspot
-# 192.168.137.x) so only addresses other devices can actually use are printed.
-$ips = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-  Where-Object {
-    $_.IPAddress -notmatch '^(127\.|169\.254\.|192\.168\.(56|137)\.|172\.(1[6-9]|2[0-9]|3[01])\.)' -and
-    $_.InterfaceAlias -notmatch 'Loopback|vEthernet|WSL|Hyper-V|VirtualBox|VMware'
-  } |
-  Select-Object -ExpandProperty IPAddress -Unique
+# Real LAN IPv4 addresses (default-route interfaces first), so only addresses
+# other devices can actually use are printed.
+$ips = Get-LanIPv4Addresses
 
 Write-Host "Open the app from your iPad / phone (connected to the same Wi-Fi):" -ForegroundColor Cyan
 if ($ips) {

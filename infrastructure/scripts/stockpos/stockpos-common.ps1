@@ -173,10 +173,28 @@ function Get-ApiHealthUrl($Root) {
   return "http://localhost:$(Get-FrontendPort $Root)/health/ready"
 }
 
-# The PC's usable LAN IPv4 addresses, excluding loopback/link-local and virtual
-# adapters (WSL/Hyper-V 172.16-31.x, VirtualBox host-only 192.168.56.x, ICS
-# hotspot 192.168.137.x) so only addresses other devices can use remain.
+# The PC's usable LAN IPv4 addresses.
+# First prefer addresses on interfaces that carry the default route (the real
+# Wi-Fi/Ethernet other devices share). This is reliable even when the real
+# network uses a 172.16-31.x range, which the fallback filter skips because it is
+# also used by Hyper-V/WSL. Loopback/link-local and virtual adapters are always
+# dropped.
 function Get-LanIPv4Addresses {
+  $preferred = @()
+  try {
+    $routes = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
+      Sort-Object RouteMetric
+    foreach ($route in $routes) {
+      $alias = [string]$route.InterfaceAlias
+      if ($alias -match "Loopback|vEthernet|WSL|Hyper-V|VirtualBox|VMware") { continue }
+      $preferred += @(Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias $alias -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -notmatch "^(127\.|169\.254\.)" } |
+        Select-Object -ExpandProperty IPAddress)
+    }
+  } catch { }
+  $preferred = @($preferred | Select-Object -Unique)
+  if ($preferred.Count -gt 0) { return $preferred }
+
   return @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     Where-Object {
       $_.IPAddress -notmatch '^(127\.|169\.254\.|192\.168\.(56|137)\.|172\.(1[6-9]|2[0-9]|3[01])\.)' -and
@@ -211,6 +229,22 @@ function Get-LanBaseUrl {
   $ip = Get-LanIPv4Addresses | Select-Object -First 1
   if ($ip) { return "http://${ip}:$(Get-FrontendPort $root)" }
   return $null
+}
+
+# Put text on the Windows clipboard (used to share the LAN URL with another
+# device). Falls back to clip.exe when Set-Clipboard is unavailable.
+function Set-ClipboardText {
+  param([Parameter(Mandatory = $true)][string]$Text)
+  if (-not $Text) { return $false }
+  try {
+    Set-Clipboard -Value $Text -ErrorAction Stop
+    return $true
+  } catch { }
+  try {
+    $Text | clip.exe
+    return ($LASTEXITCODE -eq 0)
+  } catch { }
+  return $false
 }
 
 # Poll any base URL's deep-health endpoint (localhost or a LAN target).
@@ -250,8 +284,12 @@ function New-StockPosShortcutPair {
   $shell = New-Object -ComObject WScript.Shell
   $iconLocation = Get-StockPosIconLocation
   $target = "$env:SystemRoot\System32\cmd.exe"
-  $arguments = "/c `"$ScriptPath`""
+  # Wrap the command in an extra pair of quotes so cmd /c keeps the quoted path
+  # intact even when the folder contains spaces (e.g. "Stock management") and
+  # arguments follow; otherwise cmd splits the path at the first space.
+  $arguments = "/c `"`"$ScriptPath`""
   if ($ScriptArguments.Trim()) { $arguments = "$arguments $($ScriptArguments.Trim())" }
+  $arguments = "$arguments`""
   $hotkeyValue = $Hotkey.Trim().ToUpper()
 
   $desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) "$Name.lnk"
@@ -304,6 +342,24 @@ function New-StockPosLanShortcuts {
     -Name "Yoeun Sokhon Pharmacy (LAN)" `
     -ScriptPath (Join-Path $PSScriptRoot "open-lan-system.bat") `
     -Description "Open the Yoeun Sokhon Pharmacy stock & POS system over the LAN" `
+    -Hotkey $Hotkey `
+    -ScriptArguments $extra
+}
+
+# "Pharmacy" shortcut (Ctrl+Alt+P) — opens the server's Wi-Fi/LAN URL and copies
+# that address to the clipboard so it can be pasted on another device.
+function New-PharmacyShortcuts {
+  param(
+    [string]$Hotkey = "CTRL+ALT+P",
+    [string]$Url = ""
+  )
+
+  $extra = ""
+  if ($Url -and $Url.Trim()) { $extra = "-Url `"$($Url.Trim())`"" }
+  return New-StockPosShortcutPair `
+    -Name "Pharmacy" `
+    -ScriptPath (Join-Path $PSScriptRoot "open-lan-system.bat") `
+    -Description "Open Yoeun Sokhon Pharmacy over Wi-Fi and copy its address" `
     -Hotkey $Hotkey `
     -ScriptArguments $extra
 }
