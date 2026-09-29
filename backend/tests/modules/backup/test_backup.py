@@ -51,6 +51,10 @@ class FakeSheetsGateway:
             return True
         return False
 
+    async def ensure_and_read(self, title: str, header: list[str]) -> tuple[bool, list[list[str]]]:
+        changed = await self.ensure_worksheet(title, header)
+        return changed, await self.read_rows(title)
+
     async def read_rows(self, title: str) -> list[list[str]]:
         return [list(row) for row in self.tabs.get(title, [])]
 

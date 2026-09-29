@@ -72,7 +72,9 @@ SETTING_GROUPS: dict[str, dict[str, object]] = {
         "display_locale": "en-US",
     },
     "backup": {
-        "enabled": False,
+        # Automatic backup defaults to enabled every 24h. It only fires once a
+        # sheet ID + service-account key are configured, so this is safe.
+        "enabled": True,
         "sheet_id": "",
         "service_account_json": "",
         "frequency_hours": 24,

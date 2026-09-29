@@ -139,6 +139,20 @@ async def _backup_due() -> bool:
             frequency = DEFAULT_FREQUENCY_HOURS
         if frequency not in ALLOWED_FREQUENCY_HOURS:
             frequency = DEFAULT_FREQUENCY_HOURS
+        now = datetime.now(timezone.utc)
+        # Prefer the explicit next-run stamp written after every run (success or
+        # failure). Falling back to `last_success_at` alone would re-run a failed
+        # backup every poll (60s), hammering the Sheets API and the quota.
+        upcoming = str(await get_setting_value(session, "backup", "next_run_at", "") or "").strip()
+        if upcoming:
+            try:
+                next_run = datetime.fromisoformat(upcoming)
+            except ValueError:
+                next_run = None
+            if next_run is not None:
+                if next_run.tzinfo is None:
+                    next_run = next_run.replace(tzinfo=timezone.utc)
+                return now >= next_run
         last = str(await get_setting_value(session, "backup", "last_success_at", "") or "").strip()
         if not last:
             return True
@@ -148,7 +162,7 @@ async def _backup_due() -> bool:
             return True
         if last_run.tzinfo is None:
             last_run = last_run.replace(tzinfo=timezone.utc)
-        return datetime.now(timezone.utc) >= last_run + timedelta(hours=frequency)
+        return now >= last_run + timedelta(hours=frequency)
 
 
 async def backup_loop(stop: asyncio.Event) -> None:

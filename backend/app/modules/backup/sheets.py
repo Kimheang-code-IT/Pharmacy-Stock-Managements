@@ -44,6 +44,16 @@ def _is_retryable(exc: Exception) -> bool:
     return True
 
 
+def _is_quota_error(exc: Exception) -> bool:
+    """Google returns 429 when the per-minute read/write quota is exhausted.
+
+    Those limits reset after the current minute, so a short exponential backoff
+    is useless: wait a full window before retrying instead of hammering.
+    """
+    text = str(exc).lower()
+    return "429" in text or "quota" in text or "rate limit" in text
+
+
 class SheetsGatewayError(ServiceUnavailableError):
     """Google Sheets could not be reached or rejected the request."""
 
@@ -52,6 +62,9 @@ class SheetsGatewayError(ServiceUnavailableError):
 class SheetsGateway(Protocol):
     async def ensure_worksheet(self, title: str, header: list[str]) -> bool:
         """Ensure the tab exists with `header`; return True when it changed."""
+
+    async def ensure_and_read(self, title: str, header: list[str]) -> tuple[bool, list[list[str]]]:
+        """Ensure the tab/header and return every cell in a single read request."""
 
     async def read_rows(self, title: str) -> list[list[str]]:
         """Return every cell of the tab (including the header row)."""
@@ -88,6 +101,10 @@ class GoogleSheetsGateway:
         # opened spreadsheet to stay well under the per-minute read quota.
         self._client = None
         self._spreadsheet = None
+        # `spreadsheet.worksheet(title)` performs a `spreadsheets.get` request
+        # on every call in gspread, and the backup touches ~40 tabs. Fetch the
+        # worksheet list once (`spreadsheets.get`) and reuse it for the run.
+        self._worksheets: dict[str, object] | None = None
 
     # --------------------------------------------------------------- plumbing
 
@@ -164,6 +181,9 @@ class GoogleSheetsGateway:
                 if attempt >= attempts or not _is_retryable(exc):
                     break
                 delay = self.retry_base_delay * (2 ** (attempt - 1))
+                if _is_quota_error(exc):
+                    # The per-minute quota resets on the next minute boundary.
+                    delay = max(delay, 60.0)
                 delay += random.uniform(0, delay * 0.25)
                 logger.warning(
                     "Google Sheets call failed (attempt %s/%s): %s; retrying in %.1fs",
@@ -182,14 +202,29 @@ class GoogleSheetsGateway:
     async def _run(self, operation):
         return await asyncio.to_thread(self._with_retry, operation)
 
-    @staticmethod
-    def _worksheet(spreadsheet, title: str):
-        import gspread
+    def _worksheets_map(self, spreadsheet) -> dict[str, object]:
+        if self._worksheets is None:
+            self._worksheets = {ws.title: ws for ws in spreadsheet.worksheets()}
+        return self._worksheets
 
+    def _worksheet(self, spreadsheet, title: str):
+        return self._worksheets_map(spreadsheet).get(title)
+
+    def _register_worksheet(self, title: str, worksheet) -> None:
+        if self._worksheets is not None:
+            self._worksheets[title] = worksheet
+
+    def _create_worksheet(self, spreadsheet, title: str, header: list[str], rows: int = 1000):
+        worksheet = spreadsheet.add_worksheet(
+            title=title, rows=max(1000, rows), cols=max(len(header), 1)
+        )
+        self._register_worksheet(title, worksheet)
+        worksheet.append_row(header, value_input_option="RAW")
         try:
-            return spreadsheet.worksheet(title)
-        except gspread.WorksheetNotFound:
-            return None
+            worksheet.freeze(rows=1)
+        except Exception:  # noqa: BLE001 - cosmetic only
+            pass
+        return worksheet
 
     # ------------------------------------------------------------------- API
 
@@ -200,14 +235,7 @@ class GoogleSheetsGateway:
             spreadsheet = self._open()
             worksheet = self._worksheet(spreadsheet, tab)
             if worksheet is None:
-                worksheet = spreadsheet.add_worksheet(
-                    title=tab, rows=max(1000, 2), cols=max(len(header), 1)
-                )
-                worksheet.append_row(header, value_input_option="RAW")
-                try:
-                    worksheet.freeze(rows=1)
-                except Exception:  # noqa: BLE001 - cosmetic only
-                    pass
+                self._create_worksheet(spreadsheet, tab, header)
                 return True
             current = worksheet.row_values(1)
             if current[: len(header)] != header or len(current) != len(header):
@@ -216,6 +244,34 @@ class GoogleSheetsGateway:
             return False
 
         return bool(await self._run(operation))
+
+    async def ensure_and_read(self, title: str, header: list[str]) -> tuple[bool, list[list[str]]]:
+        """Header check + full read in one values request.
+
+        `get_all_values` already returns the header row, so a separate
+        `row_values(1)` read is wasted quota. This halves the read requests per
+        tab, keeping a full database backup under Google's per-minute read quota.
+        """
+        tab = normalize_tab_title(title)
+
+        def operation() -> tuple[bool, list[list[str]]]:
+            spreadsheet = self._open()
+            worksheet = self._worksheet(spreadsheet, tab)
+            if worksheet is None:
+                self._create_worksheet(spreadsheet, tab, header)
+                return True, [list(header)]
+            values = worksheet.get_all_values()
+            current = values[0] if values else []
+            if current[: len(header)] != header or len(current) != len(header):
+                worksheet.update(values=[header], range_name="A1")
+                if values:
+                    values[0] = list(header)
+                else:
+                    values = [list(header)]
+                return True, values
+            return False, values
+
+        return await self._run(operation)
 
     async def read_rows(self, title: str) -> list[list[str]]:
         tab = normalize_tab_title(title)
@@ -235,9 +291,12 @@ class GoogleSheetsGateway:
             spreadsheet = self._open()
             worksheet = self._worksheet(spreadsheet, tab)
             if worksheet is None:
+                # No header is known here (append-only path); create an empty
+                # tab so the caller's header stays the only header source.
                 worksheet = spreadsheet.add_worksheet(
                     title=tab, rows=max(1000, len(rows) + 1), cols=max(len(rows[0]), 1)
                 )
+                self._register_worksheet(tab, worksheet)
             # Chunked to stay well under the per-request cell budget.
             for start in range(0, len(rows), 500):
                 worksheet.append_rows(

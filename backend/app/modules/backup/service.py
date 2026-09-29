@@ -444,8 +444,7 @@ class BackupService:
         columns = [column.name for column in table.columns]
         header = columns + META_COLUMNS
 
-        header_changed = await gateway.ensure_worksheet(table_name, header)
-        existing = await gateway.read_rows(table_name)
+        header_changed, existing = await gateway.ensure_and_read(table_name, header)
         existing_versions = _existing_versions(existing)
         records = await self.repo.records_for_table(table_name)
 
