@@ -45,7 +45,6 @@ from app.modules.uoms.models import UOM
 from app.shared.audit.service import record_audit, record_system_event
 from app.shared.documents import (
     DocumentSequence,
-    allocate_document_number,
     ensure_default_sequences,
 )
 
@@ -271,15 +270,9 @@ async def reset_all_data(
     # app is immediately usable again.
     await session.execute(update(DocumentSequence).values(next_number=1))
     await ensure_default_sequences(session)
-    session.add(
-        Customer(
-            code=await allocate_document_number(session, "CUSTOMER"),
-            name="Walk-in Customer",
-            status="ACTIVE",
-            is_walk_in=True,
-        )
-    )
-    await session.flush()
+    from app.modules.customers.service import ensure_walk_in_customer
+
+    await ensure_walk_in_customer(session)
     await record_audit(
         session,
         action="all_data_reset",

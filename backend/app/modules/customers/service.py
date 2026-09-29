@@ -18,6 +18,25 @@ from app.shared.lifecycle import assert_inactive_for_delete
 logger = logging.getLogger("stock_pos.customers")
 
 
+async def ensure_walk_in_customer(session: AsyncSession) -> Customer:
+    """Idempotently create the system Walk-in Customer (spec §2.1.6).
+
+    POS resolves anonymous cash sales to this record, so it must exist once an
+    installation is usable (initial setup, seeding, data reset)."""
+    existing = await session.scalar(select(Customer).where(Customer.is_walk_in.is_(True)))
+    if existing is not None:
+        return existing
+    customer = Customer(
+        code=await allocate_document_number(session, "CUSTOMER"),
+        name="Walk-in Customer",
+        status="ACTIVE",
+        is_walk_in=True,
+    )
+    session.add(customer)
+    await session.flush()
+    return customer
+
+
 class CustomerService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session

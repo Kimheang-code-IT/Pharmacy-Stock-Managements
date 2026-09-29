@@ -3,7 +3,7 @@ import {
   configureFormats,
   DEFAULT_FORMAT_CONFIG,
 } from '../app/utils/format/format-service'
-import { escapeHtml, PRINT_IFRAME_SIZES, printPageCss } from '../app/utils/print/html'
+import { escapeHtml, INVOICE_COLUMNS, INVOICE_COLUMN_SHARE_TOTAL, invoiceColgroup, PRINT_BORDER, PRINT_IFRAME_SIZES, printPageCss } from '../app/utils/print/html'
 import { buildSaleInvoiceHtml } from '../app/utils/print/invoice'
 import {
   buildDeliveryNoteHtml,
@@ -33,22 +33,46 @@ describe('print documents', () => {
     expect(css).toContain('.meta p')
     expect(css).toContain('font-weight: 700')
     expect(css).toContain('table.lines')
-    expect(css).toContain('border: 0.5px solid #000')
+    expect(css).toContain('border-left: 1px solid #000')
+    // Every border — including the Amount column's right edge — is the same 1px.
+    expect(css).toContain('border-right: 1px solid #000')
+    const borderWidths = [...css.matchAll(/border(?:-(?:left|right|top|bottom))?: ([\d.]+)px/g)]
+      .map(match => match[1])
+    expect(new Set(borderWidths)).toEqual(new Set(['1']))
     expect(css).toContain('text-decoration: underline')
     expect(css).toContain('table.summary')
     expect(css).toContain('.col-product { width: 28%; }')
     expect(css).toContain('th.num { text-align: center; }')
     expect(css).toContain('tr.empty.stretch td')
-    expect(css).toContain('border-top: none')
+    expect(css).toContain('border-collapse: separate')
     expect(css).toContain('table.summary td.spacer')
     expect(PRINT_IFRAME_SIZES.A4).toEqual({ width: '210mm', height: '297mm' })
+  })
+
+  it('invoice column shares total exactly 100%', () => {
+    // A <100% total leaves the browser to redistribute the remainder, and the
+    // items table and totals table do not redistribute it identically.
+    const sum = INVOICE_COLUMNS.reduce((total, column) => total + column.share, 0)
+    expect(sum).toBe(100)
+    expect(INVOICE_COLUMN_SHARE_TOTAL).toBe(100)
+  })
+
+  it('uses one shared 1px border for every invoice boundary (A4 and A5)', () => {
+    expect(PRINT_BORDER).toBe('1px solid #000')
+    for (const size of ['A4', 'A5'] as const) {
+      const css = printPageCss(size)
+      const widths = [...css.matchAll(/border(?:-(?:left|right|top|bottom))?: ([\d.]+)px/g)].map(match => match[1])
+      // No border rule — including the Amount column's right edge — uses a
+      // width other than the single shared 1px.
+      expect(new Set(widths)).toEqual(new Set(['1']))
+    }
   })
 
   it('uses A5 page CSS and iframe size when A5 is chosen', () => {
     const css = printPageCss('A5')
     expect(css).toContain('@page { size: A5; margin: 6mm; }')
     expect(css).toContain('font-size: 10.4px')
-    expect(css).toContain('border: 0.5px solid #000')
+    expect(css).toContain('border-left: 1px solid #000')
     expect(css).toContain('tr.empty.stretch td')
     expect(PRINT_IFRAME_SIZES.A5).toEqual({ width: '148mm', height: '210mm' })
   })
@@ -56,8 +80,8 @@ describe('print documents', () => {
   it('renders the same bordered invoice style on A4 and A5 (scale only)', () => {
     const a4 = printPageCss('A4')
     const a5 = printPageCss('A5')
-    expect(a4).toContain('border: 0.5px solid #000')
-    expect(a5).toContain('border: 0.5px solid #000')
+    expect(a4).toContain('border-left: 1px solid #000')
+    expect(a5).toContain('border-left: 1px solid #000')
     expect(a4).toContain('text-decoration: underline')
     expect(a5).toContain('text-decoration: underline')
     expect(a4).toContain('.signs .line')
@@ -66,6 +90,36 @@ describe('print documents', () => {
     expect(a5).toContain('th.num { text-align: center; }')
     const ruleNames = (css: string) => css.split('}').map(rule => rule.split('{')[0]?.trim()).filter(Boolean).sort()
     expect(ruleNames(a4)).toEqual(ruleNames(a5))
+    // Every border declaration is identical between A4 and A5 (only the paper
+    // scale differs), so both paper types print the exact same border system.
+    const borders = (css: string) => [...css.matchAll(/border(?:-(?:left|right|top|bottom))?: [^;]+/g)].map(match => match[0])
+    expect(borders(a4)).toEqual(borders(a5))
+    // Borders are either explicitly removed (`0`) or the one shared 1px line —
+    // no declaration uses a different width.
+    expect(new Set(borders(a4).map(rule => rule.split(': ')[1]))).toEqual(new Set(['0', '1px solid #000']))
+  })
+
+  it('line-items and totals tables share the exact same INVOICE_COLUMNS grid', () => {
+    const html = buildSaleInvoiceHtml({
+      shopName: 'Demo Shop',
+      invoiceNo: 'INV-000001',
+      dateLabel: '07/09/26 22:10',
+      customerName: 'Walk-in',
+      cashier: 'admin',
+      currency: 'USD',
+      lines: [{ name: 'Glove', uom: 'PCS', quantity: 1, unitPrice: 3.15, discountPercent: 0 }],
+      deliveryPrice: 0,
+      previousDebtAmount: 0,
+      depositAmount: 0,
+      outstandingAmount: 3.15,
+    })
+    const colgroups = [...html.matchAll(/<colgroup>[\s\S]*?<\/colgroup>/g)].map(match => match[0])
+    // One colgroup for table.lines, one for table.summary.
+    expect(colgroups).toHaveLength(2)
+    // Identical geometry: the totals table reuses the items table's grid.
+    expect(colgroups[0]).toBe(colgroups[1])
+    expect(colgroups[0].trim()).toBe(invoiceColgroup().trim())
+    expect([...colgroups[0].matchAll(/<col /g)]).toHaveLength(INVOICE_COLUMNS.length)
   })
 
   it('builds a bilingual sale invoice with lines and totals', () => {

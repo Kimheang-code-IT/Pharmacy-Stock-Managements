@@ -4,9 +4,11 @@ import {
   BARCODE_LABEL_PRESETS,
   barcodeLabelCss,
   barcodeLabelHtml,
+  barcodePrintState,
   DEFAULT_BARCODE_LABEL_SETTINGS,
   normalizeLabelSettings,
   printBarcodeLabels,
+  recommendBarcodeLabelPreset,
   type BarcodeLabelData,
   type BarcodeLabelSettings,
 } from '~/utils/print/barcode-label'
@@ -27,16 +29,31 @@ const props = withDefaults(defineProps<{
 
 const { t } = useI18n()
 
-const SETTINGS_KEY = 'ui:barcode-label-settings'
+const SETTINGS_KEY = 'ui:barcode-label-settings:v3'
 /** CSS pixel size of one millimetre on screen at the browser's 96dpi. */
 const PX_PER_MM = 96 / 25.4
 const PREVIEW_MAX_W = 300
 const PREVIEW_MAX_H = 240
 
-type NumericSettingKey =
-  | 'widthMm' | 'heightMm' | 'gapXMm' | 'gapYMm'
-  | 'marginTopMm' | 'marginLeftMm' | 'barcodeHeightMm'
-  | 'barcodeScale' | 'fontSizePt' | 'labelsPerRow'
+type NumericSettingKey = 'widthMm' | 'heightMm'
+
+/**
+ * The panel only exposes the sticker size. Everything else (gaps, margins,
+ * font, page mode, content toggles) is fixed so one sheet layout always prints
+ * at a size the scanner can read.
+ */
+const FIXED_LABEL_SETTINGS: Partial<BarcodeLabelSettings> = {
+  gapXMm: 2,
+  gapYMm: 2,
+  marginTopMm: 8,
+  marginLeftMm: 8,
+  barcodeAutoFit: true,
+  fontSizePt: 8,
+  showName: true,
+  showUsd: true,
+  showKhr: false,
+  labelsPerRow: 4,
+}
 
 /** Editable label-size fields (label = i18n suffix under `app.stock.`). */
 const numericFields: Array<{
@@ -46,15 +63,8 @@ const numericFields: Array<{
   max: number
   step: number
 }> = [
-  { key: 'widthMm', label: 'barcodeWidthMm', min: 10, max: 210, step: 1 },
-  { key: 'heightMm', label: 'barcodeHeightMm', min: 8, max: 297, step: 1 },
-  { key: 'gapXMm', label: 'barcodeGapXMm', min: 0, max: 50, step: 0.5 },
-  { key: 'gapYMm', label: 'barcodeGapYMm', min: 0, max: 50, step: 0.5 },
-  { key: 'marginTopMm', label: 'barcodeMarginTop', min: 0, max: 80, step: 1 },
-  { key: 'marginLeftMm', label: 'barcodeMarginLeft', min: 0, max: 80, step: 1 },
-  { key: 'barcodeScale', label: 'barcodeWidthScale', min: 30, max: 100, step: 5 },
-  { key: 'fontSizePt', label: 'barcodeFontSize', min: 4, max: 24, step: 0.5 },
-  { key: 'labelsPerRow', label: 'barcodeLabelsPerRow', min: 1, max: 20, step: 1 },
+  { key: 'widthMm', label: 'barcodeWidthMm', min: 20, max: 210, step: 1 },
+  { key: 'heightMm', label: 'barcodeHeightMm', min: 15, max: 297, step: 1 },
 ]
 
 const settings = reactive<BarcodeLabelSettings>({ ...DEFAULT_BARCODE_LABEL_SETTINGS })
@@ -65,8 +75,9 @@ const labelCss = barcodeLabelCss()
 const barcode = computed(() => String(props.product?.barcode || '').trim())
 const name = computed(() => String(props.product?.name || ''))
 
-/** The sticker uses the user's settings as-is (name / price / bars / code). */
-const labelSettings = computed<BarcodeLabelSettings>(() => ({ ...settings }))
+/** Sticker size is user-chosen; every other setting is fixed (see above). */
+const labelSettings = computed<BarcodeLabelSettings>(() =>
+  normalizeLabelSettings({ ...settings, ...FIXED_LABEL_SETTINGS }))
 
 /** Product sale price (USD) printed on the sticker when "Show price" is on. */
 const previewData = computed<BarcodeLabelData>(() => ({
@@ -76,7 +87,23 @@ const previewData = computed<BarcodeLabelData>(() => ({
   priceKhr: null,
 }))
 
-const previewHtml = computed(() => barcodeLabelHtml(previewData.value, labelSettings.value))
+/** Keep the button, warning, and click guard on the exact layout used to print. */
+const printState = computed(() => barcodePrintState(barcode.value, labelSettings.value, props.disabled))
+const tooDense = computed(() => printState.value.layout.tooDense)
+const suggestedWidthMm = computed(() => printState.value.layout.minimumLabelWidthMm)
+const printDisabled = computed(() => printState.value.disabled)
+const recommendedPreset = computed(() => recommendBarcodeLabelPreset(barcode.value, labelSettings.value))
+
+/** Preview the exact module layout already calculated for validation/printing. */
+const previewHtml = computed(() =>
+  barcodeLabelHtml(previewData.value, labelSettings.value, printState.value.layout))
+
+/** Thermal printer resolution choices (the module width snaps to this grid). */
+const dpiItems = [
+  { label: '203 DPI', value: 203 },
+  { label: '300 DPI', value: 300 },
+  { label: '600 DPI', value: 600 },
+]
 
 const previewScale = computed(() => {
   const width = settings.widthMm * PX_PER_MM
@@ -92,9 +119,10 @@ const previewBoxStyle = computed(() => ({
 const activePresetId = computed(() => BARCODE_LABEL_PRESETS
   .find(preset => preset.widthMm === settings.widthMm && preset.heightMm === settings.heightMm)?.id || 'custom')
 
+/** Print target: one sticker per label (thermal) or a page of stickers (A4). */
 const pageModeItems = computed(() => [
-  { label: t('app.stock.barcodePageA4'), value: 'A4' },
   { label: t('app.stock.barcodePageLabel'), value: 'label' },
+  { label: t('app.stock.barcodePageA4'), value: 'A4' },
 ])
 
 function applyPreset(preset: typeof BARCODE_LABEL_PRESETS[number]) {
@@ -126,7 +154,7 @@ watch(settings, () => {
 onMounted(loadSettings)
 
 function printStickers() {
-  if (!barcode.value || props.disabled) return
+  if (printDisabled.value) return
   void printBarcodeLabels([{ ...previewData.value }], labelSettings.value)
 }
 </script>
@@ -159,10 +187,17 @@ function printStickers() {
               color="primary"
               icon="i-lucide-printer"
               :label="t('app.stock.barcodePrint')"
-              :disabled="disabled"
+              :disabled="printDisabled"
               @click="printStickers"
             />
           </div>
+
+          <p v-if="tooDense" class="text-xs text-warning">
+            {{ t('app.stock.barcodeTooDense', { width: suggestedWidthMm }) }}
+            <span v-if="recommendedPreset">
+              {{ t('app.stock.barcodePresetRecommended', { preset: recommendedPreset.label }) }}
+            </span>
+          </p>
         </div>
 
         <!-- Label size settings -->
@@ -189,7 +224,7 @@ function printStickers() {
             />
           </div>
 
-          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <div class="grid grid-cols-2 gap-3">
             <label
               v-for="field in numericFields"
               :key="field.key"
@@ -205,6 +240,9 @@ function printStickers() {
                 class="w-full"
               />
             </label>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
             <label class="text-sm">
               <span class="mb-1 block text-muted">{{ t('app.stock.barcodePageMode') }}</span>
               <USelect
@@ -214,24 +252,19 @@ function printStickers() {
                 class="w-full"
               />
             </label>
+            <label class="text-sm">
+              <span class="mb-1 block text-muted">{{ t('app.stock.barcodePrinterDpi') }}</span>
+              <USelect
+                v-model="settings.printerDpi"
+                :items="dpiItems"
+                value-key="value"
+                class="w-full"
+              />
+            </label>
           </div>
 
-          <div class="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-default pt-3">
-            <label class="flex items-center gap-2 text-sm">
-              <USwitch v-model="settings.showName" size="sm" />
-              <span>{{ t('app.stock.barcodeShowName') }}</span>
-            </label>
-            <label class="flex items-center gap-2 text-sm">
-              <USwitch v-model="settings.showUsd" size="sm" />
-              <span>{{ t('app.stock.barcodeShowUsd') }}</span>
-            </label>
-            <label class="flex items-center gap-2 text-sm">
-              <USwitch v-model="settings.showKhr" size="sm" />
-              <span>{{ t('app.stock.barcodeShowKhr') }}</span>
-            </label>
-          </div>
           <p class="text-[11px] text-muted">
-            {{ t('app.stock.barcodeAutoFitHint') }}
+            {{ t('app.stock.barcodeSizeHint') }}
           </p>
         </div>
       </div>

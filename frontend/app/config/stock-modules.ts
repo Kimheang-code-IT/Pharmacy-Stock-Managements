@@ -138,6 +138,7 @@ export const stockModules: ModuleConfig[] = [
       col('quantity', 'Current Stock'),
       col('stockInQty', 'Total Stock In', { labelKey: 'app.modules.products.fields.stockInQty' }),
       col('stockOutQty', 'Total Stock Out', { labelKey: 'app.modules.products.fields.stockOutQty' }),
+      col('expiryStatus', 'Expiry Status', { labelKey: 'app.stock.expiryStatusCol' }),
       col('status', 'Status'),
     ],
     fields: [
@@ -145,7 +146,7 @@ export const stockModules: ModuleConfig[] = [
       f('categoryId', 'Category', 'General Information', 'select', undefined, { required: true, optionsCollection: 'categories' }),
       f('imageUrl', 'Image', 'General Information', 'image'),
       f('brand', 'Brand', 'General Information', 'text', undefined, { labelKm: 'ម៉ាក' }),
-      f('barcode', 'Barcode', 'General Information', 'text', undefined, { hideOnCreate: true, help: 'Generated automatically. Shown once the product is saved.' }),
+      f('barcode', 'Barcode', 'General Information', 'text', undefined, { hideOnCreate: true, help: 'Generated automatically as 6 digits. If changed manually, enter exactly 6 digits.' }),
       f('uomId', 'Unit of Measure', 'General Information', 'select', undefined, { required: true, optionsCollection: 'uoms' }),
       f('supplierId', 'Supplier', 'General Information', 'select', undefined, { optionsCollection: 'suppliers' }),
       // Spec §5.9 General tab: identity only. Sale price lives on the Pricing

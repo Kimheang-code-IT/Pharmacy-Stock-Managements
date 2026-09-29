@@ -86,6 +86,8 @@ async def test_purchase_report_exposes_batch_and_expiry_for_edit(client):
     row = next(item for item in rows if item["document_no"] == document_no)
     assert row["batch_no"] == "LOT-EDIT-1"
     assert row["expiry_date"] == "2030-06-30"
+    # The Purchase Report User column needs the creator's name.
+    assert row["created_by_name"] == "System Administrator"
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@ import { escapeHtml } from '~/utils/print/html'
  * Each document supplies only its own title, meta pairs, table headers /
  * rows and signature labels; headers, filler rows, notes and signature
  * blocks render identically everywhere (Khmer-first stacked headers,
- * ~70% page-1 filler budget, 0.5px borders from printPageCss).
+ * ~70% page-1 filler budget, 1px borders from printPageCss).
  */
 
 export type PrintMetaPair = { label: string, value: string }

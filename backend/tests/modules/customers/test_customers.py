@@ -1,5 +1,32 @@
+from sqlalchemy import delete, func, select
+
+from app.modules.customers.models import Customer
+from app.modules.customers.service import ensure_walk_in_customer
 from tests.modules.pos.helpers import make_customer, make_stocked_product
 from tests.utils import admin_headers, deactivate_then_delete
+
+
+async def test_ensure_walk_in_customer_bootstraps_and_is_idempotent(db_session):
+    """Initial setup and data reset rely on this helper so exactly one system
+    walk-in customer exists (POS resolves anonymous cash sales to it)."""
+    await db_session.execute(delete(Customer).where(Customer.is_walk_in.is_(True)))
+    await db_session.flush()
+
+    created = await ensure_walk_in_customer(db_session)
+    assert created.is_walk_in is True
+    assert created.name == "Walk-in Customer"
+    assert created.code.startswith("CUS-")
+    await db_session.commit()
+
+    again = await ensure_walk_in_customer(db_session)
+    assert again.id == created.id
+
+    count = (
+        await db_session.execute(
+            select(func.count()).select_from(Customer).where(Customer.is_walk_in.is_(True))
+        )
+    ).scalar_one()
+    assert count == 1
 
 
 async def test_customer_crud_auto_code_and_walkin_protection(client):

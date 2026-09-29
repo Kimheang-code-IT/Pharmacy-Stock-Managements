@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { TableColumn } from '@nuxt/ui'
-import type { PaginationState } from '@tanstack/vue-table'
+import type { PaginationState, Row, TableMeta } from '@tanstack/vue-table'
 import { UBadge, UButton } from '#components'
 import { h } from 'vue'
 import type { AppRecord } from '~/config/admin-seed'
@@ -161,6 +161,14 @@ async function expireBatch(row: ProductBatchRow) {
 const dim = (row: ProductBatchRow, base: string) =>
   `${base}${isExpired(row) ? ' opacity-60' : ''}`
 
+/** Expired lots get a red row background so they stand out on the Batches tab. */
+const tableMeta = computed<TableMeta<ProductBatchRow & Record<string, unknown>>>(() => ({
+  class: {
+    tr: (row: Row<ProductBatchRow & Record<string, unknown>>) =>
+      isExpired(row.original) ? '[&>td]:bg-error/10' : '',
+  },
+}))
+
 const columns = computed<TableColumn<ProductBatchRow & Record<string, unknown>>[]>(() => [
   {
     accessorKey: '__no',
@@ -252,6 +260,7 @@ const columns = computed<TableColumn<ProductBatchRow & Record<string, unknown>>[
       :columns="columns"
       :loading="loading"
       :get-row-id="row => String(row.id)"
+      :meta="tableMeta"
       :search-placeholder="t('app.stock.batchSearch')"
       :empty-title="t('app.stock.batchEmpty')"
       :empty-description="t('app.stock.batchEmptyHint')"

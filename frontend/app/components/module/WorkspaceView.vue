@@ -809,6 +809,17 @@ const columns = computed<TableColumn<Record<string, unknown>>[]>(() => {
           class: 'font-medium text-highlighted hover:text-primary hover:underline',
         }, () => text)
       }
+      if (column.key === 'expiryStatus') {
+        const code = String(row.original.expiryStatus ?? '')
+        if (!code) return h('span', { class: 'text-sm text-muted' }, '—')
+        const color = code === 'expired' ? 'error' : code === 'expiring' ? 'warning' : 'success'
+        const label = code === 'expired'
+          ? t('app.stock.statusExpired')
+          : code === 'expiring'
+            ? t('app.stock.statusExpiringSoon')
+            : t('app.stock.statusValid')
+        return h(UBadge, { color, variant: 'subtle', size: 'sm' }, () => label)
+      }
       if (column.key === 'status' || column.key.toLowerCase().includes('status')) {
         return moduleStatusBadge(
           row.original[column.key] || row.original.workflowStatus || row.original.status,

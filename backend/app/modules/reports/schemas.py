@@ -80,6 +80,8 @@ class PurchaseReportRow(BaseModel):
     tax_amount: Decimal = Decimal("0")
     # Tender recorded for the stock-in (earliest purchase/supplier-debt payment).
     payment_method: str | None = None
+    # Staff user who created the Stock In (Purchase Report User column/filter).
+    created_by_name: str | None = None
 
 
 class CustomerDebtReportRow(BaseModel):

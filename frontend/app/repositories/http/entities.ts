@@ -192,6 +192,11 @@ function adaptProductOut(row: Record<string, unknown>): Record<string, unknown> 
     imageObjectKey: row.imageObjectKey ?? row.image_object_key ?? null,
     // Nearest lot expiry for the Stock list column (before Status).
     expiryDate: row.expiryDate ?? row.expiry_date ?? null,
+    // Derived expiry badge for the Stock list: expired | expiring | valid (null
+    // when the product has no dated lots). Comes from the backend aggregates.
+    expiryStatus: row.expiryStatus ?? row.expiry_status ?? null,
+    expiredQty: row.expiredQty ?? row.expired_qty ?? null,
+    expiringSoonQty: row.expiringSoonQty ?? row.expiring_soon_qty ?? null,
     // UI status dialect (module filters use Active/Inactive).
     status: row.status === 'ACTIVE' ? 'Active' : row.status === 'INACTIVE' ? 'Inactive' : row.status,
     // Pricing rows normalized to the UI camelCase dialect (spec §2.1.3):

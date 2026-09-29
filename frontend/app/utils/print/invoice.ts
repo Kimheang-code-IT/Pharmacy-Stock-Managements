@@ -1,6 +1,6 @@
 import { formatMoney, formatNumber, formatDate, formatDateTime } from '~/utils/format/format-service'
 import { cartTotal, lineGross, lineNet, type PosCartLine } from '~/utils/pos/cart'
-import { escapeHtml, PAPER_STYLES, printHtmlDocument, type PrintPaperSize } from '~/utils/print/html'
+import { escapeHtml, invoiceColgroup, PAPER_STYLES, printHtmlDocument, type PrintPaperSize } from '~/utils/print/html'
 import type { SaleReceipt } from '~/repositories/contracts/entities'
 
 export type SaleInvoicePrintLine = Pick<
@@ -224,7 +224,7 @@ export function buildSaleInvoiceHtml(
   const layout = planInvoiceLayout(lines.length, paperSize)
   const lineRows = (pageLines: PosCartLine[], offset: number) => pageLines.map((line, index) => `
     <tr>
-      <td class="num">${offset + index + 1}</td>
+      <td class="num center">${offset + index + 1}</td>
       <td class="product">${escapeHtml(line.name)}</td>
       <td class="center">${escapeHtml(line.uom || '—')}</td>
       <td class="num center">${escapeHtml(line.quantity)}</td>
@@ -233,16 +233,7 @@ export function buildSaleInvoiceHtml(
       <td class="num">${money(lineNet(line))}</td>
     </tr>`).join('')
 
-  const colgroup = `
-    <colgroup>
-      <col class="col-no">
-      <col class="col-product">
-      <col class="col-unit">
-      <col class="col-qty">
-      <col class="col-price">
-      <col class="col-discount">
-      <col class="col-amount">
-    </colgroup>`
+  const colgroup = invoiceColgroup()
 
   let offset = 0
   const pages = layout.pageRows.map((rowCount, pageIndex) => {

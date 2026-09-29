@@ -48,6 +48,11 @@ async def _create_product(client, headers, *, tag: str, name: str, barcode: str,
     return response.json()["data"]
 
 
+def _barcode(tag: str, offset: int) -> str:
+    prefix = 1000 + (int(tag, 16) % 9000)
+    return f"{prefix:04d}{offset:02d}"
+
+
 # ------------------------------------------------------------------ products
 
 
@@ -61,13 +66,13 @@ async def test_product_list_barcode_search_and_brand_filter(client):
     brand_b = await _create_brand(client, headers, f"BB-{tag}")
 
     in_brand = await _create_product(
-        client, headers, tag=tag, name=f"Alpha Widget {tag}", barcode=f"880{tag}01", brand_id=brand_a["id"], category_id=category["id"]
+        client, headers, tag=tag, name=f"Alpha Widget {tag}", barcode=_barcode(tag, 1), brand_id=brand_a["id"], category_id=category["id"]
     )
     other_brand = await _create_product(
-        client, headers, tag=tag, name=f"Beta Widget {tag}", barcode=f"880{tag}02", brand_id=brand_b["id"], category_id=category["id"]
+        client, headers, tag=tag, name=f"Beta Widget {tag}", barcode=_barcode(tag, 2), brand_id=brand_b["id"], category_id=category["id"]
     )
     no_brand = await _create_product(
-        client, headers, tag=tag, name=f"Gamma Widget {tag}", barcode=f"880{tag}03", category_id=category["id"]
+        client, headers, tag=tag, name=f"Gamma Widget {tag}", barcode=_barcode(tag, 3), category_id=category["id"]
     )
 
     # Exact barcode search returns exactly that product.
@@ -78,7 +83,7 @@ async def test_product_list_barcode_search_and_brand_filter(client):
     assert rows[0]["barcode"] == in_brand["barcode"]
 
     # Barcode prefix matches too (partial search).
-    prefix = await client.get(f"/api/v1/products?q=880{tag}", headers=headers)
+    prefix = await client.get(f"/api/v1/products?q={in_brand['barcode'][:4]}", headers=headers)
     ids = {row["id"] for row in prefix.json()["data"]}
     assert ids == {in_brand["id"], other_brand["id"], no_brand["id"]}
 
@@ -89,7 +94,7 @@ async def test_product_list_barcode_search_and_brand_filter(client):
 
     # Brand + search combine.
     combo = await client.get(
-        f"/api/v1/products?brand_id={brand_a['id']}&q=880{tag}02", headers=headers
+        f"/api/v1/products?brand_id={brand_a['id']}&q={other_brand['barcode']}", headers=headers
     )
     assert combo.json()["data"] == []
 
@@ -117,14 +122,14 @@ async def test_product_list_status_filter_and_pagination(client):
     ).json()["data"]
 
     active = await _create_product(
-        client, headers, tag=tag, name=f"Active Widget {tag}", barcode=f"881{tag}01", category_id=category["id"]
+        client, headers, tag=tag, name=f"Active Widget {tag}", barcode=_barcode(tag, 11), category_id=category["id"]
     )
     inactive = await _create_product(
         client,
         headers,
         tag=tag,
         name=f"Inactive Widget {tag}",
-        barcode=f"881{tag}02",
+        barcode=_barcode(tag, 12),
         category_id=category["id"],
         status="INACTIVE",
     )
@@ -160,10 +165,10 @@ async def test_product_list_sort(client):
     tag = uuid.uuid4().hex[:6]
     category = await _create_category(client, headers, f"CS-{tag}", f"CatSort {tag}")
     first = await _create_product(
-        client, headers, tag=tag, name=f"A-Sort Widget {tag}", barcode=f"882{tag}01", category_id=category["id"], selling_price="5.00"
+        client, headers, tag=tag, name=f"A-Sort Widget {tag}", barcode=_barcode(tag, 21), category_id=category["id"], selling_price="5.00"
     )
     second = await _create_product(
-        client, headers, tag=tag, name=f"B-Sort Widget {tag}", barcode=f"882{tag}02", category_id=category["id"], selling_price="9.00"
+        client, headers, tag=tag, name=f"B-Sort Widget {tag}", barcode=_barcode(tag, 22), category_id=category["id"], selling_price="9.00"
     )
 
     by_name_desc = await client.get(f"/api/v1/products?q=Sort Widget {tag}&sort=-name", headers=headers)

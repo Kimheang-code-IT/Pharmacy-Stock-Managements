@@ -26,6 +26,55 @@ export const PRINT_FONT_LINKS = `<link rel="preconnect" href="https://fonts.goog
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Khmer:wght@400;600;700&display=swap" rel="stylesheet">`
 
 /**
+ * The one border used by every visible invoice boundary (grid lines, outer
+ * frame, totals box, signature rules). A single 1px solid black line is clear
+ * enough to print consistently at any DPI — never a sub-pixel hairline. Every
+ * document type and paper size (A4 / A5) shares this exact width; A5 only
+ * scales padding/font, never the border.
+ */
+const PRINT_BORDER_WIDTH = 1
+export const PRINT_BORDER = `${PRINT_BORDER_WIDTH}px solid #000`
+
+/**
+ * Invoice column layout — the single source of truth for both the width CSS
+ * and the `<colgroup>` shared by the line-items table and the totals table.
+ *
+ * The shares MUST total exactly 100% (`INVOICE_COLUMN_SHARE_TOTAL`). Both
+ * tables use `table-layout: fixed` and resolve their columns from this same
+ * `<colgroup>`. When the shares sum to less than 100%, the browser distributes
+ * the leftover space itself, and it does not distribute it identically across
+ * the line-items table and the structurally different totals table (which uses
+ * colspans) — so the Amount column's right edge lands at different X
+ * coordinates and the shared outer border appears inconsistent. With an exact
+ * 100% total there is nothing left to distribute, so both tables resolve
+ * identical boundaries: the 1px outer border runs at the same X from the
+ * header through the items and the totals.
+ */
+export const INVOICE_COLUMNS = [
+  { name: 'no', share: 5 },
+  { name: 'product', share: 28 },
+  { name: 'unit', share: 9 },
+  { name: 'qty', share: 7 },
+  { name: 'price', share: 15 },
+  { name: 'discount', share: 18 },
+  { name: 'amount', share: 18 },
+] as const
+
+/** Sum of the column shares; must be exactly 100 (asserted by tests). */
+export const INVOICE_COLUMN_SHARE_TOTAL = INVOICE_COLUMNS.reduce(
+  (total, column) => total + column.share,
+  0,
+)
+
+/** `<colgroup>` built from the shared `INVOICE_COLUMNS` layout. */
+export function invoiceColgroup(): string {
+  return `
+    <colgroup>
+      ${INVOICE_COLUMNS.map(column => `<col class="col-${column.name}">`).join('\n      ')}
+    </colgroup>`
+}
+
+/**
  * Print paper metrics. There is **one** invoice style; A5 is the same style
  * scaled down (px metrics × scalePx) on a smaller printable area. Each size
  * also carries its own mm layout budget so filler rows are computed for that
@@ -155,26 +204,35 @@ html, body {
 }
 .meta strong { font-weight: 700; }
 .meta .right { text-align: right; }
-table { width: 100%; border-collapse: collapse; }
-table.lines {
-  table-layout: fixed;
-  border: 0.5px solid #000;
-}
+/* Separate borders with zero spacing: every cell paints its own edge inside
+   its own box, so no border is centred on the table edge (nothing is clipped
+   at the page margin) and no shared grid line is painted twice. Column
+   geometry then comes only from the shared <colgroup>, so the line-items and
+   totals tables line up exactly. */
+table { width: 100%; border-collapse: separate; border-spacing: 0; }
+table.lines { table-layout: fixed; border: 0; }
 /* Multi-page sales: repeat the header row and never split an item row. */
 table.lines thead { display: table-header-group; }
 table.lines tbody tr {
-  /* Uniform line height for product AND filler rows so the layout budget
-     (rowMm) matches what the printer renders. */
   height: ${style.rowMm}mm;
   page-break-inside: avoid;
   break-inside: avoid;
 }
 th, td {
-  border: 0.5px solid #000;
+  border: 0;
   padding: ${pad};
   vertical-align: middle;
   font-weight: 400;
 }
+/* Grid: every cell draws its left + bottom edge, the header closes the top,
+   and the last column closes the right — exactly one border per shared line. */
+table.lines th, table.lines td {
+  border-left: ${PRINT_BORDER};
+  border-bottom: ${PRINT_BORDER};
+}
+table.lines thead th { border-top: ${PRINT_BORDER}; }
+table.lines thead th:last-child,
+table.lines tbody td:last-child { border-right: ${PRINT_BORDER}; }
 th {
   background: #e8e8e8;
   font-weight: 700;
@@ -202,13 +260,7 @@ tr.empty.stretch td {
   vertical-align: top;
 }
 .num { white-space: nowrap; }
-.col-no { width: 5%; }
-.col-product { width: 28%; }
-.col-unit { width: 9%; }
-.col-qty { width: 7%; }
-.col-price { width: 15%; }
-.col-discount { width: 18%; }
-.col-amount { width: 18%; }
+${INVOICE_COLUMNS.map(column => `.col-${column.name} { width: ${column.share}%; }`).join('\n')}
 /* Totals + signatures are one atomic block: never split, never orphaned
    onto an extra page. Short sales keep them on page 1 (filler rows reserve
    the space); long sales push the whole block to the last page. */
@@ -220,34 +272,36 @@ tr.empty.stretch td {
 table.summary {
   width: 100%;
   table-layout: fixed;
-  border-collapse: collapse;
-  border: none;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 0;
   margin-top: 0;
 }
 table.summary td {
   padding: ${pad};
   vertical-align: middle;
-  border: none;
+  border: 0;
 }
 table.summary td.spacer {
-  border: none;
+  border: 0;
   padding: 0;
 }
+/* Totals sit on the same grid as the items: the label starts on the Price
+   boundary and the amount cell on the Amount boundary, sharing the one border.
+   Only border-left is drawn on each inner edge (never a matching border-right
+   on the neighbour) so no line is doubled. */
 table.summary td.label {
   text-align: left;
   font-weight: 400;
-  border-top: none;
-  border-left: 0.5px solid #000;
-  border-right: 0.5px solid #000;
-  border-bottom: 0.5px solid #000;
+  border-left: ${PRINT_BORDER};
+  border-bottom: ${PRINT_BORDER};
 }
 table.summary td.num {
   text-align: right;
   white-space: nowrap;
-  border-top: none;
-  border-left: 0.5px solid #000;
-  border-right: 0.5px solid #000;
-  border-bottom: 0.5px solid #000;
+  border-left: ${PRINT_BORDER};
+  border-right: ${PRINT_BORDER};
+  border-bottom: ${PRINT_BORDER};
 }
 table.summary tr.strong td.label,
 table.summary tr.strong td.num { font-weight: 700; }
@@ -260,7 +314,7 @@ table.summary tr.strong td.num { font-weight: 700; }
 }
 .signs .sign { flex: 1; max-width: 42%; }
 .signs .line {
-  border-top: 0.5px solid #000;
+  border-top: ${PRINT_BORDER};
   margin: 28px auto 6px;
   width: 85%;
 }
@@ -277,7 +331,7 @@ table.summary tr.strong td.num { font-weight: 700; }
 export function printHtmlDocument(
   html: string,
   title = 'Print',
-  options?: { paperSize?: PrintPaperSize, css?: string },
+  options?: { paperSize?: PrintPaperSize, css?: string, iframeSize?: { width: string, height: string } },
 ): Promise<void> {
   return new Promise((resolve) => {
     if (typeof document === 'undefined') {
@@ -286,7 +340,7 @@ export function printHtmlDocument(
     }
 
     const paperSize = options?.paperSize ?? 'A4'
-    const iframeSize = PRINT_IFRAME_SIZES[paperSize]
+    const iframeSize = options?.iframeSize ?? PRINT_IFRAME_SIZES[paperSize]
     const iframe = document.createElement('iframe')
     iframe.setAttribute('title', title)
     iframe.setAttribute('aria-hidden', 'true')

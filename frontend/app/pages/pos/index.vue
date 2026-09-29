@@ -1060,7 +1060,9 @@ async function completeSale() {
       currency: saleCurrency.value,
       exchangeRate: saleRate.value,
     })
-    lastSaleNo.value = String(sale.invoiceNo || sale.saleNo || '')
+    // POST /pos/sales returns the raw backend sale JSON (snake_case): read
+    // both dialects so the printed invoice number is never blank.
+    lastSaleNo.value = String(sale.invoiceNo || sale.saleNo || sale.invoice_no || sale.sale_no || '')
     lastSaleId.value = String(sale.id || '')
     const shouldAutoCreateDelivery = needsDelivery.value && canCreateDelivery.value
     // Delivery price captured now — the checkout reset below clears it.

@@ -12,8 +12,8 @@ class ProductCreate(BaseModel):
 
     barcode: str | None = Field(
         default=None,
-        max_length=100,
-        description="Operational product identifier. Auto-issued when omitted.",
+        pattern=r"^\d{6}$",
+        description="Six-digit product barcode. Auto-issued when omitted.",
     )
     name: str = Field(min_length=1, max_length=200)
     brand: str | None = Field(default=None, max_length=200)
@@ -48,7 +48,19 @@ class ProductCreate(BaseModel):
     status: str = Field(default="ACTIVE", pattern="^(ACTIVE|INACTIVE)$")
     note: str | None = None
 
-    @field_validator("barcode", "name", "brand")
+    @field_validator("barcode", mode="before")
+    @classmethod
+    def normalize_barcode(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+            if len(value) != 6 or not value.isascii() or not value.isdigit():
+                raise ValueError("Barcode must contain exactly 6 numeric digits")
+            return value
+        return value
+
+    @field_validator("name", "brand")
     @classmethod
     def strip_text(cls, value):
         return value.strip() if isinstance(value, str) else value
@@ -56,7 +68,7 @@ class ProductCreate(BaseModel):
 class ProductUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    barcode: str | None = Field(default=None, max_length=100)
+    barcode: str | None = Field(default=None, pattern=r"^\d{6}$")
     name: str | None = Field(default=None, min_length=1, max_length=200)
     brand: str | None = Field(default=None, max_length=200)
     category_id: UUID | None = None
@@ -83,6 +95,18 @@ class ProductUpdate(BaseModel):
     image_object_key: str | None = Field(default=None, max_length=500)
     status: str | None = Field(default=None, pattern="^(ACTIVE|INACTIVE)$")
     note: str | None = None
+
+    @field_validator("barcode", mode="before")
+    @classmethod
+    def normalize_barcode(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+            if len(value) != 6 or not value.isascii() or not value.isdigit():
+                raise ValueError("Barcode must contain exactly 6 numeric digits")
+            return value
+        return value
 
     @field_validator("name", "brand")
     @classmethod

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.image.service import resolve_media_url
@@ -16,6 +17,22 @@ STOCK_IN_TYPES = ("STOCK_IN", "SALE_RETURN", "ADJUSTMENT_IN")
 STOCK_OUT_TYPES = ("SALE", "PURCHASE_RETURN", "ADJUSTMENT_OUT")
 DAMAGE_TYPES = ("DAMAGE", "EXPIRE")
 
+# A live lot within this many days of its expiry reads as "expiring soon" on the
+# product list (Expired / Expiring soon / Valid badge). Independent of the
+# Telegram alert windows, which are configurable via settings.
+EXPIRING_SOON_DAYS = 30
+
+
+def _expiry_status(expired_qty, expiring_soon_qty, nearest_expiry) -> str | None:
+    """Product-list expiry badge code, or None when the product has no dated lots."""
+    if expired_qty and expired_qty > 0:
+        return "expired"
+    if expiring_soon_qty and expiring_soon_qty > 0:
+        return "expiring"
+    if nearest_expiry is not None:
+        return "valid"
+    return None
+
 
 def _product_aggregates(product_id: uuid.UUID, grouped: dict) -> dict:
     row = grouped.get(product_id)
@@ -25,12 +42,21 @@ def _product_aggregates(product_id: uuid.UUID, grouped: dict) -> dict:
             "stock_out_qty": Decimal("0"),
             "damage_qty": Decimal("0"),
             "expiry_date": None,
+            "expired_qty": Decimal("0"),
+            "expiring_soon_qty": Decimal("0"),
+            "expiry_status": None,
         }
+    expired_qty = row.get("expired_qty") or Decimal("0")
+    expiring_soon_qty = row.get("expiring_soon_qty") or Decimal("0")
+    nearest_expiry = row.get("expiry_date")
     return {
         "stock_in_qty": Decimal(row["stock_in_qty"]).quantize(Decimal("0.0001")),
         "stock_out_qty": Decimal(row["stock_out_qty"]).quantize(Decimal("0.0001")),
         "damage_qty": Decimal(row["damage_qty"]).quantize(Decimal("0.0001")),
-        "expiry_date": row.get("expiry_date"),
+        "expiry_date": nearest_expiry,
+        "expired_qty": Decimal(expired_qty).quantize(Decimal("0.0001")),
+        "expiring_soon_qty": Decimal(expiring_soon_qty).quantize(Decimal("0.0001")),
+        "expiry_status": _expiry_status(expired_qty, expiring_soon_qty, nearest_expiry),
     }
 
 
@@ -89,6 +115,13 @@ def product_to_out(product: Product, *, grouped: dict | None = None, pos: dict |
         # FEFO-ordered sellable lots for the POS cart allocation display.
         "pos_batches": pos.get("batches") or None,
         "posBatches": pos.get("batches") or None,
+        # Expiry read model: nearest live expiry + expired / expiring-soon
+        # remaining quantities, and the derived list status badge.
+        "expiryStatus": aggregates["expiry_status"],
+        "expired_qty": aggregates["expired_qty"],
+        "expiredQty": aggregates["expired_qty"],
+        "expiring_soon_qty": aggregates["expiring_soon_qty"],
+        "expiringSoonQty": aggregates["expiring_soon_qty"],
         **aggregates,
     }
     return data
@@ -220,10 +253,12 @@ class ProductRepository:
         """Per-product stock read-model aggregates.
 
         Returns {product_id: {stock_in_qty, stock_out_qty, damage_qty,
-        expiry_date}}. stock_in/out/damage derive from immutable
-        stock_movements; expiry_date is the NEAREST live-batch expiry (spec:
-        earliest expiry_date of a lot with remaining_qty > 0 that has not
-        expired; null when no such lot exists).
+        expiry_date, expired_qty, expiring_soon_qty, expiry_status}}.
+        stock_in/out/damage derive from immutable stock_movements; expiry_date
+        is the NEAREST live-batch expiry (spec: earliest expiry_date of a lot
+        with remaining_qty > 0 that has not expired; null when no such lot
+        exists). expired_qty / expiring_soon_qty sum the remaining quantity of
+        live lots that are already past / about to reach their expiry date.
         """
         if not product_ids:
             return {}
@@ -270,34 +305,63 @@ class ProductRepository:
                 "stock_out_qty": row.stock_out_qty,
                 "damage_qty": row.damage_qty,
                 "expiry_date": None,
+                "expired_qty": Decimal("0"),
+                "expiring_soon_qty": Decimal("0"),
             }
             for row in movement_rows
         }
-        # Nearest expiry from the authoritative per-batch ledger, not from
-        # historical movements: only live lots (remaining > 0, not yet past
-        # their expiry date) participate, per the nearest-expiry spec.
+        # Nearest expiry + expired/expiring-soon quantities from the
+        # authoritative per-batch ledger, not from historical movements: only
+        # live lots (remaining > 0) with an expiry date participate.
         today = func.current_date()
+        soon_cutoff = date.today() + timedelta(days=EXPIRING_SOON_DAYS)
+        remaining = BatchStockBalance.remaining_quantity
+        expiry = BatchStockBalance.expiry_date
         expiry_rows = await self.session.execute(
             select(
                 BatchStockBalance.product_id,
-                func.min(BatchStockBalance.expiry_date).label("nearest_expiry"),
+                func.min(case((expiry >= today, expiry), else_=None)).label("nearest_expiry"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (and_(expiry < today, remaining > 0), remaining),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("expired_qty"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                and_(expiry >= today, expiry <= soon_cutoff, remaining > 0),
+                                remaining,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("expiring_soon_qty"),
             )
             .where(
                 BatchStockBalance.product_id.in_(product_ids),
-                BatchStockBalance.remaining_quantity > 0,
                 BatchStockBalance.expiry_date.is_not(None),
-                BatchStockBalance.expiry_date >= today,
             )
             .group_by(BatchStockBalance.product_id)
         )
         for row in expiry_rows:
-            if row.product_id in aggregates:
-                aggregates[row.product_id]["expiry_date"] = row.nearest_expiry
-            else:
-                aggregates[row.product_id] = {
+            entry = aggregates.setdefault(
+                row.product_id,
+                {
                     "stock_in_qty": Decimal("0"),
                     "stock_out_qty": Decimal("0"),
                     "damage_qty": Decimal("0"),
-                    "expiry_date": row.nearest_expiry,
-                }
+                    "expiry_date": None,
+                    "expired_qty": Decimal("0"),
+                    "expiring_soon_qty": Decimal("0"),
+                },
+            )
+            entry["expiry_date"] = row.nearest_expiry
+            entry["expired_qty"] = row.expired_qty
+            entry["expiring_soon_qty"] = row.expiring_soon_qty
         return aggregates

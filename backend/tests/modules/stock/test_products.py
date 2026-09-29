@@ -1,6 +1,8 @@
+import asyncio
+
 import pytest
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.modules.auth.models import User
 from tests.modules.pos.helpers import make_stocked_product
@@ -16,7 +18,7 @@ async def test_product_crud_and_price_audit(client, db_session):
     created = await client.post(
         "/api/v1/products",
         json={
-            "barcode": "1234567890",
+            "barcode": "012345",
             "name": "Coffee 500g",
             "category_id": category["id"],
             "uom_id": str(DEFAULT_UOM_ID),
@@ -34,7 +36,7 @@ async def test_product_crud_and_price_audit(client, db_session):
     dup_barcode = await client.post(
         "/api/v1/products",
         json={
-            "barcode": "1234567890",
+            "barcode": "012345",
             "name": "Dup",
             "category_id": category["id"],
             "uom_id": str(DEFAULT_UOM_ID),
@@ -106,7 +108,7 @@ async def test_barcode_is_operational_identifier(client):
     auto = no_ids.json()["data"]
     assert auto["barcode"]
     assert auto["barcode"].isdigit()
-    assert len(auto["barcode"]) == 13
+    assert len(auto["barcode"]) == 6
 
     # 2. Barcode lookup returns the product (POS operational path).
     found = await client.get(f"/api/v1/pos/products/barcode/{auto['barcode']}", headers=headers)
@@ -146,6 +148,193 @@ async def test_barcode_is_operational_identifier(client):
 
     await deactivate_then_delete(client, headers, f"/api/v1/products/{auto['id']}")
     await deactivate_then_delete(client, headers, f"/api/v1/categories/{category['id']}")
+
+
+async def test_internal_barcode_sequence_collision_and_existing_barcode_preservation(
+    client, db_session
+):
+    headers = await admin_headers(client)
+    category = (
+        await client.post(
+            "/api/v1/categories",
+            json={"code": "IBC", "name": "Internal Barcode"},
+            headers=headers,
+        )
+    ).json()["data"]
+    supplied_value = await db_session.scalar(
+        text(
+            """
+            SELECT value
+            FROM generate_series(100001, 999999) AS value
+            WHERE NOT EXISTS (SELECT 1 FROM products WHERE barcode = value::text)
+            ORDER BY value LIMIT 1
+            """
+        )
+    )
+    supplied = f"{supplied_value:06d}"
+    first = await client.post(
+        "/api/v1/products",
+        headers=headers,
+        json={
+            "barcode": supplied,
+            "name": "Supplied Barcode Product",
+            "category_id": category["id"],
+            "uom_id": str(DEFAULT_UOM_ID),
+            "selling_price": "2.00",
+        },
+    )
+    assert first.status_code == 201, first.text
+    first_product = first.json()["data"]
+    assert first_product["barcode"] == supplied
+
+    next_value = await db_session.scalar(
+        text(
+            """
+            SELECT value
+            FROM generate_series(100001, 999999) AS value
+            WHERE NOT EXISTS (SELECT 1 FROM products WHERE barcode = value::text)
+            ORDER BY value LIMIT 1
+            """
+        )
+    )
+    generated = await client.post(
+        "/api/v1/products",
+        headers=headers,
+        json={
+            "name": "Collision Retry Product",
+            "category_id": category["id"],
+            "uom_id": str(DEFAULT_UOM_ID),
+            "selling_price": "3.00",
+        },
+    )
+    assert generated.status_code == 201, generated.text
+    generated_product = generated.json()["data"]
+    assert generated_product["barcode"] == f"{next_value:06d}"
+
+    updated = await client.patch(
+        f"/api/v1/products/{first_product['id']}",
+        headers=headers,
+        json={"name": "Renamed Supplied Barcode Product"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["data"]["barcode"] == supplied
+
+    found = await client.get(
+        f"/api/v1/pos/products/barcode/{generated_product['barcode']}",
+        headers=headers,
+    )
+    assert found.status_code == 200, found.text
+    assert found.json()["data"]["id"] == generated_product["id"]
+
+    await deactivate_then_delete(
+        client, headers, f"/api/v1/products/{generated_product['id']}"
+    )
+    await deactivate_then_delete(
+        client, headers, f"/api/v1/products/{first_product['id']}"
+    )
+    await deactivate_then_delete(
+        client, headers, f"/api/v1/categories/{category['id']}"
+    )
+
+
+async def test_manual_six_digit_validation_and_leading_zero_pos_lookup(client):
+    headers = await admin_headers(client)
+    category = (
+        await client.post(
+            "/api/v1/categories",
+            json={"code": "B6V", "name": "Six Digit Validation"},
+            headers=headers,
+        )
+    ).json()["data"]
+
+    invalid_values = ("12345", "1234567", "12A456")
+    for value in invalid_values:
+        response = await client.post(
+            "/api/v1/products",
+            headers=headers,
+            json={
+                "barcode": value,
+                "name": f"Invalid {value}",
+                "category_id": category["id"],
+                "uom_id": str(DEFAULT_UOM_ID),
+            },
+        )
+        assert response.status_code == 422
+
+    created = await client.post(
+        "/api/v1/products",
+        headers=headers,
+        json={
+            "barcode": "000123",
+            "name": "Leading Zero Product",
+            "category_id": category["id"],
+            "uom_id": str(DEFAULT_UOM_ID),
+        },
+    )
+    assert created.status_code == 201, created.text
+    product = created.json()["data"]
+    assert product["barcode"] == "000123"
+
+    scanned = await client.get("/api/v1/pos/products/barcode/000123", headers=headers)
+    assert scanned.status_code == 200
+    assert scanned.json()["data"]["id"] == product["id"]
+    manually_searched = await client.get("/api/v1/pos/products/search?q=000123", headers=headers)
+    assert [row["id"] for row in manually_searched.json()["data"]] == [product["id"]]
+
+    await deactivate_then_delete(client, headers, f"/api/v1/products/{product['id']}")
+    await deactivate_then_delete(client, headers, f"/api/v1/categories/{category['id']}")
+
+
+async def test_concurrent_product_creation_allocates_unique_barcodes(client):
+    headers = await admin_headers(client)
+    category = (
+        await client.post(
+            "/api/v1/categories",
+            json={"code": "B6C", "name": "Concurrent Barcodes"},
+            headers=headers,
+        )
+    ).json()["data"]
+
+    async def create(index: int):
+        return await client.post(
+            "/api/v1/products",
+            headers=headers,
+            json={
+                "name": f"Concurrent Product {index}",
+                "category_id": category["id"],
+                "uom_id": str(DEFAULT_UOM_ID),
+            },
+        )
+
+    responses = await asyncio.gather(create(1), create(2), create(3))
+    assert all(response.status_code == 201 for response in responses), [r.text for r in responses]
+    products = [response.json()["data"] for response in responses]
+    barcodes = [product["barcode"] for product in products]
+    assert len(set(barcodes)) == 3
+    assert all(len(value) == 6 and value.isdigit() for value in barcodes)
+
+    for product in products:
+        await deactivate_then_delete(client, headers, f"/api/v1/products/{product['id']}")
+    await deactivate_then_delete(client, headers, f"/api/v1/categories/{category['id']}")
+
+
+async def test_six_digit_barcode_range_exhaustion_is_explicit(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.core.exceptions import ValidationError
+    from app.modules.stock.service import ProductService
+
+    session = AsyncMock()
+    session.scalar.return_value = None
+    service = ProductService(session)
+
+    with pytest.raises(ValidationError) as exc_info:
+        await service._next_barcode()
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["field_errors"]["barcode"] == (
+        "No internal barcodes remain from 100001 to 999999"
+    )
 
 
 async def test_product_delete_with_sale_history_keeps_history(client, db_session):

@@ -112,6 +112,12 @@ class AuthService:
             password_changed_at=utcnow(),
         )
         await self.users.create(user)
+        # POS anonymous cash sales resolve to the seeded Walk-in Customer, so
+        # create it with the first administrator (spec §2.1.6). Without this a
+        # production install bootstrapped from the Setup page has no walk-in.
+        from app.modules.customers.service import ensure_walk_in_customer
+
+        await ensure_walk_in_customer(self.session)
         await record_audit(
             self.session,
             action="initial_setup",

@@ -4,7 +4,8 @@ import uuid
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
@@ -47,24 +48,48 @@ class ProductService:
     """Product master data. Stock quantities are never edited here — only the
     canonical stock mutation service may change balances."""
 
+    _BARCODE_LOCK_KEY = 620_240_006
+    _BARCODE_MIN = 100_001
+    _BARCODE_MAX = 999_999
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.repo = ProductRepository(session)
 
     async def _next_barcode(self) -> str:
-        """Auto-issue a unique numeric barcode for products created without one.
+        """Return the first free six-digit internal barcode.
 
-        Digits only so it scans at POS and prints as a plain number; derived
-        from a UUID and collision-checked against existing rows."""
-        candidate = self._numeric_barcode()
-        while await self.repo.get_by_barcode(candidate):
-            candidate = self._numeric_barcode()
-        return candidate
+        Callers hold the transaction advisory lock until commit, so two
+        concurrent product creates cannot select the same value.
+        """
+        candidate = await self.session.scalar(
+            text(
+                """
+                SELECT value::text
+                FROM generate_series(
+                    CAST(:minimum AS integer), CAST(:maximum AS integer)
+                ) AS value
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM products WHERE barcode = value::text
+                )
+                ORDER BY value
+                LIMIT 1
+                """
+            ),
+            {"minimum": self._BARCODE_MIN, "maximum": self._BARCODE_MAX},
+        )
+        if candidate is None:
+            raise ValidationError(
+                "The six-digit internal barcode range is exhausted",
+                field_errors={"barcode": "No internal barcodes remain from 100001 to 999999"},
+            )
+        return str(candidate).zfill(6)
 
-    @staticmethod
-    def _numeric_barcode() -> str:
-        """13-digit numeric code (UUID entropy, zero-padded)."""
-        return f"{uuid.uuid4().int % 10**13:013d}"
+    async def _lock_barcode_allocation(self) -> None:
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": self._BARCODE_LOCK_KEY},
+        )
 
     async def list(
         self, *, q, category_id, brand_id=None, status, page, limit, sort=None
@@ -91,8 +116,9 @@ class ProductService:
         return product_to_out(product, grouped=grouped, pos=pos_map.get(product.id))
 
     async def create(self, payload) -> dict:
-        # Barcode is the operational identifier: unique, auto-issued when the
-        # caller omits it (uuid-derived, collision-checked).
+        # Serialize both automatic allocation and manually supplied values.
+        # The database UNIQUE constraint remains the final protection.
+        await self._lock_barcode_allocation()
         barcode = payload.barcode or None
         if barcode and await self.repo.get_by_barcode(barcode):
             raise ConflictError("A product with this barcode already exists")
@@ -117,7 +143,11 @@ class ProductService:
         product = Product(**data)
         product.barcode = barcode or await self._next_barcode()
         self.session.add(product)
-        await self.session.flush()
+        try:
+            await self.session.flush()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            raise ConflictError("A product with this barcode already exists") from exc
         await self.repo.ensure_balance(product.id)
         # Seed sale-price version 1 (POS-active) so POS always has a versioned price.
         from app.modules.stock import sale_prices as sale_price_service
@@ -175,6 +205,7 @@ class ProductService:
             await sale_price_service.validate_conversion_uoms(self.session, conversions)
             changes["uom_conversions"] = conversions
         if "barcode" in changes and changes["barcode"] and changes["barcode"] != product.barcode:
+            await self._lock_barcode_allocation()
             if await self.repo.get_by_barcode(changes["barcode"]):
                 raise ConflictError("A product with this barcode already exists")
         if "category_id" in changes:

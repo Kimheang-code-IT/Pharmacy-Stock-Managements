@@ -1,6 +1,6 @@
 <script setup lang="ts" generic="T extends Record<string, unknown>">
 import type { TableColumn, TableRow, DropdownMenuItem } from '@nuxt/ui'
-import type { PaginationState } from '@tanstack/vue-table'
+import type { PaginationState, TableMeta } from '@tanstack/vue-table'
 import { getPaginationRowModel } from '@tanstack/vue-table'
 import type { DatePickerGranularity } from '~/utils/date-picker'
 import { parsePageLimit, TABLE_PAGE_SIZES } from '~/utils/pagination'
@@ -40,6 +40,8 @@ const props = withDefaults(defineProps<{
   emptyActions?: ListTableEmptyAction[]
   /** Show the toolbar sort menu (derived from the table's own columns). */
   sortable?: boolean
+  /** Forwarded to the underlying table, e.g. a per-row class hook. */
+  meta?: TableMeta<T>
 }>(), {
   loading: false,
   getRowId: (row: T) => String(row.id || ''),
@@ -252,6 +254,7 @@ function onSelect(event: Event, row: TableRow<T>) {
           :get-row-id="rowId"
           :pagination-options="paginationOptions"
           :virtualize="virtualize"
+          :meta="meta"
           sticky="header"
           class="app-table h-full min-h-0"
           :ui="appTableFillUi"

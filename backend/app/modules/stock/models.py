@@ -28,6 +28,7 @@ from app.core.database import Base
 class Product(Base):
     __tablename__ = "products"
     __table_args__ = (
+        CheckConstraint("barcode ~ '^[0-9]{6}$'", name="ck_products_barcode_six_digits"),
         Index("ix_products_name", "name"),
         Index("ix_products_category_id", "category_id"),
         Index("ix_products_brand_id", "brand_id"),
@@ -37,7 +38,7 @@ class Product(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # Operational identifier: unique, required, POS barcode lookup.
-    barcode: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    barcode: Mapped[str] = mapped_column(String(6), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     # Free-text manufacturer/brand name entered on the product form (the brand
     # master-data page was removed; brand_id is kept for legacy rows only).

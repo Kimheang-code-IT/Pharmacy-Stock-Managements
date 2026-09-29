@@ -48,6 +48,7 @@ describe('stock table (spec §2.1.5 — no SKU / product code columns)', () => {
       'quantity',
       'stockInQty',
       'stockOutQty',
+      'expiryStatus',
       'status',
     ])
   })

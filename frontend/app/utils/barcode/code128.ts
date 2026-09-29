@@ -34,11 +34,13 @@ const CODE128_PATTERNS: readonly string[] = [
 ]
 
 const START_B = 104
+const START_C = 105
+const CODE_B = 100
 const STOP = 106
 const MODULO = 103
 
 /**
- * Encode a value as a CODE128-B module bit string (1 = bar, 0 = space).
+ * Encode a value as a CODE128 module bit string (1 = bar, 0 = space).
  * Characters outside printable ASCII (32…126) are dropped — empty input
  * yields an empty string so callers can show a placeholder.
  */
@@ -59,25 +61,94 @@ export function encodeCode128B(value: string): string {
   return codes.map(code => CODE128_PATTERNS[code]).join('')
 }
 
-export interface BarcodeSvgOptions {
-  /** Width of one module in px (default 2). */
-  moduleWidth?: number
-  /** Bar height in px (default 60). */
-  height?: number
-  /** Quiet-zone padding in px on each side (default 10). */
-  quietZone?: number
+/**
+ * Auto-select the narrowest CODE128 code set.
+ *
+ * Numeric values use **Code Set C** (two digits per symbol), which is roughly
+ * half the width of Set B — critical for small stickers: a 13-digit code at
+ * 203 DPI cannot resolve ~7 modules/mm, but Set C brings it into range. An odd
+ * trailing digit switches to Set B for that one character. Non-numeric values
+ * fall back to Code Set B (full printable ASCII).
+ */
+export function encodeCode128(value: string): string {
+  const text = [...String(value ?? '')]
+    .filter((char) => {
+      const code = char.charCodeAt(0) - 32
+      return code >= 0 && code <= 94
+    })
+    .join('')
+  if (!text) return ''
+
+  const codes: number[] = []
+  let checksum = 0
+  let position = 1
+  const addSymbol = (code: number) => {
+    codes.push(code)
+    checksum += code * position
+    position += 1
+  }
+
+  if (/^\d+$/.test(text) && text.length >= 2) {
+    codes.push(START_C)
+    checksum = START_C
+    const pairsEnd = text.length - (text.length % 2)
+    for (let index = 0; index < pairsEnd; index += 2) {
+      addSymbol(Number(text.slice(index, index + 2)))
+    }
+    // Odd trailing digit: switch to Set B for the final character.
+    if (pairsEnd < text.length) {
+      addSymbol(CODE_B)
+      addSymbol(text.charCodeAt(pairsEnd) - 32)
+    }
+  }
+  else {
+    codes.push(START_B)
+    checksum = START_B
+    for (const char of text) addSymbol(char.charCodeAt(0) - 32)
+  }
+
+  codes.push(checksum % MODULO)
+  codes.push(STOP)
+  return codes.map(code => CODE128_PATTERNS[code]).join('')
 }
 
-/** Render a value as an inline SVG string (white background, black bars). */
+export interface BarcodeSvgOptions {
+  /**
+   * Physical width of one narrow module in millimetres. The label builder snaps
+   * this to the printer's dot grid (`25.4 / dpi`) so every bar is a whole
+   * number of printer dots — fractional dots are what make a printed barcode
+   * unreadable even when the on-screen preview scans.
+   */
+  moduleWidthMm?: number
+  /** Bar height in millimetres; the label CSS stretches it to fill (default 12). */
+  heightMm?: number
+  /** Quiet zone in modules on each side (default 10 — the CODE128 minimum). */
+  quietZoneModules?: number
+}
+
+/** Number of narrow modules in the encoded symbol (bars only, no quiet zone). */
+export function code128ModuleCount(value: string): number {
+  return encodeCode128(String(value ?? '').trim()).length
+}
+
+/**
+ * Render a value as an inline SVG string.
+ *
+ * The viewBox is expressed in **module units** (one bar = one unit) and the
+ * physical `width` is written in millimetres, so the printed geometry is exact
+ * regardless of browser/print scaling. The label CSS only stretches the height
+ * (`height:100%`), which is harmless for a 1-D symbol.
+ */
 export function barcodeSvg(value: string, options: BarcodeSvgOptions = {}): string {
-  const bits = encodeCode128B(String(value ?? '').trim())
+  const bits = encodeCode128(String(value ?? '').trim())
   if (!bits) return ''
 
-  const moduleWidth = options.moduleWidth ?? 2
-  const height = options.height ?? 60
-  const quiet = options.quietZone ?? 10
-  const barsWidth = bits.length * moduleWidth
-  const width = barsWidth + quiet * 2
+  const moduleWidthMm = options.moduleWidthMm ?? 0.25
+  const heightMm = options.heightMm ?? 12
+  // CODE128 requires a quiet zone of at least 10 narrow modules on each side.
+  const quiet = options.quietZoneModules ?? 10
+  const totalModules = bits.length + quiet * 2
+  const widthMm = totalModules * moduleWidthMm
 
   const bars: string[] = []
   let x = quiet
@@ -86,18 +157,20 @@ export function barcodeSvg(value: string, options: BarcodeSvgOptions = {}): stri
     if (bits[index] === '1') {
       let run = 1
       while (bits[index + run] === '1') run += 1
-      bars.push(`<rect x="${x}" y="0" width="${run * moduleWidth}" height="${height}"/>`)
-      x += run * moduleWidth
+      bars.push(`<rect x="${x}" y="0" width="${run}" height="1"/>`)
+      x += run
       index += run
     }
     else {
-      x += moduleWidth
+      x += 1
       index += 1
     }
   }
 
   const label = escapeXml(value)
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${label}" preserveAspectRatio="none"><rect width="${width}" height="${height}" fill="#ffffff"/><g fill="#000000">${bars.join('')}</g></svg>`
+  const width = `${widthMm.toFixed(4)}mm`
+  // Exact physical width + crisp edges; height is left to the label CSS.
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${heightMm}mm" viewBox="0 0 ${totalModules} 1" role="img" aria-label="${label}" preserveAspectRatio="none" shape-rendering="crispEdges" style="shape-rendering:crispEdges;width:${width};height:100%"><rect width="${totalModules}" height="1" fill="#ffffff"/><g fill="#000000">${bars.join('')}</g></svg>`
 }
 
 function escapeXml(value: unknown): string {

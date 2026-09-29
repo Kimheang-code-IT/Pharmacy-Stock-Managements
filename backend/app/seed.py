@@ -38,8 +38,7 @@ async def seed() -> None:
 
     from app.modules.auth.models import User
     from app.modules.auth.repository import RoleRepository, UserRepository
-    from app.modules.customers.models import Customer
-    from app.shared.documents import allocate_document_number, ensure_default_sequences
+    from app.shared.documents import ensure_default_sequences
 
     async with SessionFactory() as session:
         roles = RoleRepository(session)
@@ -75,19 +74,9 @@ async def seed() -> None:
             await _seed_sample_master_data(session)
 
         # System walk-in customer for POS sales (spec section 2.1.6).
-        from sqlalchemy import select
+        from app.modules.customers.service import ensure_walk_in_customer
 
-        walk_in = await session.scalar(select(Customer).where(Customer.is_walk_in.is_(True)))
-        if walk_in is None:
-            session.add(
-                Customer(
-                    code=await allocate_document_number(session, "CUSTOMER"),
-                    name="Walk-in Customer",
-                    status="ACTIVE",
-                    is_walk_in=True,
-                )
-            )
-            await session.flush()
+        await ensure_walk_in_customer(session)
 
         await session.commit()
 
