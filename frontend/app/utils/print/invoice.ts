@@ -184,7 +184,7 @@ function emptyInvoiceRows(fillerRows: number, rowMm: number): string {
   if (fillerRows <= 0) return ''
   return `
     <tr class="empty stretch" data-filler-rows="${fillerRows}" style="height:${fillerRows * rowMm}mm">
-      <td class="num amount">&nbsp;</td>
+      <td class="num">&nbsp;</td>
       <td></td>
       <td></td>
       <td></td>
@@ -200,7 +200,7 @@ function summaryRow(label: string, amountHtml: string, strong = false): string {
       <tr${cls}>
         <td class="spacer" colspan="4"></td>
         <td class="label" colspan="2">${label}</td>
-        <td class="num amount">${amountHtml}</td>
+        <td class="num">${amountHtml}</td>
       </tr>`
 }
 
@@ -230,7 +230,7 @@ export function buildSaleInvoiceHtml(
       <td class="num center">${escapeHtml(line.quantity)}</td>
       <td class="num center">${money(line.unitPrice)}</td>
       <td class="num center">${money(lineGross(line) * (Number(line.discountPercent || 0) / 100))}</td>
-      <td class="num amount">${money(lineNet(line))}</td>
+      <td class="num">${money(lineNet(line))}</td>
     </tr>`).join('')
 
   const colgroup = invoiceColgroup()
@@ -291,7 +291,7 @@ export function buildSaleInvoiceHtml(
         <th class="num center">ចំនួន<span>Qty</span></th>
         <th class="num center">តម្លៃ<span>Price</span></th>
         <th class="num center">បញ្ចុះតម្លៃ<span>Discount</span></th>
-        <th class="num amount">តម្លៃសរុប<span>Amount</span></th>
+        <th class="num">តម្លៃសរុប<span>Amount</span></th>
       </tr>
     </thead>
     <tbody>${lineRows(pageLines, pageOffset)}${emptyInvoiceRows(layout.pageFillerRows[pageIndex] || 0, PAPER_STYLES[paperSize].rowMm)}</tbody>

@@ -26,14 +26,15 @@ export const PRINT_FONT_LINKS = `<link rel="preconnect" href="https://fonts.goog
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Khmer:wght@400;600;700&display=swap" rel="stylesheet">`
 
 /**
- * The one border used by every visible invoice boundary (grid lines, outer
- * frame, totals box, signature rules). A single 1px solid black line is clear
- * enough to print consistently at any DPI — never a sub-pixel hairline. Every
- * document type and paper size (A4 / A5) shares this exact width; A5 only
- * scales padding/font, never the border.
+ * The shared border used by visible invoice boundaries (grid lines, totals
+ * box, signature rules). Internal boundaries use a clear 1px solid black
+ * line; the Amount column's outer edge is intentionally emphasized at 2px.
+ * Every document type and paper size (A4 / A5) uses these same border widths.
  */
 const PRINT_BORDER_WIDTH = 1
 export const PRINT_BORDER = `${PRINT_BORDER_WIDTH}px solid #000`
+/** The Amount column closes the invoice table with a more visible edge. */
+const PRINT_AMOUNT_BORDER = '2px solid #000'
 
 /**
  * Invoice column layout — the single source of truth for both the width CSS
@@ -231,10 +232,10 @@ table.lines th, table.lines td {
   border-bottom: ${PRINT_BORDER};
 }
 table.lines thead th { border-top: ${PRINT_BORDER}; }
-/* Amount is the invoice's outermost column. Give it the same explicit right
-   border as every other invoice boundary, including filler and totals rows. */
-table.lines .amount,
-table.summary .amount { border-right: ${PRINT_BORDER}; }
+/* The Amount column is the outer edge of the invoice grid. Its right border
+   is intentionally heavier than the internal grid boundaries. */
+table.lines th:last-child,
+table.lines td:last-child { border-right: ${PRINT_AMOUNT_BORDER}; }
 th {
   background: #e8e8e8;
   font-weight: 700;
@@ -302,6 +303,7 @@ table.summary td.num {
   text-align: right;
   white-space: nowrap;
   border-left: ${PRINT_BORDER};
+  border-right: ${PRINT_AMOUNT_BORDER};
   border-bottom: ${PRINT_BORDER};
 }
 table.summary tr.strong td.label,
