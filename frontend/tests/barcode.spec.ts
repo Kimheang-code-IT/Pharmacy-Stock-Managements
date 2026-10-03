@@ -343,6 +343,12 @@ describe('barcode sticker sheet', () => {
     expect(html).toContain('bc-prices')
   })
 
+  it('hides the product price when disabled', () => {
+    const html = buildBarcodeSheetHtml([label], { showUsd: false, showKhr: false })
+    expect(html).not.toContain('0.80')
+    expect(html).not.toContain('bc-prices')
+  })
+
   it('lays out one label per requested copy', () => {
     const html = buildBarcodeSheetHtml([label, label, { ...label, barcode: '8801009999999' }], { labelsPerRow: 2 })
     expect((html.match(/class="bc-label"/g) || []).length).toBe(3)

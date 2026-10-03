@@ -231,8 +231,10 @@ table.lines th, table.lines td {
   border-bottom: ${PRINT_BORDER};
 }
 table.lines thead th { border-top: ${PRINT_BORDER}; }
-table.lines thead th:last-child,
-table.lines tbody td:last-child { border-right: ${PRINT_BORDER}; }
+/* Amount is the invoice's outermost column. Give it the same explicit right
+   border as every other invoice boundary, including filler and totals rows. */
+table.lines .amount,
+table.summary .amount { border-right: ${PRINT_BORDER}; }
 th {
   background: #e8e8e8;
   font-weight: 700;
@@ -300,7 +302,6 @@ table.summary td.num {
   text-align: right;
   white-space: nowrap;
   border-left: ${PRINT_BORDER};
-  border-right: ${PRINT_BORDER};
   border-bottom: ${PRINT_BORDER};
 }
 table.summary tr.strong td.label,

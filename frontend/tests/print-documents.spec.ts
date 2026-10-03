@@ -36,6 +36,8 @@ describe('print documents', () => {
     expect(css).toContain('border-left: 1px solid #000')
     // Every border — including the Amount column's right edge — is the same 1px.
     expect(css).toContain('border-right: 1px solid #000')
+    expect(css).toContain('table.lines .amount')
+    expect(css).toContain('table.summary .amount')
     const borderWidths = [...css.matchAll(/border(?:-(?:left|right|top|bottom))?: ([\d.]+)px/g)]
       .map(match => match[1])
     expect(new Set(borderWidths)).toEqual(new Set(['1']))
@@ -113,6 +115,7 @@ describe('print documents', () => {
       depositAmount: 0,
       outstandingAmount: 3.15,
     })
+
     const colgroups = [...html.matchAll(/<colgroup>[\s\S]*?<\/colgroup>/g)].map(match => match[0])
     // One colgroup for table.lines, one for table.summary.
     expect(colgroups).toHaveLength(2)
@@ -120,6 +123,24 @@ describe('print documents', () => {
     expect(colgroups[0]).toBe(colgroups[1])
     expect(colgroups[0].trim()).toBe(invoiceColgroup().trim())
     expect([...colgroups[0].matchAll(/<col /g)]).toHaveLength(INVOICE_COLUMNS.length)
+  })
+
+  it('marks the Amount cells as the shared 1px outer border', () => {
+    const html = buildSaleInvoiceHtml({
+      shopName: 'Demo Shop',
+      invoiceNo: 'INV-000001',
+      dateLabel: '07/09/26 22:10',
+      customerName: 'Walk-in',
+      cashier: 'admin',
+      currency: 'USD',
+      lines: [{ name: 'Glove', uom: 'PCS', quantity: 1, unitPrice: 3.15, discountPercent: 0 }],
+      deliveryPrice: 0,
+      previousDebtAmount: 0,
+      depositAmount: 0,
+      outstandingAmount: 3.15,
+    })
+    expect(html).toContain('<th class="num amount">')
+    expect(html).toContain('<td class="num amount">')
   })
 
   it('builds a bilingual sale invoice with lines and totals', () => {

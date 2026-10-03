@@ -50,7 +50,6 @@ const FIXED_LABEL_SETTINGS: Partial<BarcodeLabelSettings> = {
   barcodeAutoFit: true,
   fontSizePt: 8,
   showName: true,
-  showUsd: true,
   showKhr: false,
   labelsPerRow: 4,
 }
@@ -241,6 +240,11 @@ function printStickers() {
               />
             </label>
           </div>
+
+          <UCheckbox
+            v-model="settings.showUsd"
+            :label="t('app.stock.barcodeShowUsd')"
+          />
 
           <div class="grid grid-cols-2 gap-3">
             <label class="text-sm">
