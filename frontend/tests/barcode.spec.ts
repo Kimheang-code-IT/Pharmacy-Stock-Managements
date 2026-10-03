@@ -283,6 +283,12 @@ describe('barcode sticker sheet', () => {
     expect(html).toContain('៛')
   })
 
+  it('hides the product name when disabled', () => {
+    const html = buildBarcodeSheetHtml([label], { showName: false })
+    expect(html).not.toContain('Coca-Cola 350ml')
+    expect(html).not.toContain('bc-name')
+  })
+
   it('puts the product name at the top, above the barcode', () => {
     const html = buildBarcodeSheetHtml([label], {})
     expect(html.indexOf('Coca-Cola 350ml')).toBeLessThan(html.indexOf('<svg'))
