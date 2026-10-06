@@ -253,14 +253,14 @@ function updateCell(index: number, key: string, value: unknown) {
     const discount = Number(row.discountAmount || 0)
     const taxable = Math.max(0, subtotal - discount)
     const tax = Number(row.taxAmount || 0)
-    next[index] = { ...row, lineTotal: Number((taxable + tax).toFixed(2)) }
+    next[index] = { ...row, lineTotal: Number((taxable + tax).toFixed(4)) }
   }
   if (props.table.key === 'lines') {
     const row = next[index]
     if (!row) return
     const taxable = Math.max(0, Number(row.quantity || 0) * Number(row.unitAmount || 0) - Number(row.discount || 0))
     const tax = Number(row.taxAmount || row.tax || 0)
-    next[index] = { ...row, amount: Number((taxable + tax).toFixed(2)) }
+    next[index] = { ...row, amount: Number((taxable + tax).toFixed(4)) }
   }
 
   rows.value = next

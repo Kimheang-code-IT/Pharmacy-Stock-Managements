@@ -93,6 +93,18 @@ const saleCurrency = ref<'USD' | 'KHR'>('USD')
 const exchangeRateInput = ref<number | undefined>()
 const saleRate = computed(() =>
   saleCurrency.value === 'KHR' ? Math.max(0, Number(exchangeRateInput.value || 0)) : 1)
+/** USD→KHR rate the cashier entered on the payment keypad, used only when a
+ *  tender is entered in a currency other than the (USD) invoice currency.
+ *  Kept separate from `exchangeRateInput` so it can never pre-seed the cart
+ *  currency switch, which must open its own rate dialog. */
+const paymentRateInput = ref<number | undefined>()
+/** Effective rate for a cross-currency tender: the keypad rate when known,
+ *  else the sale's own rate (a KHR invoice always carries one). */
+const tenderRate = computed(() => {
+  const entered = Math.max(0, Number(paymentRateInput.value || 0))
+  if (entered > 0) return entered
+  return Math.max(0, Number(exchangeRateInput.value || 0))
+})
 /** Convert every stored cart price between currencies — once per switch, so
  *  toggling repeatedly never double-converts an amount. */
 function convertCartLines(from: 'USD' | 'KHR', to: 'USD' | 'KHR', rate: number) {
@@ -666,6 +678,7 @@ async function loadReturnSale(saleId: string) {
     const productById = new Map(store.list('products').map(row => [String(row.id), row]))
     saleCurrency.value = sale.currency
     exchangeRateInput.value = sale.currency === 'KHR' ? sale.exchangeRate : undefined
+    paymentRateInput.value = undefined
     customerId.value = sale.customerId ? String(sale.customerId) : undefined
     customerName.value = sale.customerName
     returnInvoiceNo.value = sale.invoiceNo
@@ -815,6 +828,7 @@ async function loadEditSale(saleId: string) {
     const productById = new Map(store.list('products').map(row => [String(row.id), row]))
     saleCurrency.value = sale.currency
     exchangeRateInput.value = sale.currency === 'KHR' ? sale.exchangeRate : undefined
+    paymentRateInput.value = undefined
     customerId.value = sale.customerId ? String(sale.customerId) : undefined
     customerName.value = sale.customerName
     editInvoiceNo.value = sale.invoiceNo
@@ -876,6 +890,7 @@ async function loadViewSale(saleId: string) {
     const productById = new Map(store.list('products').map(row => [String(row.id), row]))
     saleCurrency.value = sale.currency
     exchangeRateInput.value = sale.currency === 'KHR' ? sale.exchangeRate : undefined
+    paymentRateInput.value = undefined
     customerId.value = sale.customerId ? String(sale.customerId) : undefined
     customerName.value = sale.customerName
     viewInvoiceNo.value = sale.invoiceNo
@@ -1124,6 +1139,7 @@ async function completeSale() {
     paymentMethod.value = 'Cash'
     saleCurrency.value = 'USD'
     exchangeRateInput.value = undefined
+    paymentRateInput.value = undefined
     step.value = 'cart'
     applyDefaultCustomer()
     void store.fetchList('products')
@@ -1309,6 +1325,7 @@ async function completeSale() {
       v-model:deposit-input="depositInput"
       v-model:included-debt-ids="includedDebtIds"
       v-model:paper-size="printPaperSize"
+      :exchange-rate="tenderRate"
       :customer-phone="customerPhone"
       :customer-location="customerLocation"
       :sale-currency="saleCurrency"
@@ -1331,6 +1348,7 @@ async function completeSale() {
       @update:return-restock="returnRestock = $event"
       @update:refund-disposition="returnRefundDisposition = $event"
       @update:refund-note="returnRefundNote = $event"
+      @update:exchange-rate="paymentRateInput = $event"
       @back="goBack"
       @complete="completeSale"
       @pay="onPaymentConfirm"

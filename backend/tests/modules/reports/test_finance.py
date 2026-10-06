@@ -103,7 +103,7 @@ async def test_create_expense_persists_decimal_amount_and_audits(client, db_sess
     entry = audit.scalars().first()
     assert entry is not None
     assert entry.action == "expense_created"
-    assert entry.new_values["amount"] == "120.50"
+    assert Decimal(entry.new_values["amount"]) == Decimal("120.50")
 
 
 @pytest.mark.asyncio

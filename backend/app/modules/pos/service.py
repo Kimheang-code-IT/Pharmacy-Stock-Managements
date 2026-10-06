@@ -41,12 +41,7 @@ from app.shared.documents import allocate_document_number
 logger = logging.getLogger("stock_pos.pos")
 
 
-TWO = Decimal("0.01")
 FOUR = Decimal("0.0001")
-
-
-def _q2(value) -> Decimal:
-    return Decimal(value).quantize(TWO, rounding=ROUND_HALF_UP)
 
 
 def _q4(value) -> Decimal:
@@ -56,7 +51,7 @@ def _q4(value) -> Decimal:
 def _to_sale_currency(usd_price, exchange_rate) -> Decimal:
     """Active-version prices are USD; the POS line is priced in the sale
     currency (KHR documents convert by the sale exchange rate)."""
-    return (Decimal(usd_price) * Decimal(exchange_rate or 1)).quantize(TWO, rounding=ROUND_HALF_UP)
+    return (Decimal(usd_price) * Decimal(exchange_rate or 1)).quantize(FOUR, rounding=ROUND_HALF_UP)
 
 
 def _uom_price_from_map(product: Product, uom_id, price_map: dict) -> Decimal | None:
@@ -426,16 +421,16 @@ class POSService:
             factor=factor,
         )
         if details:
-            gross = _q2(sum((detail["line_amount"] or Decimal("0")) for detail in details))
+            gross = _q4(sum((detail["line_amount"] or Decimal("0")) for detail in details))
         else:
             # Negative stock with no tracked lots: charge the fallback price.
-            gross = _q2(quantity * fallback_price)
-        unit_price = (gross / quantity).quantize(TWO, rounding=ROUND_HALF_UP) if quantity else Decimal("0.00")
+            gross = _q4(quantity * fallback_price)
+        unit_price = (gross / quantity).quantize(FOUR, rounding=ROUND_HALF_UP) if quantity else Decimal("0.0000")
 
         if item.discount_percent > 0:
-            discount = _q2(gross * item.discount_percent / Decimal("100"))
+            discount = _q4(gross * item.discount_percent / Decimal("100"))
         else:
-            discount = _q2(item.discount_amount)
+            discount = _q4(item.discount_amount)
         if discount > 0:
             if max_discount > 0:
                 implied_percent = (discount / gross * Decimal("100")) if gross > 0 else Decimal("100")
@@ -503,7 +498,7 @@ class POSService:
             sale_date=payload.sale_date or datetime.now(timezone.utc),
             cashier_id=actor.id,
             note=payload.note,
-            delivery_price=_q2(payload.delivery_price),
+            delivery_price=_q4(payload.delivery_price),
             subtotal=Decimal("0.00"),
             grand_total=Decimal("0.00"),
             payment_status="UNPAID",
@@ -533,7 +528,7 @@ class POSService:
             discount_total += discount
 
         # Header discount (payload.discount) reduces the sale after line discounts.
-        header_discount = _q2(payload.discount)
+        header_discount = _q4(payload.discount)
         if header_discount > 0:
             if max_discount > 0 and subtotal > 0 and (header_discount / subtotal * Decimal("100")) > max_discount:
                 raise ValidationError(
@@ -544,17 +539,17 @@ class POSService:
                 raise ValidationError("Discount cannot exceed the sale amount", field_errors={"discount": "Invalid discount"})
         discount_total += header_discount
 
-        delivery_price = _q2(payload.delivery_price)
+        delivery_price = _q4(payload.delivery_price)
         grand_total = subtotal - discount_total + delivery_price
-        sale.subtotal = _q2(subtotal)
-        sale.discount_amount = _q2(discount_total)
-        sale.grand_total = _q2(grand_total)
+        sale.subtotal = _q4(subtotal)
+        sale.discount_amount = _q4(discount_total)
+        sale.grand_total = _q4(grand_total)
 
         # ---- settle included open debts from `deposit` (separate from sale) ----
         # amount_received / paidAmount applies only to THIS sale's grand_total.
         # deposit is the budget for selected prior-debt payments and never
         # inflates the current sale total or default Paid now.
-        remaining_deposit = _q2(payload.deposit)
+        remaining_deposit = _q4(payload.deposit)
         for debt_id in payload.included_debt_ids:
             debt_result = await self.session.execute(
                 select(CustomerDebt).where(CustomerDebt.id == debt_id).with_for_update()
@@ -601,7 +596,7 @@ class POSService:
                 )
                 remaining_deposit -= applied
 
-        paid_for_sale = max(Decimal("0.00"), min(_q2(payload.amount_received), sale.grand_total))
+        paid_for_sale = max(Decimal("0.00"), min(_q4(payload.amount_received), sale.grand_total))
         debt_amount = sale.grand_total - paid_for_sale
 
         if debt_amount > 0 and not user_has_permission(actor, "pos.debt_sale"):
@@ -649,7 +644,7 @@ class POSService:
                 customer_debt_id=debt.id if debt else None,
             )
         if payload.payment_method in ("CASH", "BANK_QR"):
-            change_amount = _q2(max(Decimal("0.00"), payload.amount_received - sale.grand_total))
+            change_amount = _q4(max(Decimal("0.00"), payload.amount_received - sale.grand_total))
 
         await record_audit(
             self.session,
@@ -741,6 +736,28 @@ class POSService:
         if customer is None:
             raise NotFoundError("Customer not found")
 
+        # Optional correction: move the sale (and its own debt / sale payments)
+        # to another customer. The walk-in debt rule is re-checked below once the
+        # new outstanding amount is known.
+        customer_changed = (
+            payload.customer_id is not None and payload.customer_id != sale.customer_id
+        )
+        if customer_changed:
+            corrected = await self.session.get(Customer, payload.customer_id)
+            if corrected is None:
+                raise NotFoundError("Customer not found")
+            customer = corrected
+            sale.customer_id = customer.id
+
+        if payload.payment_method is not None and payload.payment_method not in (
+            "CASH",
+            "BANK_QR",
+            "CUSTOMER_DEBT",
+        ):
+            raise ValidationError(
+                "Invalid payment method", field_errors={"payment_method": "Invalid payment method"}
+            )
+
         products: dict[uuid.UUID, Product] = {}
         for item in payload.items:
             if item.product_id in products:
@@ -802,7 +819,7 @@ class POSService:
             subtotal += gross
             discount_total += discount
 
-        header_discount = _q2(payload.discount)
+        header_discount = _q4(payload.discount)
         if header_discount > 0:
             if max_discount > 0 and subtotal > 0 and (header_discount / subtotal * Decimal("100")) > max_discount:
                 raise ValidationError(
@@ -812,26 +829,37 @@ class POSService:
             if header_discount >= subtotal - discount_total:
                 raise ValidationError("Discount cannot exceed the sale amount", field_errors={"discount": "Invalid discount"})
         discount_total += header_discount
-        delivery_price = _q2(payload.delivery_price)
+        delivery_price = _q4(payload.delivery_price)
         grand_total = subtotal - discount_total + delivery_price
 
         sale.sale_date = payload.sale_date or sale.sale_date
         sale.note = payload.note
         sale.currency = payload.currency
         sale.exchange_rate = payload.exchange_rate
-        sale.subtotal = _q2(subtotal)
-        sale.discount_amount = _q2(discount_total)
+        sale.subtotal = _q4(subtotal)
+        sale.discount_amount = _q4(discount_total)
         sale.delivery_price = delivery_price
-        sale.grand_total = _q2(grand_total)
+        sale.grand_total = _q4(grand_total)
 
         # 3) Recalculate the outstanding customer debt from the new total.
-        #    Recorded payments are immutable, so the already-paid amount stands.
+        #    A paid-amount correction (payload.amount_received) is reconciled
+        #    against the immutable payment ledger with a compensating
+        #    SALE_PAYMENT / SALE_REFUND row; an order-only edit keeps the
+        #    already-paid amount untouched.
         debt_result = await self.session.execute(
             select(CustomerDebt).where(CustomerDebt.sale_id == sale.id).with_for_update()
         )
         debt = debt_result.scalars().first()
-        existing_paid = _q2(debt.paid_amount) if debt is not None else _q2(sale.paid_amount)
-        paid_for_sale = max(Decimal("0.00"), min(existing_paid, sale.grand_total))
+        existing_paid = _q4(debt.paid_amount) if debt is not None else _q4(sale.paid_amount)
+        explicit_paid = payload.amount_received is not None
+        if explicit_paid:
+            paid_for_sale = max(
+                Decimal("0.00"), min(_q4(payload.amount_received), sale.grand_total)
+            )
+            delta_paid = _q4(paid_for_sale - existing_paid)
+        else:
+            paid_for_sale = max(Decimal("0.00"), min(existing_paid, sale.grand_total))
+            delta_paid = Decimal("0.0000")
         debt_amount = sale.grand_total - paid_for_sale
         if debt_amount > 0 and customer.is_walk_in:
             raise ValidationError(
@@ -847,6 +875,8 @@ class POSService:
             # amounts and their normalization stay in one currency.
             debt.currency = sale.currency
             debt.exchange_rate = sale.exchange_rate
+            if customer_changed:
+                debt.customer_id = customer.id
         elif debt_amount > 0:
             self.session.add(
                 CustomerDebt(
@@ -865,6 +895,46 @@ class POSService:
         sale.paid_amount = paid_for_sale
         sale.debt_amount = debt_amount
         sale.payment_status = "PAID" if debt_amount == 0 else ("PARTIAL" if paid_for_sale > 0 else "UNPAID")
+
+        # Move this sale's own payment/refund rows to the corrected customer and
+        # apply an optional payment-method correction.
+        sale_payments = (
+            await self.session.execute(
+                select(Payment).where(Payment.sale_id == sale.id).with_for_update()
+            )
+        ).scalars().all()
+        fallback_method = sale_payments[0].payment_method if sale_payments else "CASH"
+        for payment_row in sale_payments:
+            if customer_changed:
+                payment_row.customer_id = customer.id
+            if payload.payment_method is not None:
+                payment_row.payment_method = payload.payment_method
+
+        # Reconcile an explicit paid-amount correction with the ledger.
+        if delta_paid > 0:
+            await self._create_payment(
+                payment_no=await allocate_document_number(self.session, "CUSTOMER_DEBT_PAYMENT"),
+                sale_id=sale.id,
+                customer_id=customer.id,
+                payment_type="SALE_PAYMENT",
+                payment_method=payload.payment_method or fallback_method,
+                amount=delta_paid,
+                reference_no=sale.invoice_no,
+                actor=actor,
+            )
+        elif delta_paid < 0:
+            if not user_has_permission(actor, "pos.refund"):
+                raise AccessDeniedError("You do not have permission to issue a monetary refund")
+            await self._create_payment(
+                payment_no=await allocate_document_number(self.session, "SALE_REFUND"),
+                sale_id=sale.id,
+                customer_id=customer.id,
+                payment_type="SALE_REFUND",
+                payment_method=payload.payment_method or fallback_method,
+                amount=-delta_paid,
+                reference_no=sale.invoice_no,
+                actor=actor,
+            )
 
         await record_audit(
             self.session,
@@ -920,7 +990,7 @@ class POSService:
             customer_debt_id=customer_debt_id,
             payment_type=payment_type,
             payment_method=payment_method,
-            amount=_q2(amount),
+            amount=_q4(amount),
             reference_no=reference_no,
             created_by=actor.id,
         )
@@ -1143,7 +1213,7 @@ class POSService:
             line_total = Decimal(sale_item.line_total)
             if sum_line_totals > 0 and header_discount > 0:
                 share = (header_discount * line_total / sum_line_totals).quantize(
-                    TWO, rounding=ROUND_HALF_UP
+                    FOUR, rounding=ROUND_HALF_UP
                 )
                 return max(Decimal("0.00"), line_total - share)
             return line_total
@@ -1183,7 +1253,7 @@ class POSService:
         out_items: list[SaleReturnItem] = []
         for return_item in payload.items:
             sale_item = items_by_id[return_item.sale_item_id]
-            refund = _q2(effective_line_amount(sale_item) * return_item.quantity / sale_item.quantity)
+            refund = _q4(effective_line_amount(sale_item) * return_item.quantity / sale_item.quantity)
             row = SaleReturnItem(
                 sale_return_id=sale_return.id,
                 sale_item_id=sale_item.id,
@@ -1223,7 +1293,7 @@ class POSService:
                     note=payload.reason,
                 )
             refund_total += refund
-        sale_return.refund_amount = _q2(refund_total)
+        sale_return.refund_amount = _q4(refund_total)
 
         if sale_return.refund_amount > remaining_refundable:
             raise ValidationError(
@@ -1254,7 +1324,7 @@ class POSService:
                 debt.remaining_amount = Decimal(debt.remaining_amount) - debt_reduction
                 debt.paid_amount = Decimal(debt.original_amount) - Decimal(debt.remaining_amount)
                 debt.status = "PAID" if Decimal(debt.remaining_amount) == 0 else "PARTIAL"
-            excess = _q2(sale_return.refund_amount - debt_reduction)
+            excess = _q4(sale_return.refund_amount - debt_reduction)
             if disposition is None:
                 # Legacy default: debt reduction when fully covered, otherwise a
                 # cash refund of the excess.
@@ -1284,9 +1354,9 @@ class POSService:
 
         sale_return.refund_disposition = effective_disposition
         sale_return.refund_method = method
-        sale_return.refund_paid_amount = _q2(paid)
-        sale_return.credit_amount = _q2(credit)
-        sale_return.debt_reduction = _q2(debt_reduction)
+        sale_return.refund_paid_amount = _q4(paid)
+        sale_return.credit_amount = _q4(credit)
+        sale_return.debt_reduction = _q4(debt_reduction)
         sale_return.refund_reference = payload.refund_reference
         sale_return.refund_note = payload.refund_note
 

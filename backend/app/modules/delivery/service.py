@@ -125,7 +125,7 @@ def _q4(value) -> Decimal:
 
 
 def _money(value) -> Decimal:
-    return Decimal(value or "0").quantize(Decimal("0.01"))
+    return Decimal(value or "0").quantize(FOUR)
 
 
 class _SaleGroup:

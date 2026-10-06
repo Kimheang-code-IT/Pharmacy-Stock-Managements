@@ -36,7 +36,7 @@ class Expense(Base):
     # Optional document reference shown in the Finance ledger Reference column
     # (falls back to the category when empty).
     reference: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     # Document currency: every amount on this document is in THIS currency
     # (never mixed). exchange_rate = KHR per 1 USD (1 for USD documents).
     currency: Mapped[str] = mapped_column(String(10), nullable=False, default="USD", server_default="USD")

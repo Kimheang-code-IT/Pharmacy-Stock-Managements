@@ -26,7 +26,7 @@ export function selectedDebtsShareScope(rows: readonly AppRecord[], kind: DebtKi
 
 /** Combined remaining balance of the selected open debts (2 dp). */
 export function selectedDebtsTotal(rows: readonly AppRecord[]): number {
-  return Math.round(rows.reduce((sum, row) => sum + Number(row.remainingAmount || 0), 0) * 100) / 100
+  return Math.round(rows.reduce((sum, row) => sum + Number(row.remainingAmount || 0), 0) * 10000) / 10000
 }
 
 /**

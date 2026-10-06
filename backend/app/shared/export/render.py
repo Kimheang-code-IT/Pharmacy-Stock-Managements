@@ -39,6 +39,7 @@ _NUMERIC_TYPES = ("number", "money")
 _MONEY_FORMAT = '#,##0.00'
 _NUMBER_FORMAT = '#,##0.####'
 _DATE_FORMAT = 'yyyy-mm-dd'
+_NUMBER_FORMAT_PATTERN = re.compile(r"^[#,##0]+(?:\.[0#]+)?$")
 
 
 def _as_number(value) -> bool:
@@ -78,6 +79,11 @@ def _format_money(value) -> str:
         return f"{float(value):,.2f}"
     except (TypeError, ValueError):
         return _text(value)
+
+
+def _safe_number_format(value: str | None) -> str:
+    pattern = str(value or "").strip()
+    return pattern if _NUMBER_FORMAT_PATTERN.fullmatch(pattern) else _NUMBER_FORMAT
 
 
 def _parse_date(value):
@@ -136,6 +142,7 @@ def render_xlsx(
     rows: list[dict],
     subtitle: str | None = None,
     company: str = "Stock & POS",
+    number_format: str = _NUMBER_FORMAT,
 ) -> bytes:
     """Styled spreadsheet: title, filter info, bold header, auto-filter, freeze,
     typed number/date formats, real SUM formulas, and A4 fit-to-width printing."""
@@ -145,6 +152,7 @@ def render_xlsx(
     from openpyxl.worksheet.properties import PageSetupProperties
 
     generated_at = datetime.now(timezone.utc)
+    number_format = _safe_number_format(number_format)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = _safe_sheet_name(title)
@@ -186,7 +194,7 @@ def render_xlsx(
             column_kind = types[key]
             if column_kind in _NUMERIC_TYPES and _as_number(value):
                 cell.value = value
-                cell.number_format = _MONEY_FORMAT if column_kind == "money" else _NUMBER_FORMAT
+                cell.number_format = _MONEY_FORMAT if column_kind == "money" else number_format
                 cell.alignment = Alignment(horizontal="right", vertical="top")
             elif column_kind == "date" and _parse_date(value) is not None:
                 cell.value = _parse_date(value)
@@ -210,7 +218,7 @@ def render_xlsx(
             if types[key] in _NUMERIC_TYPES:
                 letter = get_column_letter(index)
                 cell.value = f"=SUM({letter}{first_data_row}:{letter}{last_data_row})"
-                cell.number_format = _MONEY_FORMAT if types[key] == "money" else _NUMBER_FORMAT
+                cell.number_format = _MONEY_FORMAT if types[key] == "money" else number_format
                 cell.alignment = Alignment(horizontal="right")
             elif index == 1:
                 cell.value = "សរុប"
@@ -388,13 +396,21 @@ def render_table(
     rows: list[dict],
     subtitle: str | None = None,
     company: str = "Stock & POS",
+    number_format: str = _NUMBER_FORMAT,
 ) -> tuple[bytes, str, str]:
     """Render one table; returns (content, media_type, extension)."""
     normalized = str(fmt or "").strip().lower()
     if normalized not in SUPPORTED_FORMATS:
         raise ValueError(f"Unsupported export format: {fmt}")
     if normalized == "xlsx":
-        content = render_xlsx(title=title, columns=columns, rows=rows, subtitle=subtitle, company=company)
+        content = render_xlsx(
+            title=title,
+            columns=columns,
+            rows=rows,
+            subtitle=subtitle,
+            company=company,
+            number_format=number_format,
+        )
         return content, XLSX_MEDIA_TYPE, "xlsx"
     content = render_pdf(title=title, columns=columns, rows=rows, subtitle=subtitle, company=company)
     return content, PDF_MEDIA_TYPE, "pdf"

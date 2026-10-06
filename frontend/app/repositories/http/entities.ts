@@ -619,7 +619,7 @@ function q4(value: unknown): number {
 }
 
 function q2(value: unknown): number {
-  return Math.round((Number(value ?? 0) + Number.EPSILON) * 100) / 100
+  return Math.round((Number(value ?? 0) + Number.EPSILON) * 10000) / 10000
 }
 
 /** Canonical tender method → Sales Report display label. The row keeps the
@@ -1059,9 +1059,8 @@ export function createHttpPosCommandRepository(): PosCommandRepository {
 
   async function updateSale(input: PosCompleteSaleInput & { saleId: string }): Promise<AppRecord> {
     const { saleId, ...rest } = input
-    // SaleUpdateRequest only accepts the re-applied order fields; customer,
-    // tender and payments stay untouched on edit. Never send keys the schema
-    // silently ignores.
+    // Order fields are re-applied; customer / payment method / paid amount are
+    // optional corrections (omitted keys keep the recorded values).
     return unwrap<Record<string, unknown>>(await api.patch<unknown>(
       ApiEndpoints.SALE_DETAIL(saleId),
       {
@@ -1071,6 +1070,9 @@ export function createHttpPosCommandRepository(): PosCommandRepository {
         note: rest.note ?? null,
         currency: rest.currency ?? 'USD',
         exchange_rate: rest.exchangeRate ?? 1,
+        ...(rest.customerId ? { customer_id: rest.customerId } : {}),
+        ...(rest.paymentMethod ? { payment_method: canonicalPaymentMethod(rest.paymentMethod) } : {}),
+        ...(rest.paidAmount !== undefined ? { amount_received: rest.paidAmount } : {}),
       },
     )) as AppRecord
   }
@@ -1175,7 +1177,7 @@ export function createHttpPosCommandRepository(): PosCommandRepository {
     // balance becomes supplier debt in the same transaction.
     const quantity = Number(input.quantity || 0)
     const unitCost = Number(input.unitCost ?? 0)
-    const lineTotal = Math.round(quantity * unitCost * 100) / 100
+    const lineTotal = Math.round(quantity * unitCost * 10000) / 10000
     const paidAmount = input.paidAmount == null ? lineTotal : Math.max(0, Number(input.paidAmount))
     return unwrap<Record<string, unknown>>(await api.post<unknown>(endpoint, {
       ...(input.supplierId ? { supplier_id: input.supplierId } : {}),

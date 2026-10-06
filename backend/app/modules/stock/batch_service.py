@@ -36,7 +36,7 @@ from app.modules.pos.models import SaleItemBatch
 from app.modules.stock.models import BatchStockBalance, Product
 
 FOUR = Decimal("0.0001")
-TWO = Decimal("0.01")
+TWO = Decimal("0.0001")  # money precision (4 dp) — name kept for call sites
 SIX = Decimal("0.000001")
 UNBATCHED_KEY = ""
 
@@ -470,9 +470,9 @@ async def commit_sale_allocations(
                     f"No sale price configured for batch {batch.batch_no or '(unbatched)'}",
                     field_errors={"items": "Price not configured"},
                 )
-            unit_price = _q2(unit_price)
+            unit_price = _q4(unit_price)
         sold_qty = _q4(amount / line_factor)
-        line_amount = _q2(sold_qty * unit_price) if unit_price is not None else None
+        line_amount = _q4(sold_qty * unit_price) if unit_price is not None else None
         session.add(
             SaleItemBatch(
                 sale_item_id=sale_item.id,

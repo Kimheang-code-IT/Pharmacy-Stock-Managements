@@ -48,7 +48,7 @@ setBreadcrumbs([
 ])
 
 function round2(value: number): number {
-  return Math.round((value + Number.EPSILON) * 100) / 100
+  return Math.round((value + Number.EPSILON) * 10000) / 10000
 }
 
 // ---------------------------------------------------------------- model

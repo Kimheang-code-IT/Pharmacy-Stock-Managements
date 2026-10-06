@@ -58,8 +58,8 @@ class Product(Base):
     uom_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("units_of_measure.id", ondelete="RESTRICT"), nullable=False
     )
-    cost_price: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0.00"))
-    selling_price: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    cost_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0.00"))
+    selling_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     minimum_stock: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0"))
     expiry_tracking: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Costing option: when True, outbound movements (sales, damage, expiry,
@@ -104,7 +104,7 @@ class StockBalance(Base):
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), primary_key=True
     )
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0"))
-    average_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0.00"))
+    average_cost: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0.00"))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
@@ -208,7 +208,7 @@ class ProductSalePrice(Base):
     product_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False
     )
-    sale_price: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    sale_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     effective_date: Mapped[date] = mapped_column(Date, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -262,7 +262,7 @@ class ProductSalePriceUom(Base):
     )
     uom_symbol: Mapped[str | None] = mapped_column(String(50), nullable=True)
     factor_to_base: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
-    sale_price: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    sale_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     is_default_sale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # POS-active flag toggled from the Pricing tab: inactive rows stay in the
     # version for history but are ignored by POS price resolution.
@@ -292,10 +292,10 @@ class StockTransaction(Base):
     # Purchase header adjustments (Stock In = purchase): discount is
     # subtracted from the line subtotal, tax is added afterwards.
     discount_amount: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2), nullable=False, default=Decimal("0.00"), server_default="0.00"
+        Numeric(18, 4), nullable=False, default=Decimal("0.00"), server_default="0.00"
     )
     tax_amount: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2), nullable=False, default=Decimal("0.00"), server_default="0.00"
+        Numeric(18, 4), nullable=False, default=Decimal("0.00"), server_default="0.00"
     )
     # Document currency: every amount on this document is in THIS currency
     # (never mixed). exchange_rate = KHR per 1 USD (1 for USD documents).
@@ -340,12 +340,12 @@ class PurchaseReturn(Base):
         UUID(as_uuid=True), ForeignKey("suppliers.id", ondelete="SET NULL"), nullable=True
     )
     return_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    refund_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    refund_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     debt_reduction: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2), nullable=False, default=Decimal("0.00")
+        Numeric(18, 4), nullable=False, default=Decimal("0.00")
     )
     credit_amount: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2), nullable=False, default=Decimal("0.00")
+        Numeric(18, 4), nullable=False, default=Decimal("0.00")
     )
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     created_by: Mapped[uuid.UUID] = mapped_column(
@@ -377,8 +377,8 @@ class PurchaseReturnItem(Base):
     )
     product_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
-    unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
-    line_refund: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    line_refund: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -400,7 +400,7 @@ class StockTransactionItem(Base):
     )
     product_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
-    unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     system_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     actual_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     batch_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -415,7 +415,7 @@ class StockTransactionItem(Base):
     entered_factor_to_base: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     entered_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    line_total: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    line_total: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     # Cumulative returned-to-supplier qty (base UOM) across purchase returns.
     returned_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0"))
     created_at: Mapped[datetime] = mapped_column(
@@ -445,7 +445,7 @@ class StockMovement(Base):
     product_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     movement_type: Mapped[str] = mapped_column(String(30), nullable=False)
     quantity_delta: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
-    unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     reference_type: Mapped[str] = mapped_column(String(30), nullable=False)
     reference_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     document_no: Mapped[str | None] = mapped_column(String(50), nullable=True)

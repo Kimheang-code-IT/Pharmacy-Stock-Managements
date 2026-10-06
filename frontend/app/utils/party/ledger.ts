@@ -22,7 +22,7 @@ export interface PartyHistory {
 
 function asNumber(value: unknown): number {
   const parsed = Number(value ?? 0)
-  return Number.isFinite(parsed) ? Math.round((parsed + Number.EPSILON) * 100) / 100 : 0
+  return Number.isFinite(parsed) ? Math.round((parsed + Number.EPSILON) * 10000) / 10000 : 0
 }
 
 function asText(value: unknown): string {

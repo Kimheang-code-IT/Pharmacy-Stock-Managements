@@ -85,6 +85,25 @@ async def test_export_table_xlsx_contains_rows_and_sum_formulas(client):
 
 
 @pytest.mark.asyncio
+async def test_export_table_xlsx_uses_configured_number_format(client):
+    from openpyxl import load_workbook
+
+    headers = await admin_headers(client)
+    payload = {
+        **_PAYLOAD,
+        "columns": [{"key": "qty", "label": "Qty", "type": "number"}],
+        "rows": [{"qty": 1.5}],
+        "numberFormat": "#,##.000",
+    }
+    response = await client.post("/api/v1/export/table", json=payload, headers=headers)
+    assert response.status_code == 200, response.text
+
+    sheet = load_workbook(io.BytesIO(response.content)).active
+    data_cell = next(cell for row in sheet.iter_rows() for cell in row if cell.value == 1.5)
+    assert data_cell.number_format == "#,##.000"
+
+
+@pytest.mark.asyncio
 async def test_export_table_pdf_renders_khmer_without_error(client):
     """Khmer PDF must render a real multi-page-capable document (not blank)."""
     headers = await admin_headers(client)

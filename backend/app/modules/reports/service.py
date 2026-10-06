@@ -32,7 +32,7 @@ from app.shared.audit.service import record_audit
 
 from app.shared.pagination.params import parse_date_range
 
-Q2 = Decimal("0.01")
+Q2 = Decimal("0.0001")  # money precision (4 dp) — name kept for call sites
 Q4 = Decimal("0.0001")
 
 # Reporting currency. All documents carry their own currency + exchange-rate

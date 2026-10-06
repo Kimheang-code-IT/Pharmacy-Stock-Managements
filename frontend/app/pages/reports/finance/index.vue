@@ -325,7 +325,7 @@ function convertExpenseAmount(from: 'USD' | 'KHR', to: 'USD' | 'KHR', rate: numb
   const amount = Number(expenseForm.amount || 0)
   if (from === to || !amount || !(rate > 0)) return
   const converted = from === 'USD' ? amount * rate : amount / rate
-  expenseForm.amount = Math.round(converted * 100) / 100
+  expenseForm.amount = Math.round(converted * 10000) / 10000
 }
 
 /** Currency toggle from the amount field: convert once the new rate is known. */
@@ -494,7 +494,7 @@ async function submitExpense() {
           :label="t('app.fields.amount')"
           :required="true"
           :min="0"
-          :step="0.01"
+          :step="0.0001"
           :help="Number(expenseForm.amount || 0) <= 0 ? t('app.finance.amountPositive') : ''"
           class="w-full"
           @update:currency="onExpenseCurrencySelect"

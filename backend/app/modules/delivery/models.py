@@ -53,7 +53,7 @@ class DeliveryNote(Base):
     delivery_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
     vehicle_no: Mapped[str | None] = mapped_column(String(60), nullable=True)
     delivery_fee: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2), nullable=False, default=Decimal("0")
+        Numeric(18, 4), nullable=False, default=Decimal("0")
     )
     received_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

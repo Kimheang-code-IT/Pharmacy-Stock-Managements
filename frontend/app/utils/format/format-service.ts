@@ -15,9 +15,15 @@ export const DEFAULT_FORMAT_CONFIG: AppConfigLocalization = {
 
 const NUMBER_FORMAT_LOCALES: Record<string, string> = {
   '1,234.56': 'en-US',
+  '#,##.000': 'en-US',
+  '#,##0.####': 'en-US',
   '1.234,56': 'de-DE',
   '1 234,56': 'fr-FR',
 }
+
+/** Fraction digits declared after the decimal mark of a number-format pattern
+ *  (`1,234.56` → `56`, `#,##0.####` → `####`). */
+const NUMBER_PATTERN_FRACTION = /[.,]([0#]+)\s*$/
 
 let activeConfig: AppConfigLocalization = {
   ...DEFAULT_FORMAT_CONFIG,
@@ -36,6 +42,39 @@ export function configureFormats(next: Partial<AppConfigLocalization>) {
 
 function numberLocale() {
   return NUMBER_FORMAT_LOCALES[activeConfig.numberFormat] || activeConfig.locale
+}
+
+/** Locale used by number inputs so grouping/decimal marks match the configured
+ *  number format (e.g. `#,##0.####`). */
+export function numberFormatLocale(): string {
+  return numberLocale()
+}
+
+/**
+ * Number-input formatting derived from the System Settings number format:
+ * the locale (grouping/decimal marks) plus the fraction digits declared by the
+ * pattern — so a money field follows `1,234.56` (2 dp) or `#,##0.####` (4 dp).
+ */
+export function numberInputFormat(): { locale: string, options: Intl.NumberFormatOptions } {
+  const pattern = String(activeConfig.numberFormat || DEFAULT_FORMAT_CONFIG.numberFormat || '')
+  const fraction = pattern.match(NUMBER_PATTERN_FRACTION)?.[1] ?? ''
+  const minimumFractionDigits = (fraction.match(/0/g) || []).length
+  const maximumFractionDigits = fraction.length || 2
+  return { locale: numberLocale(), options: { minimumFractionDigits, maximumFractionDigits } }
+}
+
+function configuredNumberOptions(): Intl.NumberFormatOptions {
+  const fraction = activeConfig.numberFormat.match(NUMBER_PATTERN_FRACTION)?.[1]
+  if (!fraction) return {}
+  return {
+    minimumFractionDigits: (fraction.match(/0/g) || []).length,
+    maximumFractionDigits: fraction.length,
+  }
+}
+
+/** The configured pattern is also sent to backend table exports. */
+export function configuredNumberFormat(): string {
+  return activeConfig.numberFormat
 }
 
 function validDate(value: unknown): Date | null {
@@ -151,7 +190,10 @@ export function formatNumber(value: unknown, options: Intl.NumberFormatOptions =
   const number = Number(value)
   if (!Number.isFinite(number)) return String(value ?? '')
   try {
-    return new Intl.NumberFormat(numberLocale(), options).format(number)
+    return new Intl.NumberFormat(numberLocale(), {
+      ...configuredNumberOptions(),
+      ...options,
+    }).format(number)
   }
   catch {
     return String(number)
@@ -159,7 +201,9 @@ export function formatNumber(value: unknown, options: Intl.NumberFormatOptions =
 }
 
 export function formatCurrency(value: unknown, currency = activeConfig.currency) {
-  return formatNumber(value, { style: 'currency', currency })
+  // Up to 4 decimals so POS money entered as `#,##0.####` is not hidden,
+  // while the configured minimum (usually 2) still pads whole amounts.
+  return formatNumber(value, { style: 'currency', currency, maximumFractionDigits: 4 })
 }
 
 /**
@@ -181,7 +225,7 @@ export function formatMoney(value: unknown, currency?: string) {
   catch {
     const amount = Number(value)
     const safe = Number.isFinite(amount) ? amount : 0
-    return `${code} ${formatNumber(safe, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    return `${code} ${formatNumber(safe, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
   }
 }
 

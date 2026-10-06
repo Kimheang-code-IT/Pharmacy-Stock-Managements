@@ -29,6 +29,7 @@ class ExportTableRequest(BaseModel):
     company: str = Field(default="Stock & POS", max_length=200)
     format: Literal["xlsx", "pdf"] = "xlsx"
     subtitle: str | None = Field(default=None, max_length=300)
+    numberFormat: str = Field(default="#,##0.####", max_length=30)
     columns: list[ExportColumn] = Field(min_length=1, max_length=80)
     # Rows are the resolved, already-filtered page rows (capped for safety).
     rows: list[dict] = Field(default_factory=list, max_length=MAX_EXPORT_ROWS)
@@ -49,6 +50,7 @@ async def export_table(
             rows=payload.rows,
             subtitle=payload.subtitle,
             company=payload.company,
+            number_format=payload.numberFormat,
         )
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc

@@ -29,7 +29,7 @@ from app.modules.stock.models import (
 from app.shared.audit.service import record_audit
 from app.shared.pagination.params import parse_date_range
 
-TWO = Decimal("0.01")
+TWO = Decimal("0.0001")  # money precision (4 dp) — name kept for call sites
 
 
 def _today() -> date:

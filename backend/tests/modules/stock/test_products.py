@@ -1,4 +1,5 @@
 import asyncio
+from decimal import Decimal
 
 import pytest
 
@@ -50,7 +51,7 @@ async def test_product_crud_and_price_audit(client, db_session):
         f"/api/v1/products/{product['id']}", json={"selling_price": "7.25"}, headers=headers
     )
     assert patched.status_code == 200
-    assert patched.json()["data"]["selling_price"] == "7.25"
+    assert Decimal(patched.json()["data"]["selling_price"]) == Decimal("7.25")
 
     # A selling-price change adds + activates a new sale-price version
     # (spec: product_sale_prices; POS always reads the active version).
@@ -60,7 +61,7 @@ async def test_product_crud_and_price_audit(client, db_session):
     active = [row for row in price_rows if row["is_active"]]
     assert len(active) == 1
     assert active[0]["version"] == 2
-    assert active[0]["sale_price"] == "7.25"
+    assert Decimal(active[0]["sale_price"]) == Decimal("7.25")
 
     # Price change must be audited.
     result = await db_session.execute(
@@ -76,7 +77,7 @@ async def test_product_crud_and_price_audit(client, db_session):
     )
     assert audit is not None
     assert audit.user_id == admin.id
-    assert audit.new_values["sale_price"] == "7.25"
+    assert Decimal(audit.new_values["sale_price"]) == Decimal("7.25")
 
     # Cannot read products without authentication.
     anon = await client.get("/api/v1/products")

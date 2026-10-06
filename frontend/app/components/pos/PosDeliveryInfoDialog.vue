@@ -77,7 +77,7 @@ function pressKey(key: string) {
   }
   else {
     const [, decimals = ''] = priceText.value.split('.')
-    if (priceText.value.includes('.') && decimals.length >= 2) return
+    if (priceText.value.includes('.') && decimals.length >= 4) return
     priceText.value = priceText.value === '0' ? key : priceText.value + key
   }
   const value = Number(priceText.value)
@@ -138,7 +138,7 @@ function confirm() {
           :model-value="priceInput"
           :currency="currency"
           :min="0"
-          :step="0.01"
+          :step="0.0001"
           class="w-full"
           size="lg"
           align="right"

@@ -91,7 +91,7 @@ function onSubmit() {
         :label="t('app.reports.paymentAmount')"
         :required="true"
         :min="0"
-        :step="0.01"
+        :step="0.0001"
         class="w-full"
         :help="Number(amount || 0) > total ? t('app.reports.paymentOverRemaining') : ''"
       />

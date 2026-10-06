@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CommonAppField, UButton, UFieldGroup, UInputNumber } from '#components'
-import { currencySymbol } from '~/utils/format/format-service'
+import { currencySymbol, numberInputFormat } from '~/utils/format/format-service'
 
 /**
  * Reusable money/decimal input.
@@ -33,13 +33,15 @@ const props = withDefaults(defineProps<{
   ui?: Record<string, unknown>
   /** Currency code shown as the field symbol; falls back to the shop default. */
   currency?: string | null
+  /** Optional override; when unset the System Settings number format applies. */
+  fractionDigits?: number
   /** When set, renders a USD/KHR toggle instead of a fixed symbol. */
   currencyToggle?: boolean
   /** Render the bare control (no label wrapper) for table/inline use. */
   inline?: boolean
 }>(), {
   min: 0,
-  step: 0.01,
+  step: 0.0001,
   size: 'md',
   align: 'left',
   currencyToggle: false,
@@ -66,6 +68,14 @@ const value = computed({
 })
 
 const moneySymbol = computed(() => currencySymbol(props.currency ?? undefined))
+
+/** Grouping + decimals follow System Settings unless `fractionDigits` overrides. */
+const inputFormat = computed(() => numberInputFormat())
+const numberFormatOptions = computed<Intl.NumberFormatOptions>(() =>
+  props.fractionDigits == null
+    ? inputFormat.value.options
+    : { minimumFractionDigits: 0, maximumFractionDigits: props.fractionDigits })
+const inputLocale = computed(() => inputFormat.value.locale)
 
 const inputUi = computed(() => ({
   ...props.ui,
@@ -116,6 +126,9 @@ function onCurrencySelect(currency: 'USD' | 'KHR') {
         :size="size"
         :increment="false"
         :decrement="false"
+        :step-snapping="false"
+        :format-options="numberFormatOptions"
+        :locale="inputLocale"
         :ui="inputUi"
         :class="[$props.class, fieldControlClass(Boolean(error))]"
         @blur="emit('blur', $event)"
@@ -152,6 +165,9 @@ function onCurrencySelect(currency: 'USD' | 'KHR') {
         :size="size"
         :increment="false"
         :decrement="false"
+        :step-snapping="false"
+        :format-options="numberFormatOptions"
+        :locale="inputLocale"
         :ui="inputUi"
         :class="inputClass"
         @blur="emit('blur', $event)"

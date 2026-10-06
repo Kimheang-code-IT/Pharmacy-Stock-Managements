@@ -28,6 +28,11 @@ describe('format-service', () => {
     expect(formatNumber(1234.5)).toBe('1.234,5')
   })
 
+  it('formats numbers with a custom three-decimal pattern', () => {
+    configureFormats({ numberFormat: '#,##.000', locale: 'en-US' })
+    expect(formatNumber(1234.5)).toBe('1,234.500')
+  })
+
   it('formats money with record currency and settings locale', () => {
     configureFormats({ currency: 'USD', locale: 'en-US', numberFormat: '1,234.56' })
     const formatted = formatMoney(1250, 'USD')

@@ -49,9 +49,9 @@ class SupplierDebt(Base):
         UUID(as_uuid=True), ForeignKey("stock_transactions.id", ondelete="RESTRICT"), nullable=False
     )
     document_no: Mapped[str] = mapped_column(String(50), nullable=False)
-    original_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
-    paid_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0.00"))
-    remaining_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    original_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    paid_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0.00"))
+    remaining_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     # Document currency: every amount on this document is in THIS currency
     # (never mixed). exchange_rate = KHR per 1 USD (1 for USD documents).

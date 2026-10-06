@@ -811,7 +811,7 @@ const nestedDialogUi = {
         v-model="addUnitCost"
         :label="t('app.stock.convCost')"
         :min="0"
-        :step="0.01"
+        :step="0.0001"
         :help="t('app.stock.convCostHint')"
         class="w-full"
       />

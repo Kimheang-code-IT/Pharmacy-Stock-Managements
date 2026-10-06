@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { currencySymbol } from '~/utils/format/format-service'
+import { currencySymbol, numberInputFormat } from '~/utils/format/format-service'
 
 const props = withDefaults(defineProps<{
   modelValue?: number | null | undefined
@@ -50,6 +50,11 @@ const value = computed({
 })
 
 const moneySymbol = computed(() => (props.money ? currencySymbol(props.currency) : ''))
+
+/** Money fields follow the System Settings number format; plain numbers don't. */
+const moneyFormatOptions = computed<Intl.NumberFormatOptions | undefined>(() =>
+  props.money || props.currency ? numberInputFormat().options : undefined)
+const moneyLocale = computed(() => (moneyFormatOptions.value ? numberInputFormat().locale : undefined))
 </script>
 
 <template>
@@ -80,6 +85,9 @@ const moneySymbol = computed(() => (props.money ? currencySymbol(props.currency)
         :size="size"
         :increment="false"
         :decrement="false"
+        :step-snapping="false"
+        :format-options="moneyFormatOptions"
+        :locale="moneyLocale"
         :ui="{ base: 'pe-7' }"
         :class="[$props.class, fieldControlClass(Boolean(error))]"
         @blur="emit('blur', $event)"
@@ -115,6 +123,9 @@ const moneySymbol = computed(() => (props.money ? currencySymbol(props.currency)
         :size="size"
         :increment="false"
         :decrement="false"
+        :step-snapping="false"
+        :format-options="moneyFormatOptions"
+        :locale="moneyLocale"
         :class="[$props.class, fieldControlClass(Boolean(error))]"
         @blur="emit('blur', $event)"
         @focus="emit('focus', $event)"

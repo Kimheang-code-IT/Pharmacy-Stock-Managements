@@ -224,8 +224,10 @@ class SaleUpdateRequest(BaseModel):
 
     Items/quantities/prices/discounts/delivery are re-applied; the original
     stock is reversed (restored to its batches) before the new lines are
-    applied. The customer and any recorded payments stay untouched — the
-    outstanding customer debt is recalculated from the new grand total.
+    applied. The customer, payment method and paid amount may also be
+    corrected: a paid-amount change is recorded as a compensating
+    SALE_PAYMENT / SALE_REFUND ledger row, and the outstanding customer debt is
+    recalculated from the new grand total.
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -243,6 +245,18 @@ class SaleUpdateRequest(BaseModel):
         default=Decimal("1"),
         gt=0,
         validation_alias=AliasChoices("exchange_rate", "exchangeRate"),
+    )
+    # Corrections (all optional; omitted = keep the recorded value).
+    customer_id: UUID | None = Field(
+        default=None, validation_alias=AliasChoices("customer_id", "customerId")
+    )
+    payment_method: str | None = Field(
+        default=None, validation_alias=AliasChoices("payment_method", "paymentMethod")
+    )
+    amount_received: Decimal | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices("amount_received", "paidAmount", "paid_amount"),
     )
     items: list[SaleItemRequest] = Field(min_length=1)
 

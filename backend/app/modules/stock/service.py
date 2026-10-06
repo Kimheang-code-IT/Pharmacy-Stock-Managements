@@ -389,7 +389,7 @@ MOVEMENT_TYPES = {
 }
 
 FOUR = Decimal("0.0001")
-TWO = Decimal("0.01")
+TWO = Decimal("0.0001")  # money precision (4 dp) — name kept for call sites
 
 
 def _q4(value) -> Decimal:
@@ -1718,12 +1718,12 @@ class StockOperationService:
             if payload.unit_cost is not None:
                 # unitCost is per selected UOM; the ledger keeps the base-unit cost.
                 unit_cost = (Decimal(str(payload.unit_cost)) / factor).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                    Decimal("0.0001"), rounding=ROUND_HALF_UP
                 )
             else:
                 unit_cost = balance.average_cost or Decimal("0.00")
             base_quantity_abs = abs(base_quantity)
-            line_total = (base_quantity_abs * unit_cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            line_total = (base_quantity_abs * unit_cost).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
             request = StockInRequest(
                 transaction_date=payload.transaction_date,
                 note=payload.note,

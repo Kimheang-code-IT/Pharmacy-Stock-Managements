@@ -100,8 +100,9 @@ export function cartTotal(lines: PosCartLine[]): number {
   return roundMoney(lines.reduce((sum, line) => sum + lineNet(line), 0))
 }
 
+/** Round a sale-currency amount to 4 decimals (POS money precision, `#,##0.####`). */
 export function roundMoney(value: number): number {
-  return Math.round((Number(value) || 0) * 100) / 100
+  return Math.round((Number(value) || 0) * 10000) / 10000
 }
 
 export function productImageUrl(row: Record<string, unknown>): string | null {

@@ -52,7 +52,7 @@ async def test_stock_in_weighted_average_and_movements(client):
     assert first.status_code == 201, first.text
     doc1 = first.json()["data"]
     assert doc1["document_no"].startswith("STI-")
-    assert doc1["total_amount"] == "20.00"
+    assert Decimal(doc1["total_amount"]) == Decimal("20.00")
     assert doc1["items"][0]["product_name"] == "Stock In Widget"
 
     balance = await _balance(client, headers, product["id"])
@@ -103,14 +103,14 @@ async def test_stock_in_supplier_debt_partial_and_full(client):
     assert partial.status_code == 201, partial.text
     data = partial.json()["data"]
     assert data["debt_created"] is True
-    assert data["paid_amount"] == "5.00"
+    assert Decimal(data["paid_amount"]) == Decimal("5.00")
 
     debts = await client.get(f"/api/v1/suppliers/{supplier['id']}/debts", headers=headers)
     assert debts.status_code == 200
     debt = debts.json()["data"][0]
-    assert debt["original_amount"] == "10.00"
-    assert debt["paid_amount"] == "5.00"
-    assert debt["remaining_amount"] == "5.00"
+    assert Decimal(debt["original_amount"]) == Decimal("10.00")
+    assert Decimal(debt["paid_amount"]) == Decimal("5.00")
+    assert Decimal(debt["remaining_amount"]) == Decimal("5.00")
     assert debt["status"] == "PARTIAL"
     assert debt["document_no"] == data["document_no"]
 
@@ -157,17 +157,17 @@ async def test_stock_in_tax_discount_total_and_debt(client):
     )
     assert response.status_code == 201, response.text
     data = response.json()["data"]
-    assert data["discount_amount"] == "5.00"
-    assert data["tax_amount"] == "4.00"
-    assert data["total_amount"] == "19.00"
-    assert data["paid_amount"] == "9.00"
+    assert Decimal(data["discount_amount"]) == Decimal("5.00")
+    assert Decimal(data["tax_amount"]) == Decimal("4.00")
+    assert Decimal(data["total_amount"]) == Decimal("19.00")
+    assert Decimal(data["paid_amount"]) == Decimal("9.00")
     assert data["debt_created"] is True
 
     debts = await client.get(f"/api/v1/suppliers/{supplier['id']}/debts", headers=headers)
     assert debts.status_code == 200
     debt = debts.json()["data"][0]
-    assert debt["original_amount"] == "19.00"
-    assert debt["remaining_amount"] == "10.00"
+    assert Decimal(debt["original_amount"]) == Decimal("19.00")
+    assert Decimal(debt["remaining_amount"]) == Decimal("10.00")
 
     # Discount above the subtotal is rejected.
     over = await client.post(
@@ -564,7 +564,7 @@ async def test_fifo_costing_uses_oldest_lots_when_enabled(client):
     avg_cost = await _fifo_cost_of_last_outbound(client, headers, avg_product["id"], "DAMAGE")
     assert avg_cost == Decimal("3.00")
 
-    # Second FIFO outbound spans two lots: 4 @ 2.00 + 2 @ 4.00 → blended 2.67.
+    # Second FIFO outbound spans two lots: 4 @ 2.00 + 2 @ 4.00 → blended 2.6667.
     damaged = await client.post(
         "/api/v1/stock/damage",
         json={"items": [{"product_id": fifo_product["id"], "quantity": "6", "reason": "Test 2"}]},
@@ -572,7 +572,7 @@ async def test_fifo_costing_uses_oldest_lots_when_enabled(client):
     )
     assert damaged.status_code == 201, damaged.text
     blended = await _fifo_cost_of_last_outbound(client, headers, fifo_product["id"], "DAMAGE")
-    assert blended == Decimal("2.67")
+    assert blended == Decimal("2.6667")
 
     # FIFO only changes the outbound cost — the average cost is untouched.
     balance = await _balance(client, headers, fifo_product["id"])

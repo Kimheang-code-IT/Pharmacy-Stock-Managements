@@ -2,6 +2,7 @@ import type { ExportFormat } from '~/types/stock-pos/export'
 import { resolveApiBase } from '~/utils/api/base-url'
 import { getAccessToken } from '~/utils/auth/tokens'
 import { ApiEndpoints } from '~/utils/constants/api-endpoints'
+import { configuredNumberFormat } from '~/utils/format/format-service'
 
 /**
  * Download a page's table as Excel or PDF. The rows are rendered by the Python
@@ -64,6 +65,7 @@ export async function downloadTableExport(input: ExportTableInput): Promise<void
     body: JSON.stringify({
       title: input.title,
       format: input.format,
+      numberFormat: configuredNumberFormat(),
       subtitle: input.subtitle ?? null,
       columns: input.columns,
       rows: input.rows,

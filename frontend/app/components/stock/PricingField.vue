@@ -161,13 +161,13 @@ const conversionRate = computed(() => Number(exchangeRate.value || 0))
 function toDisplayPrice(usd: number) {
   const value = Number(usd) || 0
   if (displayCurrency.value !== 'KHR') return value
-  return conversionRate.value > 0 ? Math.round(value * conversionRate.value * 100) / 100 : value
+  return conversionRate.value > 0 ? Math.round(value * conversionRate.value * 10000) / 10000 : value
 }
 
 function toUsdPrice(amount: number | undefined) {
   const value = Number(amount) || 0
   if (displayCurrency.value !== 'KHR') return value
-  return conversionRate.value > 0 ? Math.round((value / conversionRate.value) * 100) / 100 : value
+  return conversionRate.value > 0 ? Math.round((value / conversionRate.value) * 10000) / 10000 : value
 }
 
 const selectionRows = ref<PricingRow[]>([])
@@ -391,7 +391,7 @@ const columns = computed<TableColumn<PricingRow>[]>(() => [
       currency: displayCurrency.value,
       inline: true,
       min: 0,
-      step: 0.01,
+      step: 0.0001,
       size: 'xs',
       class: 'w-28 tabular-nums',
       align: 'right',

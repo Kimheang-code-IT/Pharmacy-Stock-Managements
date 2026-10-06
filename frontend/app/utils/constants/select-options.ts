@@ -40,6 +40,8 @@ export const TIME_FORMAT_OPTIONS: FieldOption[] = [
 
 export const NUMBER_FORMAT_OPTIONS: FieldOption[] = [
   { label: '1,234.56', value: '1,234.56' },
+  { label: '#,##0.####', value: '#,##0.####' },
+  { label: '#,##.000', value: '#,##.000' },
   { label: '1.234,56', value: '1.234,56' },
   { label: '1 234,56', value: '1 234,56' },
 ]

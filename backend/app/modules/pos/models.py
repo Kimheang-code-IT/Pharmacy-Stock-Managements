@@ -30,13 +30,13 @@ class Sale(Base):
         UUID(as_uuid=True), ForeignKey("customers.id", ondelete="RESTRICT"), nullable=False
     )
     sale_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    subtotal: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
-    discount_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0.00"))
-    grand_total: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    subtotal: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    discount_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0.0000"))
+    grand_total: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     # Delivery fee included in grand_total (no second stock-out, spec 2.1.2).
-    delivery_price: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0.00"))
-    paid_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0.00"))
-    debt_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0.00"))
+    delivery_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0.0000"))
+    paid_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0.0000"))
+    debt_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0.0000"))
     # Document currency: every amount on this document is in THIS currency
     # (never mixed). exchange_rate = KHR per 1 USD (1 for USD documents).
     currency: Mapped[str] = mapped_column(String(10), nullable=False, default="USD", server_default="USD")
@@ -81,10 +81,10 @@ class SaleItem(Base):
     factor_to_base: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=Decimal("1"))
     discount_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False, default=Decimal("0"))
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
-    unit_price: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
-    unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
-    discount_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0.00"))
-    line_total: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    discount_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0.0000"))
+    line_total: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     returned_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -128,9 +128,9 @@ class SaleItemBatch(Base):
     # change when a batch price is edited later). NULL on rows written before
     # migration 0034 — readers fall back to the sale-item line figures.
     batch_no_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    unit_price_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    unit_price_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     conversion_qty_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
-    line_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    line_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -148,7 +148,7 @@ class SaleReturn(Base):
         UUID(as_uuid=True), ForeignKey("sales.id", ondelete="RESTRICT"), nullable=False
     )
     return_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    refund_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    refund_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     # Lifecycle: COMPLETED | VOID. Return documents are immutable; corrections
     # use a VOID status row rather than editing/deleting history.
@@ -161,15 +161,15 @@ class SaleReturn(Base):
     refund_method: Mapped[str | None] = mapped_column(String(30), nullable=True)
     # Amount actually paid back in cash/bank (0 for debt/credit settlements).
     refund_paid_amount: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2), nullable=False, default=Decimal("0.00"), server_default="0"
+        Numeric(18, 4), nullable=False, default=Decimal("0.0000"), server_default="0"
     )
     # Portion settled as store/customer credit rather than cash.
     credit_amount: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2), nullable=False, default=Decimal("0.00"), server_default="0"
+        Numeric(18, 4), nullable=False, default=Decimal("0.0000"), server_default="0"
     )
     # Portion that reduced an outstanding customer debt.
     debt_reduction: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2), nullable=False, default=Decimal("0.00"), server_default="0"
+        Numeric(18, 4), nullable=False, default=Decimal("0.0000"), server_default="0"
     )
     refund_reference: Mapped[str | None] = mapped_column(String(100), nullable=True)
     refund_note: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -209,7 +209,7 @@ class SaleReturnItem(Base):
     )
     product_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
-    refund_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    refund_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     restock: Mapped[bool] = mapped_column(nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -249,7 +249,7 @@ class Payment(Base):
     )
     payment_type: Mapped[str] = mapped_column(String(40), nullable=False)
     payment_method: Mapped[str] = mapped_column(String(30), nullable=False)
-    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     reference_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(

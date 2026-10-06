@@ -98,7 +98,7 @@ async def test_draft_expense_is_editable(client):
         headers=headers,
     )
     assert patched.status_code == 200, patched.text
-    assert patched.json()["data"]["amount"] == "12.50"
+    assert Decimal(patched.json()["data"]["amount"]) == Decimal("12.50")
     assert patched.json()["data"]["category"] == "Rent"
 
 

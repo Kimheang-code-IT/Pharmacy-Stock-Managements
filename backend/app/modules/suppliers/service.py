@@ -141,7 +141,7 @@ class SupplierService:
         if debt.status == "PAID" or debt.remaining_amount <= 0:
             raise ConflictError("This debt is already settled")
 
-        amount = Decimal(payload.amount).quantize(Decimal("0.01"))
+        amount = Decimal(payload.amount).quantize(Decimal("0.0001"))
         if amount > debt.remaining_amount:
             raise ValidationError(
                 f"Payment exceeds the remaining debt ({debt.remaining_amount})",
@@ -216,7 +216,7 @@ class SupplierService:
         open_debts = list(result.scalars().all())
         total_outstanding = sum((debt.remaining_amount for debt in open_debts), Decimal("0.00"))
 
-        amount = Decimal(payload.amount).quantize(Decimal("0.01"))
+        amount = Decimal(payload.amount).quantize(Decimal("0.0001"))
         if amount <= 0:
             raise ValidationError("Payment must be greater than zero", field_errors={"amount": "Invalid amount"})
         if not open_debts or amount > total_outstanding:
@@ -336,8 +336,8 @@ async def create_supplier_debt_for_stock_in(
     if supplier is None:
         raise NotFoundError("Supplier not found")
 
-    original = Decimal(original_amount).quantize(Decimal("0.01"))
-    paid = min(Decimal(paid_amount).quantize(Decimal("0.01")), original)
+    original = Decimal(original_amount).quantize(Decimal("0.0001"))
+    paid = min(Decimal(paid_amount).quantize(Decimal("0.0001")), original)
     remaining = original - paid
     rate = Decimal(str(exchange_rate if exchange_rate is not None else 1))
     if rate <= 0:

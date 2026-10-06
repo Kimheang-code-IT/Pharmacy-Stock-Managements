@@ -30,6 +30,8 @@ const props = defineProps<{
   deliveryLocation: string
   paymentMethod: string
   paidInput?: number
+  /** KHR per 1 USD — lets the keypad settle a cross-currency tender. */
+  exchangeRate?: number
   deliveryPrice: number
   needsDelivery: boolean
   depositInput: number
@@ -71,6 +73,7 @@ const emit = defineEmits<{
   'update:customerLocation': [value: string]
   'update:paymentMethod': [value: string]
   'update:paidInput': [value: number | undefined]
+  'update:exchangeRate': [value: number]
   'update:deliveryPrice': [value: number]
   'update:deliveryPhone': [value: string]
   'update:deliveryLocation': [value: string]
@@ -381,10 +384,12 @@ watch(() => props.cart.length, (length) => {
           :delivery-price="appliedDeliveryPrice"
           :existing-debt="depositInput"
           :currency="saleCurrency"
+          :exchange-rate="exchangeRate"
           :payment-method="paymentMethod"
           :busy="completing"
           :disabled="disabled"
           @confirm="onKeypadConfirm"
+          @update:exchange-rate="emit('update:exchangeRate', $event)"
           @cancel="paying = false"
         />
         <div v-else-if="returnMode" class="grid gap-3">
@@ -561,7 +566,7 @@ watch(() => props.cart.length, (length) => {
               :model-value="depositInput"
               :currency="saleCurrency"
               :min="0"
-              :step="0.01"
+              :step="0.0001"
               class="w-full"
               size="lg"
               align="right"
