@@ -62,9 +62,21 @@ const currencyOptions = [
   { value: 'KHR' as const, symbol: '៛', labelKey: 'app.pos.currencyKhr' },
 ]
 
+/** A field still on its default zero reads as empty (placeholder) until the
+ *  user edits it, so the first keystroke starts from a blank box instead of
+ *  appending to `0.000`. Readonly/disabled fields always show the real value. */
+const touched = ref(false)
 const value = computed({
-  get: () => props.modelValue ?? undefined,
-  set: (v: number | undefined) => emit('update:modelValue', v),
+  get: () => {
+    const current = props.modelValue
+    if (props.readonly || props.disabled) return current ?? undefined
+    if (!touched.value && (current == null || Number(current) === 0)) return undefined
+    return current ?? undefined
+  },
+  set: (v: number | undefined) => {
+    touched.value = true
+    emit('update:modelValue', v)
+  },
 })
 
 const moneySymbol = computed(() => currencySymbol(props.currency ?? undefined))

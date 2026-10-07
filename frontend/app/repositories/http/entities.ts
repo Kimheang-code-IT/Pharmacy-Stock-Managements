@@ -919,6 +919,7 @@ const LIST_QUERY_PARAM_MAP: Record<string, string> = {
   customerId: 'customer_id',
   supplierId: 'supplier_id',
   productId: 'product_id',
+  categoryId: 'category_id',
   paymentMethod: 'payment_method',
   userId: 'user_id',
 }

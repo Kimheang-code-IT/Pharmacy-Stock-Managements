@@ -1,5 +1,5 @@
 import { barcodeSvg, code128ModuleCount } from '~/utils/barcode/code128'
-import { formatMoney, formatNumber } from '~/utils/format/format-service'
+import { formatNumber } from '~/utils/format/format-service'
 import { escapeHtml, printHtmlDocument } from '~/utils/print/html'
 
 /** How the sheet is laid out on paper. */
@@ -349,7 +349,14 @@ export function barcodeLabelHtml(
 
   const prices: string[] = []
   if (s.showUsd) {
-    prices.push(`<span class="bc-usd">${escapeHtml(formatMoney(Number(label.priceUsd || 0), 'USD'))}</span>`)
+    // Label prices keep a stable 2-decimal look (up to 4 when needed).
+    const usd = formatNumber(Number(label.priceUsd || 0), {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 4,
+    })
+    prices.push(`<span class="bc-usd">${escapeHtml(usd)}</span>`)
   }
   if (s.showKhr && label.priceKhr != null) {
     const khr = formatNumber(Math.round(label.priceKhr), { maximumFractionDigits: 0 })

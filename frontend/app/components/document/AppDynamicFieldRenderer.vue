@@ -64,9 +64,22 @@ const selectValue = computed({
   },
 })
 
+/** A number field still on its default zero reads as empty until edited, so
+ *  the first keystroke starts from a blank box. Readonly/disabled fields keep
+ *  showing the real value. */
+const numberTouched = ref(false)
 const numberValue = computed({
-  get: () => (typeof props.modelValue === 'number' ? props.modelValue : Number(props.modelValue || 0)),
-  set: (v: number | null) => emit('update:modelValue', v ?? 0),
+  get: () => {
+    const raw = props.modelValue
+    const number = typeof raw === 'number' ? raw : Number(raw || 0)
+    if (props.disabled || props.field.readOnly) return number
+    if (!numberTouched.value && (raw == null || raw === '' || number === 0)) return undefined
+    return number
+  },
+  set: (v: number | null) => {
+    numberTouched.value = true
+    emit('update:modelValue', v ?? 0)
+  },
 })
 
 const boolValue = computed({

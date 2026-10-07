@@ -3,7 +3,7 @@ import { PAYMENT_METHODS } from '~/config/pos-options'
 import type { ModuleTable } from '~/config/modules'
 import type { AppRecord } from '~/config/admin-seed'
 import { useAppHeader } from '~/composables/layout/useAppHeader'
-import { usePosCommands, useStockQueries } from '~/repositories/index'
+import { useEntityRepository, usePosCommands, useStockQueries } from '~/repositories/index'
 import type { ProductBatchRow } from '~/repositories/contracts/entities'
 import type {
   DocumentFieldSchema,
@@ -13,6 +13,7 @@ import { conversionForUom, multiplyDecimalSafe } from '~/utils/stock/uom-convers
 import { checkoutPaidNow } from '~/utils/pos/checkout'
 import { buildPurchaseEditLines, buildPurchaseReturnLines } from '~/utils/reports/returns'
 import { apiErrorMessage, isApiErrorHandled } from '~/utils/api/errors'
+import { fetchAllListRows } from '~/utils/export/fetch-all'
 
 /**
  * New Purchase (Stock In = purchase, spec §2.1.x) — built on the same
@@ -34,6 +35,7 @@ definePageMeta({
 
 const route = useRoute()
 const store = useAppDataStore()
+const entityRepository = useEntityRepository()
 const { t } = useI18n()
 const { setTitle, setBreadcrumbs, clear } = useAppHeader()
 const posCommands = usePosCommands()
@@ -127,7 +129,7 @@ onMounted(async () => {
   }
   await Promise.all([
     store.fetchList('suppliers'),
-    store.fetchList('products'),
+    loadAllProducts(),
   ])
   if (!String(route.query.productId || '') && (model.lines as unknown[]).length === 0) {
     model.lines = [blankLine()]
@@ -138,6 +140,12 @@ onMounted(async () => {
   // Stock In dialog entry: preselect the product to purchase into stock.
   const preselect = String(route.query.productId || '')
   if (preselect) {
+    // Safety net: if the product is missing from the catalogue (e.g. the list
+    // request failed), fetch it by id so the select shows its NAME, not a UUID.
+    if (!productFor(preselect)) {
+      const fetched = await store.fetchOne('products', preselect)
+      if (fetched) allProducts.value = [fetched, ...allProducts.value]
+    }
     model.lines = [{ ...blankLine(), productId: preselect }]
     applyDefaultSupplier(productFor(preselect))
   }
@@ -148,7 +156,7 @@ onMounted(async () => {
 async function loadReturnPurchase(purchaseId: string, purchaseNo: string) {
   returnLoading.value = true
   try {
-    await Promise.all([store.fetchList('products'), store.fetchList('suppliers')])
+    await Promise.all([loadAllProducts(), store.fetchList('suppliers')])
     await store.fetchList('stockIns', { q: purchaseNo || undefined, limit: 500 })
     const docs = store.list('stockIns') as AppRecord[]
     const doc = docs.find(row => String(row.id) === purchaseId)
@@ -163,7 +171,7 @@ async function loadReturnPurchase(purchaseId: string, purchaseNo: string) {
     model.currency = String(doc.currency || 'USD') === 'KHR' ? 'KHR' : 'USD'
     model.exchangeRate = Number(doc.exchangeRate || 1)
     model.transactionDate = String(doc.date || '').slice(0, 10)
-    const productById = new Map(store.list('products').map(row => [String(row.id), row]))
+    const productById = new Map(productCatalog().map(row => [String(row.id), row]))
     const returnLines = buildPurchaseReturnLines(doc, productById)
     if (!returnLines.length) {
       toast.add({ title: t('app.reports.nothingToReturn'), color: 'warning' })
@@ -195,7 +203,7 @@ async function loadReturnPurchase(purchaseId: string, purchaseNo: string) {
 async function loadEditPurchase(purchaseId: string, purchaseNo: string) {
   returnLoading.value = true
   try {
-    await Promise.all([store.fetchList('products'), store.fetchList('suppliers')])
+    await Promise.all([loadAllProducts(), store.fetchList('suppliers')])
     await store.fetchList('stockIns', { q: purchaseNo || undefined, limit: 500 })
     const docs = store.list('stockIns') as AppRecord[]
     const doc = docs.find(row => String(row.id) === purchaseId)
@@ -215,7 +223,7 @@ async function loadEditPurchase(purchaseId: string, purchaseNo: string) {
     model.tax = Number(doc.tax ?? doc.taxAmount ?? 0) || undefined
     model.paymentMethod = String(doc.paymentMethodLabel || doc.paymentMethod || 'Cash') || 'Cash'
     model.paidNow = Number(doc.paidAmount ?? 0)
-    const productById = new Map(store.list('products').map(row => [String(row.id), row]))
+    const productById = new Map(productCatalog().map(row => [String(row.id), row]))
     const editLines = buildPurchaseEditLines(doc, productById)
     if (!editLines.length) {
       toast.add({ title: t('app.purchase.updateLoadFailed'), color: 'warning' })
@@ -372,8 +380,26 @@ const supplierOptions = computed(() => store.list('suppliers').map(row => ({
   value: String(row.id),
 })))
 
+/** Every product (not just the first cached page) for the purchase picker.
+ *  The products endpoint caps `limit` at 500 per request, so page through the
+ *  API until the whole catalogue is loaded. */
+const allProducts = ref<AppRecord[]>([])
+
+async function loadAllProducts() {
+  allProducts.value = await fetchAllListRows<AppRecord>(async ({ page, limit }) => {
+    const result = await entityRepository.list('products', { page, limit })
+    return { items: result.items, total: result.meta?.total ?? null }
+  }, { maxRows: Number.MAX_SAFE_INTEGER })
+}
+
+/** Catalogue used by the product picker + line resolution: the fully loaded
+ *  list when available, else the shared store's first page. */
+function productCatalog(): AppRecord[] {
+  return allProducts.value.length ? allProducts.value : store.list('products')
+}
+
 function productFor(productId: string) {
-  return store.list('products').find(row => String(row.id) === productId) || null
+  return productCatalog().find(row => String(row.id) === productId) || null
 }
 
 /** Default supplier fast-path: the selected product's own supplier prefills
@@ -400,7 +426,7 @@ function availableProductOptions(row: Record<string, unknown>) {
   const usedByOthers = new Set(lines
     .map(other => String(other.productId || ''))
     .filter(id => id && id !== currentId))
-  return store.list('products')
+  return productCatalog()
     .filter(product => !usedByOthers.has(String(product.id)))
     .map(product => ({ label: String(product.name || ''), value: String(product.id) }))
 }
@@ -445,6 +471,17 @@ watch(() => model.lines, (rows) => {
     const unitAmount = Number(row.unitAmount || 0)
     const nextCost = unitAmount > 0 ? unitAmount : suggestedCost(String(row.productId), nextUomId)
     const nextRow: Record<string, unknown> = { ...row, uomId: nextUomId, unitAmount: nextCost, name: String(product.name || '') }
+    // Product switched on this line: drop the previous product's lot + cost so
+    // the new product's own batch (latest lot / generated number) and suggested
+    // cost are used — otherwise the old product's batch/cost would linger.
+    const currentProductId = String(row.productId || '')
+    const previousProductId = String(row._productId || '')
+    if (previousProductId && previousProductId !== currentProductId) {
+      nextRow.batchNo = ''
+      nextRow.expiryDate = ''
+      nextRow.unitAmount = suggestedCost(currentProductId, nextUomId)
+    }
+    nextRow._productId = currentProductId
     // Base qty display: entered qty × factor (display only — ledger math
     // happens server-side from factorToBase).
     nextRow.baseQuantity = multiplyDecimalSafe(Number(row.quantity || 0), conversionForUom(product, nextUomId)?.factorToBase ?? 1)
@@ -459,8 +496,8 @@ watch(() => model.lines, (rows) => {
 
     const picked = String(nextRow.batchNo || '')
     if (tracksBatch(product) && !picked.trim()) {
-      // Deep watch cannot reliably detect productId changes (same-array
-      // mutation). Autofill whenever a batch-tracked line has no batch yet.
+      // No lot picked yet (fresh product / just switched): default to the
+      // product's latest lot, or invent the next batch no (BATCH-001…).
       void autofillLatestBatch(nextRow, String(nextRow.productId || ''))
     }
     else if (picked === NEW_BATCH) {

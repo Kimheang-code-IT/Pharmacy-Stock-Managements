@@ -25,7 +25,7 @@ const emit = defineEmits<{
   'update:deliveryPhone': [value: string]
   'update:deliveryLocation': [value: string]
   'update:deliveryPrice': [value: number]
-  confirm: []
+  confirm: [info: { phone: string, location: string, price: number }]
 }>()
 
 const { t } = useI18n()
@@ -85,11 +85,16 @@ function pressKey(key: string) {
 }
 
 function confirm() {
-  emit('update:deliveryPhone', phone.value.trim())
-  emit('update:deliveryLocation', location.value.trim())
-  syncPrice(Number(priceInput.value || 0))
+  const info = {
+    phone: phone.value.trim(),
+    location: location.value.trim(),
+    price: Math.max(0, Number(priceInput.value || 0)),
+  }
+  emit('update:deliveryPhone', info.phone)
+  emit('update:deliveryLocation', info.location)
+  syncPrice(info.price)
   open.value = false
-  emit('confirm')
+  emit('confirm', info)
 }
 </script>
 

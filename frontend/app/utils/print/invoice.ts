@@ -1,4 +1,4 @@
-import { formatMoney, formatNumber, formatDate, formatDateTime } from '~/utils/format/format-service'
+import { formatNumber, formatDate, formatDateTime } from '~/utils/format/format-service'
 import { cartTotal, lineGross, lineNet, type PosCartLine } from '~/utils/pos/cart'
 import { escapeHtml, invoiceColgroup, PAPER_STYLES, printHtmlDocument, type PrintPaperSize } from '~/utils/print/html'
 import type { SaleReceipt } from '~/repositories/contracts/entities'
@@ -60,7 +60,14 @@ function formatPrintMoney(
     // Whole riel, symbol after the amount (1,019,000៛).
     return `${formatNumber(Math.round(converted), { maximumFractionDigits: 0 })}៛`
   }
-  return formatMoney(converted, code)
+  // Printed invoices keep a stable 2-decimal money look (up to 4 when needed),
+  // independent of the adaptive on-screen number format.
+  return formatNumber(converted, {
+    style: 'currency',
+    currency: code,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  })
 }
 
 function asCartLine(line: SaleInvoicePrintLine): PosCartLine {

@@ -50,26 +50,40 @@ export function numberFormatLocale(): string {
   return numberLocale()
 }
 
+/** Decimals a money/number value may show (adaptive patterns trim trailing zeros). */
+export const NUMBER_MAX_FRACTION_DIGITS = 4
+
+/**
+ * Fraction-digit options for a number-format pattern:
+ * - `0` in the fraction = required digits (e.g. `#,##.000` → always 3 dp);
+ * - `#` = optional digits, trailing zeros trimmed (`#,##0.####` → 0–4 dp);
+ * - digit patterns like `1,234.56` are adaptive 0–4 dp, so a value entered as
+ *   `1.25` shows two decimals, `1.234` shows three and `1.5` shows one.
+ */
+function fractionDigitOptions(pattern: string): Intl.NumberFormatOptions {
+  const fraction = String(pattern || '').match(NUMBER_PATTERN_FRACTION)?.[1]
+  if (!fraction) {
+    return { minimumFractionDigits: 0, maximumFractionDigits: NUMBER_MAX_FRACTION_DIGITS }
+  }
+  const minimumFractionDigits = (fraction.match(/0/g) || []).length
+  return {
+    minimumFractionDigits,
+    maximumFractionDigits: Math.max(fraction.length, minimumFractionDigits),
+  }
+}
+
 /**
  * Number-input formatting derived from the System Settings number format:
- * the locale (grouping/decimal marks) plus the fraction digits declared by the
- * pattern — so a money field follows `1,234.56` (2 dp) or `#,##0.####` (4 dp).
+ * the locale (grouping/decimal marks) plus adaptive fraction digits — so a
+ * money field follows `1,234.56` (0–4 dp, trimmed) or `#,##0.####` (0–4 dp).
  */
 export function numberInputFormat(): { locale: string, options: Intl.NumberFormatOptions } {
   const pattern = String(activeConfig.numberFormat || DEFAULT_FORMAT_CONFIG.numberFormat || '')
-  const fraction = pattern.match(NUMBER_PATTERN_FRACTION)?.[1] ?? ''
-  const minimumFractionDigits = (fraction.match(/0/g) || []).length
-  const maximumFractionDigits = fraction.length || 2
-  return { locale: numberLocale(), options: { minimumFractionDigits, maximumFractionDigits } }
+  return { locale: numberLocale(), options: fractionDigitOptions(pattern) }
 }
 
 function configuredNumberOptions(): Intl.NumberFormatOptions {
-  const fraction = activeConfig.numberFormat.match(NUMBER_PATTERN_FRACTION)?.[1]
-  if (!fraction) return {}
-  return {
-    minimumFractionDigits: (fraction.match(/0/g) || []).length,
-    maximumFractionDigits: fraction.length,
-  }
+  return fractionDigitOptions(String(activeConfig.numberFormat || ''))
 }
 
 /** The configured pattern is also sent to backend table exports. */
@@ -201,9 +215,10 @@ export function formatNumber(value: unknown, options: Intl.NumberFormatOptions =
 }
 
 export function formatCurrency(value: unknown, currency = activeConfig.currency) {
-  // Up to 4 decimals so POS money entered as `#,##0.####` is not hidden,
-  // while the configured minimum (usually 2) still pads whole amounts.
-  return formatNumber(value, { style: 'currency', currency, maximumFractionDigits: 4 })
+  // Up to 4 decimals with trailing zeros trimmed: `1.5` → `1.5`, `1.25` →
+  // `1.25`, `1.234` → `1.234`, whole amounts no `.00`. Explicit `0` patterns
+  // (e.g. `#,##.000`) still keep their minimum.
+  return formatNumber(value, { style: 'currency', currency, maximumFractionDigits: NUMBER_MAX_FRACTION_DIGITS })
 }
 
 /**
@@ -225,7 +240,7 @@ export function formatMoney(value: unknown, currency?: string) {
   catch {
     const amount = Number(value)
     const safe = Number.isFinite(amount) ? amount : 0
-    return `${code} ${formatNumber(safe, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
+    return `${code} ${formatNumber(safe, { minimumFractionDigits: 0, maximumFractionDigits: NUMBER_MAX_FRACTION_DIGITS })}`
   }
 }
 

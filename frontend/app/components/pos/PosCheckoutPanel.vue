@@ -329,11 +329,27 @@ function emitDeliveryPrice(value: unknown) {
   emit('update:deliveryPrice', Number.isFinite(amount) ? Math.max(0, amount) : 0)
 }
 
-function onNeedsDelivery(value: unknown) {
-  emit('update:needsDelivery', value === true)
-  // Checking Delivery opens the delivery-info dialog (phone / location /
-  // price for this invoice); unchecking keeps the entered values.
-  if (value === true) deliveryInfoOpen.value = true
+/** Friendly delivery flow: opening the dialog alone never marks the sale as
+ *  delivery. The user fills in phone/location/price and Confirms to add it; if
+ *  nothing is entered, the button stays neutral (no red error state). */
+function openDelivery() {
+  if (props.disabled) return
+  if (props.needsDelivery) {
+    // Active → clicking again removes the delivery info for this invoice.
+    emit('update:needsDelivery', false)
+    emit('update:deliveryPrice', 0)
+    emit('update:deliveryPhone', '')
+    emit('update:deliveryLocation', '')
+    return
+  }
+  deliveryInfoOpen.value = true
+}
+
+/** Confirming the delivery dialog only adds delivery when info was entered. */
+function onDeliveryConfirm(info: { phone: string, location: string, price: number }) {
+  const hasInfo = Boolean(info.phone || info.location || Number(info.price) > 0)
+  emit('update:needsDelivery', hasInfo)
+  if (!hasInfo) emit('update:deliveryPrice', 0)
 }
 
 /** Next: swap the right block for the inline amount-paid keypad. */
@@ -488,12 +504,12 @@ watch(() => props.cart.length, (length) => {
             <UButton
               block
               size="lg"
-              :color="needsDelivery ? 'error' : 'neutral'"
+              :color="needsDelivery ? 'primary' : 'neutral'"
               variant="solid"
               icon="i-lucide-truck"
               :label="t('app.pos.needsDelivery')"
               :disabled="disabled"
-              @click="onNeedsDelivery(!needsDelivery)"
+              @click="openDelivery"
             />
             <UButton
               block
@@ -642,6 +658,7 @@ watch(() => props.cart.length, (length) => {
       @update:delivery-phone="emit('update:deliveryPhone', $event)"
       @update:delivery-location="emit('update:deliveryLocation', $event)"
       @update:delivery-price="emitDeliveryPrice"
+      @confirm="onDeliveryConfirm"
     />
 
     <PosCustomerCreateDialog

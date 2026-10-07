@@ -36,8 +36,18 @@ describe('format-service', () => {
   it('formats money with record currency and settings locale', () => {
     configureFormats({ currency: 'USD', locale: 'en-US', numberFormat: '1,234.56' })
     const formatted = formatMoney(1250, 'USD')
-    expect(formatted).toMatch(/1,?250\.00/)
+    expect(formatted).toMatch(/1,?250$/)
     expect(formatted).toMatch(/USD|\$/)
+  })
+
+  it('trims trailing zeros and shows up to four decimals', () => {
+    configureFormats({ numberFormat: '1,234.56', locale: 'en-US' })
+    expect(formatNumber(1250)).toBe('1,250')
+    expect(formatNumber(1.5)).toBe('1.5')
+    expect(formatNumber(1.25)).toBe('1.25')
+    expect(formatNumber(1.234)).toBe('1.234')
+    expect(formatNumber(1.2345)).toBe('1.2345')
+    expect(formatMoney(1.5, 'USD')).toBe('$1.5')
   })
 
   it('formats compact numbers', () => {

@@ -13,6 +13,7 @@ export interface EntityListQuery {
   customerId?: string
   supplierId?: string
   productId?: string
+  categoryId?: string
   paymentMethod?: string
   /** Staff user filter (debt reports: the sale cashier / Stock In creator). */
   userId?: string

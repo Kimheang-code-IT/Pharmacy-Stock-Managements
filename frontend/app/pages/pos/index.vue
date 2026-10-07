@@ -213,6 +213,7 @@ hidePosAppHeader.value = true
 
 onMounted(async () => {
   void store.fetchList('products')
+  void loadBrowserProducts()
   await store.fetchList('customers')
   await loadWalkInCustomer()
   void store.fetchList('categories')
@@ -269,9 +270,45 @@ const categoryOptions = computed(() => [
     .map(row => ({ label: String(row.name || ''), value: String(row.id) })),
 ])
 
+/** POS browse cache fetched server-side with the active category / search.
+ *  The shared store only holds the first page (default limit 100, sorted by
+ *  name), so Khmer-named products sort last and would never appear in a
+ *  category or search filter. Querying the endpoint keeps them reachable. */
+const browserProducts = ref<AppRecord[]>([])
+
+async function loadBrowserProducts() {
+  try {
+    const result = await entityRepository.list('products', {
+      q: search.value.trim() || undefined,
+      categoryId: categoryId.value || undefined,
+      limit: 500,
+    })
+    browserProducts.value = result.items
+  }
+  catch {
+    // Keep the previous results when the refetch fails.
+  }
+}
+
+// Category switches fetch immediately; free-text search is debounced so typing
+// a Khmer product name does not fire one request per keystroke.
+let browserSearchTimer: ReturnType<typeof setTimeout> | undefined
+watch(categoryId, () => {
+  void loadBrowserProducts()
+})
+watch(search, () => {
+  if (browserSearchTimer) clearTimeout(browserSearchTimer)
+  browserSearchTimer = setTimeout(() => {
+    void loadBrowserProducts()
+  }, 250)
+})
+onBeforeUnmount(() => {
+  if (browserSearchTimer) clearTimeout(browserSearchTimer)
+})
+
 const products = computed(() => {
   const q = search.value.trim().toLowerCase()
-  return store.list('products')
+  return browserProducts.value
     .filter(row => String(row.status || 'Active') !== 'Inactive')
     .filter(row => !categoryId.value || String(row.categoryId) === categoryId.value)
     .filter((row) => {
@@ -420,10 +457,13 @@ const canCreateDelivery = computed(() =>
 /** Cart line UOM options: every Pricing row's Original UOM of that product. */
 const lineUomOptions = uomOptionsFor
 
-/** Look up a product by id over the full loaded list (not the category/search
- *  filtered view), so scanner-added or filtered-out products still resolve. */
+/** Resolve a cart product from the POS browse cache first (it can hold rows
+ *  beyond the store's first page), then the shared store, so scanner-added or
+ *  filtered-out products still resolve for UOM / quantity edits. */
 function productById(productId: string): Record<string, unknown> | null {
-  return store.list('products').find(row => String(row.id) === productId) ?? null
+  return browserProducts.value.find(row => String(row.id) === productId)
+    ?? store.list('products').find(row => String(row.id) === productId)
+    ?? null
 }
 
 /** USD price of a line's UOM: the product's FEFO/POS lot price map first

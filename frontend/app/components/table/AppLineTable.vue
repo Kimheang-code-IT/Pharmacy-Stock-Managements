@@ -7,7 +7,7 @@ import { useModuleLabel } from '~/composables/module/useModule'
 import type { DatePickerGranularity } from '~/utils/date-picker'
 import { fileTableRowBy, fileTableRowCreated, fileTableRowName, filePreviewHref, revokeFilePreview, useFileAttachments } from '~/utils/module/attachments'
 import { fileTypeIcon } from '~/utils/file-icon'
-import { formatDate, formatDateTime, formatMoney, formatNumber } from '~/utils/format/format-service'
+import { formatDate, formatDateTime, formatMoney, formatNumber, NUMBER_MAX_FRACTION_DIGITS } from '~/utils/format/format-service'
 import { appTableUiCompactReadonly, appTableUiLine, appTableUiLineFit } from '~/utils/table/theme'
 
 const props = withDefaults(defineProps<{
@@ -98,6 +98,14 @@ function columnCellClass(column: ModuleLineColumn) {
   return 'min-w-28'
 }
 
+/** Editable cell model: a zero/blank value is passed as `undefined` so a new
+ *  line reads as an empty box (placeholder) instead of `0`. */
+function inputNumber(value: unknown): number | undefined {
+  if (value == null || value === '') return undefined
+  const number = Number(value)
+  return Number.isFinite(number) && number !== 0 ? number : undefined
+}
+
 function displayValue(column: ModuleLineColumn, value: unknown, row?: Record<string, unknown>) {
   if (isFileTable.value && row) {
     if (column.key === 'fileName') return fileTableRowName(row) || '—'
@@ -116,7 +124,7 @@ function displayValue(column: ModuleLineColumn, value: unknown, row?: Record<str
       if (column.key === 'total' && currency) return formatMoney(number, currency)
       return formatMoney(number, currency)
     }
-    return formatNumber(number, { maximumFractionDigits: 2, minimumFractionDigits: 0 })
+    return formatNumber(number, { maximumFractionDigits: NUMBER_MAX_FRACTION_DIGITS, minimumFractionDigits: 0 })
   }
   if (column.type === 'date') return formatDate(value)
   if (column.type === 'datetime') return formatDateTime(value)
@@ -143,7 +151,7 @@ function columnHeader(column: ModuleLineColumn) {
 function inlineNumberFieldsCell(column: ModuleLineColumn, row: Record<string, unknown>, index: number) {
   const inlineFields = column.inlineFields || []
   const formatInlineNumber = (value: unknown) =>
-    formatNumber(value, { maximumFractionDigits: 2, minimumFractionDigits: 0 })
+    formatNumber(value, { maximumFractionDigits: NUMBER_MAX_FRACTION_DIGITS, minimumFractionDigits: 0 })
   const summary = inlineFields
     .map(field => formatInlineNumber(row[field.key]))
     .join(' / ')
@@ -158,14 +166,14 @@ function inlineNumberFieldsCell(column: ModuleLineColumn, row: Record<string, un
       h('div', { class: 'flex items-center justify-end gap-1' }, [
         h('span', { class: 'text-[11px] leading-none text-muted' }, fieldLabel(field)),
         h(TableInputNumber, {
-          'modelValue': Number(row[field.key] || 0),
+          'modelValue': inputNumber(row[field.key]),
           'increment': false,
           'decrement': false,
           'size': cellSize.value,
           'class': 'w-20',
           'ui': { base: 'text-right tabular-nums' },
           'aria-label': fieldLabel(field),
-          'onUpdate:modelValue': (value: number | null) => updateCell(index, field.key, value ?? 0),
+          'onUpdate:modelValue': (value: number | null | undefined) => updateCell(index, field.key, value),
         }),
       ]),
     ),
@@ -198,14 +206,14 @@ function inlineMoneyCell(column: ModuleLineColumn, row: Record<string, unknown>,
       h('div', { class: 'flex items-center justify-end gap-1' }, [
         h('span', { class: 'text-[11px] leading-none text-muted' }, fieldLabel(field)),
         h(TableInputCurrency, {
-          'modelValue': Number(row[field.key] || 0),
+          'modelValue': inputNumber(row[field.key]),
           'currency': String(row.currency || props.currency || ''),
           'inline': true,
           'size': cellSize.value,
           'class': 'w-20',
           'align': 'right',
           'aria-label': fieldLabel(field),
-          'onUpdate:modelValue': (value: number | null) => updateCell(index, field.key, value ?? 0),
+          'onUpdate:modelValue': (value: number | null | undefined) => updateCell(index, field.key, value),
         }),
       ]),
     )),
@@ -406,11 +414,11 @@ const columns = computed<TableColumn<Record<string, unknown>>[]>(() => {
         if (column.type === 'number') {
           const Input = moneyKeys.has(column.key) ? TableInputCurrency : TableInputNumber
           const inputProps: Record<string, unknown> = {
-            'modelValue': Number(row.original[column.key] || 0),
+            'modelValue': inputNumber(row.original[column.key]),
             'disabled': props.disabled || column.computed,
             'size': cellSize.value,
             'class': ['w-full', columnCellClass(column)],
-            'onUpdate:modelValue': (value: number | null) => updateCell(index, column.key, value ?? 0),
+            'onUpdate:modelValue': (value: number | null | undefined) => updateCell(index, column.key, value),
           }
           if (moneyKeys.has(column.key)) {
             inputProps.currency = String(row.original.currency || props.currency || '')
