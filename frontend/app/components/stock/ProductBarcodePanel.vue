@@ -6,6 +6,7 @@ import {
   barcodeLabelHtml,
   barcodePrintState,
   DEFAULT_BARCODE_LABEL_SETTINGS,
+  fitBarcodeLabelNames,
   normalizeLabelSettings,
   printBarcodeLabels,
   recommendBarcodeLabelPreset,
@@ -96,6 +97,23 @@ const recommendedPreset = computed(() => recommendBarcodeLabelPreset(barcode.val
 const previewHtml = computed(() =>
   barcodeLabelHtml(previewData.value, labelSettings.value, printState.value.layout))
 
+/**
+ * Auto-fit the product name inside the preview after every (re)render, using the
+ * same routine as printing, so long names are shown in full — not truncated.
+ */
+const previewRef = ref<HTMLElement | null>(null)
+
+function fitPreviewName() {
+  if (previewRef.value) fitBarcodeLabelNames(previewRef.value)
+}
+
+watch(previewHtml, async () => {
+  await nextTick()
+  fitPreviewName()
+}, { immediate: true })
+
+onMounted(fitPreviewName)
+
 /** Thermal printer resolution choices (the module width snaps to this grid). */
 const dpiItems = [
   { label: '203 DPI', value: 203 },
@@ -172,7 +190,7 @@ function printStickers() {
             >
               <div :style="{ transform: `scale(${previewScale})`, transformOrigin: 'top left' }">
                 <!-- eslint-disable-next-line vue/no-v-html -->
-                <div v-html="previewHtml" />
+                <div ref="previewRef" v-html="previewHtml" />
               </div>
             </div>
             <p class="text-[11px] text-muted">

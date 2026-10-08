@@ -319,14 +319,52 @@ export function barcodeLabelCss(): string {
 .bc-label .bc-name {
   flex: 0 0 auto;
   font-weight: 600;
-  line-height: 1.05;
+  /* Generous line height so tall Khmer ascenders/descenders are never clipped. */
+  line-height: 1.2;
   max-width: 100%;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  /* Full name always shows: fitBarcodeLabelNames() shrinks the font just
+     enough to keep every line inside the sticker — it never truncates. */
 }
 `
+}
+
+/** Floor for the auto-fitted product name (CSS px) — keeps it readable. */
+const MIN_NAME_FONT_PX = 4
+/** Font-size decrement per fit iteration (CSS px). */
+const NAME_FONT_STEP_PX = 0.5
+
+/**
+ * Shrink each sticker's product name just enough that the whole name (all
+ * wrapped lines) fits inside the fixed-height label. Long names therefore print
+ * in full — smaller, never truncated — while short names keep the base size.
+ *
+ * Works on both the live preview DOM and the print iframe (it reads metrics via
+ * the element's own window), so preview and output stay identical. Layout
+ * metrics are unscaled, so a CSS-transform preview is safe.
+ */
+export function fitBarcodeLabelNames(root: ParentNode): void {
+  root.querySelectorAll<HTMLElement>('.bc-label').forEach((label) => {
+    const name = label.querySelector<HTMLElement>('.bc-name')
+    if (!name) return
+    const ownerWindow = name.ownerDocument?.defaultView
+    if (!ownerWindow) return
+
+    // Start from the inherited size (label's font-size) each time.
+    name.style.removeProperty('font-size')
+    const baseFontPx = Number.parseFloat(ownerWindow.getComputedStyle(name).fontSize)
+    if (!Number.isFinite(baseFontPx) || baseFontPx <= 0) return
+
+    // The label clips overflow, so scrollHeight > clientHeight means the rows no
+    // longer fit; step the name down until everything is back inside the label.
+    let fontPx = baseFontPx
+    while (fontPx > MIN_NAME_FONT_PX && label.scrollHeight > label.clientHeight + 1) {
+      fontPx = Math.max(MIN_NAME_FONT_PX, fontPx - NAME_FONT_STEP_PX)
+      name.style.fontSize = `${fontPx}px`
+    }
+  })
 }
 
 /** One sticker as inline-styled HTML (drives both the preview and the print). */
@@ -463,6 +501,7 @@ export async function printBarcodeLabels(
     iframeSize: thermal
       ? { width: `${s.widthMm}mm`, height: `${s.heightMm}mm` }
       : undefined,
+    prepare: fitBarcodeLabelNames,
   })
 }
 

@@ -334,7 +334,17 @@ table.summary tr.strong td.num { font-weight: 700; }
 export function printHtmlDocument(
   html: string,
   title = 'Print',
-  options?: { paperSize?: PrintPaperSize, css?: string, iframeSize?: { width: string, height: string } },
+  options?: {
+    paperSize?: PrintPaperSize
+    css?: string
+    iframeSize?: { width: string, height: string }
+    /**
+     * Runs in the print document just before printing, once fonts are loaded.
+     * Use it to measure/adjust the laid-out DOM (e.g. auto-fit long product
+     * names). Errors are swallowed so preparation never blocks the print.
+     */
+    prepare?: (doc: Document) => void
+  },
 ): Promise<void> {
   return new Promise((resolve) => {
     if (typeof document === 'undefined') {
@@ -404,12 +414,21 @@ export function printHtmlDocument(
     }
 
     const startPrint = () => {
+      const run = () => {
+        try {
+          options?.prepare?.(frameDoc)
+        }
+        catch {
+          // best-effort layout prep — never block printing
+        }
+        trigger()
+      }
       const fonts = frameDoc.fonts
       if (fonts?.ready) {
-        void fonts.ready.then(() => window.setTimeout(trigger, 50)).catch(() => window.setTimeout(trigger, 80))
+        void fonts.ready.then(() => window.setTimeout(run, 50)).catch(() => window.setTimeout(run, 80))
         return
       }
-      window.setTimeout(trigger, 80)
+      window.setTimeout(run, 80)
     }
 
     if (frameDoc.readyState === 'complete') startPrint()
