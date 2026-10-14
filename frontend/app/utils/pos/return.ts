@@ -34,6 +34,9 @@ export function saleEditCartLines(
       // the originally sold quantity is always available to keep.
       availableStock: Number(product?.quantity || 0) + baseQuantity,
       unitPrice: roundMoney(item.unitPrice),
+      // The sold price is the agreed price: re-saving the invoice must not
+      // silently re-price the line from today's general/FEFO lot prices.
+      priceOverride: true,
       discountPercent: item.discountPercent,
       quantity: Number(item.quantity || 0),
       saleItemId: item.id,

@@ -135,18 +135,24 @@ class CustomerService:
 
     async def list_debts(self, customer_id) -> list[tuple[CustomerDebt, object]]:
         """Open/all debts of one customer with the invoice (sale) date so every
-        row shows Date + Invoice No (spec: Setup detail tables)."""
+        row shows Date + Invoice No (spec: Setup detail tables).
+
+        Outer-joined: a debt recorded outside the invoice flow has no sale, so
+        its own ``created_at`` is the date shown."""
         from app.modules.pos.models import Sale
 
         customer = await self.get(customer_id)
         result = await self.session.execute(
             select(CustomerDebt, Sale.sale_date)
-            .join(Sale, Sale.id == CustomerDebt.sale_id)
+            .outerjoin(Sale, Sale.id == CustomerDebt.sale_id)
             .where(CustomerDebt.customer_id == customer.id)
             # Oldest first so the list agrees with pay_open_debts (oldest settled first).
             .order_by(CustomerDebt.created_at.asc(), CustomerDebt.id.asc())
         )
-        return [(debt, sale_date) for debt, sale_date in result.all()]
+        return [
+            (debt, sale_date or debt.created_at)
+            for debt, sale_date in result.all()
+        ]
 
     async def purchase_history(self, customer_id, *, page: int, limit: int):
         from app.modules.pos.models import Sale

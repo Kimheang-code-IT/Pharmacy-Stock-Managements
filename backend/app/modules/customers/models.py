@@ -35,7 +35,13 @@ class Customer(Base):
 
 
 class CustomerDebt(Base):
-    """Created from POS debt sales; payments are immutable transactions."""
+    """Created from POS debt sales; payments are immutable transactions.
+
+    A row with ``sale_id IS NULL`` is a debt recorded *outside* the invoice
+    flow (an old debt the customer already owed, typed in at POS checkout). It
+    carries a generated ``invoice_no`` (``OD-…``) so reports always show a
+    reference, and it can be settled through the normal debt-payment flows.
+    """
 
     __tablename__ = "customer_debts"
     __table_args__ = (
@@ -47,10 +53,16 @@ class CustomerDebt(Base):
     customer_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("customers.id", ondelete="RESTRICT"), nullable=False
     )
-    sale_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("sales.id", ondelete="RESTRICT"), nullable=False
+    # NULL for outside debts (no source invoice).
+    sale_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("sales.id", ondelete="RESTRICT"), nullable=True
     )
     invoice_no: Mapped[str] = mapped_column(String(50), nullable=False)
+    # User who recorded the debt — the fallback for reports when there is no
+    # source sale to take the cashier from.
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     original_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     paid_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("0.0000"))
     remaining_amount: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)

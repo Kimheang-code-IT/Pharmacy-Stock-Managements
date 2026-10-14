@@ -477,15 +477,23 @@ class ReportsService:
     ) -> tuple[list[dict], int]:
         """Invoice-level customer debt rows (spec 2.1.10 Customer Debt Report).
 
-        The Date column/filter is the invoice (sale) date; every UNPAID,
-        PARTIAL and PAID debt document is one row. `currency` is an optional
-        document-currency filter — USD and KHR rows are never mixed.
-        `user_id` narrows to the cashier who created the source sale.
+        The Date column/filter is the invoice (sale) date; a debt recorded
+        outside the invoice flow (no source sale) falls back to its own created
+        date. Every UNPAID, PARTIAL and PAID debt document is one row.
+        `currency` is an optional document-currency filter — USD and KHR rows
+        are never mixed. `user_id` narrows to the cashier who created the source
+        sale, or to the user who recorded a debt that has no sale.
         """
         start_at, end_at = _range(start, end)
 
+        # A debt recorded outside the invoice flow has no source sale: its own
+        # created_at is the document date, and created_by (not the sale cashier)
+        # is who to attribute it to.
+        debt_date = func.coalesce(Sale.sale_date, CustomerDebt.created_at)
+        debt_user = func.coalesce(Sale.cashier_id, CustomerDebt.created_by)
+
         def apply_filters(target):
-            target = target.where(Sale.sale_date >= start_at, Sale.sale_date < end_at)
+            target = target.where(debt_date >= start_at, debt_date < end_at)
             if q:
                 pattern = f"%{q.strip()}%"
                 target = target.where(
@@ -500,25 +508,25 @@ class ReportsService:
             if currency:
                 target = target.where(CustomerDebt.currency == currency)
             if user_id is not None:
-                target = target.where(Sale.cashier_id == user_id)
+                target = target.where(debt_user == user_id)
             return target
 
         base = (
-            select(CustomerDebt, Customer.name, Customer.code, Sale.sale_date, Sale.cashier_id, User.full_name)
+            select(CustomerDebt, Customer.name, Customer.code, Sale.sale_date, debt_user, User.full_name)
             .join(Customer, Customer.id == CustomerDebt.customer_id)
-            .join(Sale, Sale.id == CustomerDebt.sale_id)
-            .outerjoin(User, User.id == Sale.cashier_id)
+            .outerjoin(Sale, Sale.id == CustomerDebt.sale_id)
+            .outerjoin(User, User.id == debt_user)
         )
         count_base = (
             select(func.count())
             .select_from(CustomerDebt)
             .join(Customer, Customer.id == CustomerDebt.customer_id)
-            .join(Sale, Sale.id == CustomerDebt.sale_id)
+            .outerjoin(Sale, Sale.id == CustomerDebt.sale_id)
         )
         total = (await self.session.execute(apply_filters(count_base))).scalar_one()
         rows = await self.session.execute(
             apply_filters(base)
-            .order_by(Sale.sale_date.desc(), CustomerDebt.created_at.desc(), CustomerDebt.id)
+            .order_by(debt_date.desc(), CustomerDebt.created_at.desc(), CustomerDebt.id)
             .offset((page - 1) * limit)
             .limit(limit)
         )
@@ -528,7 +536,7 @@ class ReportsService:
                 "customer_id": debt.customer_id,
                 "customer_name": name,
                 "customer_code": code,
-                "date": sale_date,
+                "date": sale_date or debt.created_at,
                 "invoice_no": debt.invoice_no,
                 "invoice_total": debt.original_amount,
                 "paid_amount": debt.paid_amount,
@@ -977,9 +985,12 @@ class ReportsService:
                 func.coalesce(Customer.name, literal("")).label("description"),
                 Payment.amount.label("amount"),
                 # Payment has no currency of its own: inherit the sale's
-                # document currency (directly, or via the debt it settles).
-                func.coalesce(sale.currency, debt_sale.currency, literal("USD")).label("currency"),
-                func.coalesce(sale.exchange_rate, debt_sale.exchange_rate, literal(1)).label("exchange_rate"),
+                # document currency (directly, or via the debt it settles — an
+                # outside debt has no sale, so the debt itself is the fallback).
+                func.coalesce(sale.currency, debt_sale.currency, debt.currency, literal("USD")).label("currency"),
+                func.coalesce(
+                    sale.exchange_rate, debt_sale.exchange_rate, debt.exchange_rate, literal(1)
+                ).label("exchange_rate"),
                 Payment.payment_method.label("payment_method"),
                 func.coalesce(User.full_name, literal("")).label("created_by_name"),
                 Payment.created_at.label("created_at"),

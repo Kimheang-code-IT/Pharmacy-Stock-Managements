@@ -25,6 +25,8 @@ DEFAULT_SEQUENCES: dict[str, str] = {
     "CUSTOMER_DEBT_PAYMENT": "CDP",
     "SUPPLIER_DEBT_PAYMENT": "SDP",
     "SALE_REFUND": "SRF",
+    # Debt recorded at checkout that came from outside the system (no invoice).
+    "OUTSIDE_DEBT": "OD",
 }
 
 

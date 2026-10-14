@@ -135,8 +135,8 @@ async def test_case2_two_batches_show_fefo_price(client):
     headers = await admin_headers(client)
     tag = uuid.uuid4().hex[:6]
     product = await _make_product(client, headers, tag)
-    await _stock_in(client, headers, product["id"], qty="5", unit_cost="6.00", batch_no="B-1", expiry="2026-10-03")
-    await _stock_in(client, headers, product["id"], qty="10", unit_cost="20.00", batch_no="B-2", expiry="2026-10-09")
+    await _stock_in(client, headers, product["id"], qty="5", unit_cost="6.00", batch_no="B-1", expiry="2030-01-01")
+    await _stock_in(client, headers, product["id"], qty="10", unit_cost="20.00", batch_no="B-2", expiry="2030-06-01")
     await _set_batch_price(client, headers, product["id"], batch_no="B-1", sale_price="10.00")
     await _set_batch_price(client, headers, product["id"], batch_no="B-2", sale_price="30.00")
 
@@ -152,8 +152,8 @@ async def test_case3_qty_spans_batches_blends_price(client, db_session):
     headers = await admin_headers(client)
     tag = uuid.uuid4().hex[:6]
     product = await _make_product(client, headers, tag)
-    await _stock_in(client, headers, product["id"], qty="5", unit_cost="6.00", batch_no="B-1", expiry="2026-10-03")
-    await _stock_in(client, headers, product["id"], qty="10", unit_cost="20.00", batch_no="B-2", expiry="2026-10-09")
+    await _stock_in(client, headers, product["id"], qty="5", unit_cost="6.00", batch_no="B-1", expiry="2030-01-01")
+    await _stock_in(client, headers, product["id"], qty="10", unit_cost="20.00", batch_no="B-2", expiry="2030-06-01")
     await _set_batch_price(client, headers, product["id"], batch_no="B-1", sale_price="10.00")
     await _set_batch_price(client, headers, product["id"], batch_no="B-2", sale_price="30.00")
 
@@ -165,8 +165,8 @@ async def test_case3_qty_spans_batches_blends_price(client, db_session):
 
     detail = (await client.get(f"/api/v1/pos/sales/{data['id']}", headers=headers)).json()["data"]
     line = detail["items"][0]
-    # Blended display price: 110 / 7 = 15.71.
-    assert Decimal(line["unit_price"]) == Decimal("15.71")
+    # Blended display price: 110 / 7 = 15.7143 (4-dp money precision).
+    assert Decimal(line["unit_price"]) == Decimal("15.7143")
 
     # Per-lot snapshots: 5 @ 10 + 2 @ 30.
     from sqlalchemy import select
@@ -192,8 +192,8 @@ async def test_case4_depleted_first_batch_next_price(client):
     headers = await admin_headers(client)
     tag = uuid.uuid4().hex[:6]
     product = await _make_product(client, headers, tag)
-    await _stock_in(client, headers, product["id"], qty="5", unit_cost="6.00", batch_no="B-1", expiry="2026-10-03")
-    await _stock_in(client, headers, product["id"], qty="10", unit_cost="20.00", batch_no="B-2", expiry="2026-10-09")
+    await _stock_in(client, headers, product["id"], qty="5", unit_cost="6.00", batch_no="B-1", expiry="2030-01-01")
+    await _stock_in(client, headers, product["id"], qty="10", unit_cost="20.00", batch_no="B-2", expiry="2030-06-01")
     await _set_batch_price(client, headers, product["id"], batch_no="B-1", sale_price="10.00")
     await _set_batch_price(client, headers, product["id"], batch_no="B-2", sale_price="30.00")
 
@@ -298,8 +298,8 @@ async def test_case9_return_restores_original_batch(client):
     headers = await admin_headers(client)
     tag = uuid.uuid4().hex[:6]
     product = await _make_product(client, headers, tag)
-    await _stock_in(client, headers, product["id"], qty="5", unit_cost="6.00", batch_no="B-1", expiry="2026-10-03")
-    await _stock_in(client, headers, product["id"], qty="10", unit_cost="20.00", batch_no="B-2", expiry="2026-10-09")
+    await _stock_in(client, headers, product["id"], qty="5", unit_cost="6.00", batch_no="B-1", expiry="2030-01-01")
+    await _stock_in(client, headers, product["id"], qty="10", unit_cost="20.00", batch_no="B-2", expiry="2030-06-01")
     await _set_batch_price(client, headers, product["id"], batch_no="B-1", sale_price="10.00")
     await _set_batch_price(client, headers, product["id"], batch_no="B-2", sale_price="30.00")
 
@@ -336,3 +336,103 @@ async def test_case10_concurrent_batch_sales_cannot_oversell(client):
     first, second = await asyncio.gather(sell(), sell())
     statuses = sorted([first.status_code, second.status_code])
     assert statuses == [201, 409], (first.text, second.text)
+
+
+@pytest.mark.asyncio
+async def test_case11_cashier_typed_price_overrides_lot_pricing(client):
+    """CASE 11: a cashier-typed price prices the whole FEFO line.
+
+    Default price still comes from stock (FEFO lot price); the typed price wins
+    for every lot, and `price_override` pins it even when it happens to equal
+    the product's general price.
+    """
+    headers = await admin_headers(client)
+    tag = uuid.uuid4().hex[:6]
+    # General price 14.00 (product selling_price), lots priced 10.00 / 30.00.
+    product = await _make_product(client, headers, tag, selling_price="14.00")
+    await _stock_in(client, headers, product["id"], qty="5", unit_cost="6.00", batch_no="B-1", expiry="2030-01-01")
+    await _stock_in(client, headers, product["id"], qty="40", unit_cost="20.00", batch_no="B-2", expiry="2030-06-01")
+    await _set_batch_price(client, headers, product["id"], batch_no="B-1", sale_price="10.00")
+    await _set_batch_price(client, headers, product["id"], batch_no="B-2", sale_price="30.00")
+
+    # Default (no override): the line blends per lot — 5×10 + 2×30 = 110.
+    default_sale = await _sale(client, headers, [{"product_id": product["id"], "quantity": "7"}])
+    assert default_sale.status_code == 201, default_sale.text
+    assert Decimal(default_sale.json()["data"]["subtotal"]) == Decimal("110.00")
+
+    # Cashier types 12.00 → the whole 7-unit line is charged at 12 (not 110).
+    typed = await _sale(
+        client,
+        headers,
+        [
+            {
+                "product_id": product["id"],
+                "quantity": "7",
+                "unit_price": "12.00",
+                "price_override": True,
+            }
+        ],
+    )
+    assert typed.status_code == 201, typed.text
+    data = typed.json()["data"]
+    assert Decimal(data["subtotal"]) == Decimal("84.00")
+    assert Decimal(data["grand_total"]) == Decimal("84.00")
+    detail = (await client.get(f"/api/v1/pos/sales/{data['id']}", headers=headers)).json()["data"]
+    assert Decimal(detail["items"][0]["unit_price"]) == Decimal("12.00")
+
+    # Trap: typing exactly the GENERAL price (14.00) must still win over the
+    # 30.00 lots — comparing prices alone could not tell this from "no override".
+    pinned = await _sale(
+        client,
+        headers,
+        [
+            {
+                "product_id": product["id"],
+                "quantity": "2",
+                "unit_price": "14.00",
+                "price_override": True,
+            }
+        ],
+    )
+    assert pinned.status_code == 201, pinned.text
+    assert Decimal(pinned.json()["data"]["subtotal"]) == Decimal("28.00")
+
+    # Without the flag the same 14.00 equals the general price → lot price wins.
+    unmarked = await _sale(
+        client,
+        headers,
+        [{"product_id": product["id"], "quantity": "2", "unit_price": "14.00"}],
+    )
+    assert unmarked.status_code == 201, unmarked.text
+    assert Decimal(unmarked.json()["data"]["subtotal"]) == Decimal("60.00")
+
+
+@pytest.mark.asyncio
+async def test_case12_override_converts_with_the_document_currency(client):
+    """CASE 12: a KHR sale prices the typed KHR amount as-is (rate only scales
+    the USD master prices, never the cashier's own figure)."""
+    headers = await admin_headers(client)
+    tag = uuid.uuid4().hex[:6]
+    product = await _make_product(client, headers, tag)
+    await _stock_in(client, headers, product["id"], qty="5", unit_cost="6.00", batch_no="B-1", expiry="2030-01-01")
+    await _set_batch_price(client, headers, product["id"], batch_no="B-1", sale_price="10.00")
+
+    sale = await _sale(
+        client,
+        headers,
+        [
+            {
+                "product_id": product["id"],
+                "quantity": "2",
+                "unit_price": "23000",
+                "price_override": True,
+            }
+        ],
+        currency="KHR",
+        exchange_rate="4000",
+    )
+    assert sale.status_code == 201, sale.text
+    data = sale.json()["data"]
+    assert Decimal(data["subtotal"]) == Decimal("46000")
+    detail = (await client.get(f"/api/v1/pos/sales/{data['id']}", headers=headers)).json()["data"]
+    assert Decimal(detail["items"][0]["unit_price"]) == Decimal("23000")

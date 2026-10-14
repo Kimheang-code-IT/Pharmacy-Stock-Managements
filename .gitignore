@@ -29,6 +29,9 @@
 **/playwright-report/
 **/blob-report/
 
+# Local docs (design notes/schema, not published)
+docs/
+
 # Local scratch / tooling
 tmp/
 .temp/

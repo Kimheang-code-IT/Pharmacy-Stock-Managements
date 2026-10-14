@@ -33,6 +33,13 @@ export type PosCartLine = {
   batchAllocations?: PosBatchAllocation[]
   /** POS return mode: the original sale-item id this line returns. */
   saleItemId?: string
+  /**
+   * Cashier typed a unit price for this line, so the FEFO batch breakdown no
+   * longer prices it — the typed price applies to the whole line (the server
+   * honors the same rule as a per-line override). Cleared when the line's UOM
+   * changes, since the new UOM resolves its own pricing row.
+   */
+  priceOverride?: boolean
 }
 
 /** FEFO allocation of `quantity` (selected UOM) across eligible lots. */
@@ -103,6 +110,21 @@ export function cartTotal(lines: PosCartLine[]): number {
 /** Round a sale-currency amount to 4 decimals (POS money precision, `#,##0.####`). */
 export function roundMoney(value: number): number {
   return Math.round((Number(value) || 0) * 10000) / 10000
+}
+
+/**
+ * Apply a cashier-typed unit price to a line.
+ *
+ * An explicit price edit wins for the WHOLE line: the FEFO batch breakdown is
+ * dropped, otherwise `lineGross` would keep summing the per-lot prices and the
+ * line amount / cart subtotal / checkout / invoice would ignore the price just
+ * entered. The server applies the same rule (client price differing from both
+ * the general and the FEFO price is treated as a per-line override).
+ */
+export function applyManualUnitPrice(line: PosCartLine, unitPrice: number): void {
+  line.unitPrice = Math.max(0, roundMoney(unitPrice))
+  line.priceOverride = true
+  line.batchAllocations = undefined
 }
 
 export function productImageUrl(row: Record<string, unknown>): string | null {

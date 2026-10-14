@@ -79,6 +79,7 @@ def sale_to_out(
     customer_name: str | None = None,
     change_amount: Decimal = Decimal("0"),
     items: list[SaleItem] | None = None,
+    outside_debt_no: str | None = None,
 ) -> SaleOut:
     resolved_items = items if items is not None else list(sale.items)
     return SaleOut(
@@ -102,6 +103,7 @@ def sale_to_out(
         currency=getattr(sale, "currency", "USD"),
         exchange_rate=getattr(sale, "exchange_rate", Decimal("1")),
         items=[SaleItemOut.model_validate(item) for item in resolved_items],
+        outside_debt_no=outside_debt_no,
     )
 
 
@@ -274,9 +276,9 @@ class POSService:
         in the SALE currency) and `fallback_price` is the price used when a sale
         is allowed with no tracked lots (negative stock). The FEFO lot's own
         price version wins; the general active version applies only when that
-        lot has no scoped version. A cashier-typed override (the client price
-        differing from both the general and the FEFO price) is honored for the
-        whole line."""
+        lot has no scoped version. A cashier-typed override is honored for the
+        whole line: either the client sets ``price_override`` explicitly, or the
+        client price differs from both the general and the FEFO price."""
         from app.modules.stock import batch_service, sale_prices as sale_price_service
 
         key = str(uom_id)
@@ -322,16 +324,21 @@ class POSService:
         override: Decimal | None = None
         if item.unit_price is not None:
             client = Decimal(item.unit_price)
-            matches_general = (
-                general_price is not None
-                and client == _to_sale_currency(general_price, exchange_rate)
-            )
-            matches_fefo = (
-                fefo_price is not None
-                and client == _to_sale_currency(fefo_price, exchange_rate)
-            )
-            if not matches_general and not matches_fefo:
+            # An explicit cashier edit always prices the whole line, even when
+            # it happens to equal the general or the FEFO lot price.
+            if item.price_override:
                 override = client
+            else:
+                matches_general = (
+                    general_price is not None
+                    and client == _to_sale_currency(general_price, exchange_rate)
+                )
+                matches_fefo = (
+                    fefo_price is not None
+                    and client == _to_sale_currency(fefo_price, exchange_rate)
+                )
+                if not matches_general and not matches_fefo:
+                    override = client
 
         cache: dict[str, Decimal | None] = {}
 
@@ -621,6 +628,7 @@ class POSService:
                 status="UNPAID" if paid_for_sale == 0 else "PARTIAL",
                 currency=sale.currency,
                 exchange_rate=sale.exchange_rate,
+                created_by=actor.id,
             )
             self.session.add(debt)
             await self.session.flush()
@@ -628,6 +636,54 @@ class POSService:
         sale.paid_amount = paid_for_sale
         sale.debt_amount = debt_amount
         sale.payment_status = "PAID" if debt_amount == 0 else ("PARTIAL" if paid_for_sale > 0 else "UNPAID")
+
+        # ---- outside debt recorded at checkout (no source invoice) ----------
+        # A debt the customer already owed before using this system. It is NOT
+        # part of this sale (grand_total / paid_amount are untouched); it only
+        # grows the customer's outstanding balance so the existing debt reports
+        # and payment flows can settle it later.
+        outside_debt_amount = _q4(payload.outside_debt)
+        outside_debt_no: str | None = None
+        if outside_debt_amount > 0:
+            if customer.is_walk_in:
+                raise ValidationError(
+                    "Outside debt requires a registered customer",
+                    field_errors={"outside_debt": "Select a registered customer"},
+                )
+            if not user_has_permission(actor, "pos.debt_sale"):
+                raise AccessDeniedError("You do not have permission to record customer debt")
+            outside_debt_no = await allocate_document_number(self.session, "OUTSIDE_DEBT")
+            self.session.add(
+                CustomerDebt(
+                    customer_id=customer.id,
+                    sale_id=None,
+                    invoice_no=outside_debt_no,
+                    original_amount=outside_debt_amount,
+                    paid_amount=Decimal("0.0000"),
+                    remaining_amount=outside_debt_amount,
+                    due_date=None,
+                    status="UNPAID",
+                    currency=sale.currency,
+                    exchange_rate=sale.exchange_rate,
+                    created_by=actor.id,
+                )
+            )
+            await self.session.flush()
+            await record_audit(
+                self.session,
+                action="customer_debt_outside",
+                module="pos",
+                user_id=actor.id,
+                entity_type="customer_debt",
+                entity_id=None,
+                new_values={
+                    "reference_no": outside_debt_no,
+                    "customer": customer.name,
+                    "amount": str(outside_debt_amount),
+                    "currency": sale.currency,
+                    "via_sale": sale.invoice_no,
+                },
+            )
 
         if paid_for_sale > 0:
             await self._create_payment(
@@ -695,7 +751,13 @@ class POSService:
                     for item in item_rows
                 ],
             )
-        return sale_to_out(sale, customer_name=customer.name, change_amount=change_amount, items=item_rows)
+        return sale_to_out(
+            sale,
+            customer_name=customer.name,
+            change_amount=change_amount,
+            items=item_rows,
+            outside_debt_no=outside_debt_no,
+        )
 
     async def update_sale(self, sale_id, payload, *, actor: User) -> SaleOut:
         """Edit a completed sale: reverse the original stock (append-only
@@ -890,6 +952,7 @@ class POSService:
                     status="UNPAID" if paid_for_sale == 0 else "PARTIAL",
                     currency=sale.currency,
                     exchange_rate=sale.exchange_rate,
+                    created_by=actor.id,
                 )
             )
         sale.paid_amount = paid_for_sale

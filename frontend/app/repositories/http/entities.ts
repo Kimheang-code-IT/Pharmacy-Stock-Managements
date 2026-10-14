@@ -1017,6 +1017,8 @@ export function createHttpPosCommandRepository(): PosCommandRepository {
       product_id: item.productId,
       quantity: item.quantity,
       ...(item.unitPrice != null ? { unit_price: item.unitPrice } : {}),
+      // The cashier typed `unit_price`, so it prices the whole line server-side.
+      ...(item.priceOverride ? { price_override: true } : {}),
       ...(item.discountPercent != null ? { discount_percent: item.discountPercent } : {}),
       ...(item.uomId ? { uom_id: item.uomId } : {}),
       ...(item.uomSymbol ? { uom_symbol: item.uomSymbol } : {}),
@@ -1045,6 +1047,7 @@ export function createHttpPosCommandRepository(): PosCommandRepository {
       included_debt_ids: input.includedDebtIds ?? [],
       delivery_price: input.deliveryPrice ?? 0,
       deposit: input.deposit ?? 0,
+      outside_debt: input.outsideDebt ?? 0,
       currency: input.currency ?? 'USD',
       exchange_rate: input.exchangeRate ?? 1,
     }

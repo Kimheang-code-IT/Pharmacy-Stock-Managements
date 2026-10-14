@@ -42,6 +42,11 @@ export interface PosSaleItemInput {
   quantity: number
   /** Optional override; when omitted the product sale price is used. */
   unitPrice?: number
+  /**
+   * The cashier typed `unitPrice`, so it prices the whole line — the server
+   * charges every FEFO lot at it instead of each lot's own scoped price.
+   */
+  priceOverride?: boolean
   /** Per-line percent discount (0–100). */
   discountPercent?: number
   /** Selected line UOM (base or a product Convert-UOM row). */
@@ -73,6 +78,13 @@ export interface PosCompleteSaleInput {
   deliveryPrice?: number
   /** Budget for settling selected prior debts — not part of sale grand total. */
   deposit?: number
+  /**
+   * Old debt the customer already owed before this system (paper debt book /
+   * another shop), typed at checkout. Recorded as a customer-debt document with
+   * no source invoice — it never changes this sale's totals, it only grows the
+   * customer's outstanding balance. Requires a registered customer.
+   */
+  outsideDebt?: number
   /** Document currency: every amount sent is in THIS currency (USD | KHR). */
   currency?: 'USD' | 'KHR'
   /** Exchange rate applied (KHR per 1 USD) — 1 for USD documents. */

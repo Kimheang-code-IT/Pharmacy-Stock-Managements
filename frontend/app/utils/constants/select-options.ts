@@ -47,8 +47,8 @@ export const NUMBER_FORMAT_OPTIONS: FieldOption[] = [
 ]
 
 export const CURRENCY_OPTIONS: FieldOption[] = [
-  { label: 'USD — US Dollar', value: 'USD' },
-  { label: 'KHR — Cambodian Riel', value: 'KHR' },
+  { label: 'USD — US Dollar', labelKey: 'core.settings.currencyUsd', value: 'USD' },
+  { label: 'KHR — Cambodian Riel', labelKey: 'core.settings.currencyKhr', value: 'KHR' },
 ]
 
 export const PAGE_SIZE_OPTIONS: FieldOption[] = [

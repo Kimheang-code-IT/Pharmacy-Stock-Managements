@@ -35,6 +35,8 @@ const props = defineProps<{
   deliveryPrice: number
   needsDelivery: boolean
   depositInput: number
+  /** Old debt typed in at checkout (recorded outside the invoice flow). */
+  outsideDebt?: number
   includedDebtIds: string[]
   debts: CheckoutDebtRow[]
   customerOptions: Array<{
@@ -48,6 +50,11 @@ const props = defineProps<{
   canOperate: boolean
   /** Credit / debt sales are gated by `pos.debt_sale` (default allowed). */
   canDebtSale?: boolean
+  /**
+   * Show the "debt outside system" input: a registered (non-walk-in) customer
+   * is selected and the cashier may record customer debt.
+   */
+  canRecordOutsideDebt?: boolean
   completing?: boolean
   disabled?: boolean
   /** View-only: sale detail from Sales Report — no edits, Close instead of Submit. */
@@ -79,6 +86,7 @@ const emit = defineEmits<{
   'update:deliveryLocation': [value: string]
   'update:needsDelivery': [value: boolean]
   'update:depositInput': [value: number]
+  'update:outsideDebt': [value: number]
   'update:includedDebtIds': [value: string[]]
   'update:returnReason': [value: string]
   'update:returnRestock': [value: boolean]
@@ -288,6 +296,12 @@ watch(selectedDebtTotal, (total) => {
 function emitDeposit(value: unknown) {
   const amount = value == null || value === '' ? 0 : Number(value)
   emit('update:depositInput', Number.isFinite(amount) ? Math.max(0, amount) : 0)
+}
+
+/** Old debt recorded outside the system (added to the customer's balance). */
+function emitOutsideDebt(value: unknown) {
+  const amount = value == null || value === '' ? 0 : Number(value)
+  emit('update:outsideDebt', Number.isFinite(amount) ? Math.max(0, amount) : 0)
 }
 
 function onCustomerPick(value: unknown) {
@@ -588,6 +602,29 @@ watch(() => props.cart.length, (length) => {
               align="right"
               :disabled="disabled || saleCurrency === 'KHR'"
               @update:model-value="emitDeposit($event)"
+            />
+          </UFormField>
+
+          <!-- Old debt that came from outside the system (paper debt book):
+               recorded as its own customer-debt row, never part of this sale. -->
+          <UFormField
+            v-if="canRecordOutsideDebt"
+            :label="t('app.pos.outsideDebt')"
+            size="md"
+            :help="t('app.pos.outsideDebtHint')"
+            :error="errorFor('outsideDebt')"
+          >
+            <CommonAppMoneyField
+              inline
+              :model-value="outsideDebt"
+              :currency="saleCurrency"
+              :min="0"
+              :step="0.0001"
+              class="w-full"
+              size="lg"
+              align="right"
+              :disabled="disabled"
+              @update:model-value="emitOutsideDebt($event)"
             />
           </UFormField>
 

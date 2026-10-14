@@ -215,10 +215,19 @@ export function formatNumber(value: unknown, options: Intl.NumberFormatOptions =
 }
 
 export function formatCurrency(value: unknown, currency = activeConfig.currency) {
+  const code = String(currency || activeConfig.currency || 'USD').trim().toUpperCase()
+  // Khmer riel: whole riel (no subunit) with the riel sign AFTER the amount —
+  // `45,200៛`, never the Latin Intl style `KHR 45,200.00`. Matches the money
+  // input fields, printed invoices and barcode labels.
+  if (code === 'KHR') {
+    const number = Number(value)
+    const rounded = Number.isFinite(number) ? Math.round(number) : value
+    return `${formatNumber(rounded, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}៛`
+  }
   // Up to 4 decimals with trailing zeros trimmed: `1.5` → `1.5`, `1.25` →
   // `1.25`, `1.234` → `1.234`, whole amounts no `.00`. Explicit `0` patterns
   // (e.g. `#,##.000`) still keep their minimum.
-  return formatNumber(value, { style: 'currency', currency, maximumFractionDigits: NUMBER_MAX_FRACTION_DIGITS })
+  return formatNumber(value, { style: 'currency', currency: code, maximumFractionDigits: NUMBER_MAX_FRACTION_DIGITS })
 }
 
 /**

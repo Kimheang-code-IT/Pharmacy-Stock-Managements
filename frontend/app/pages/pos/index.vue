@@ -14,6 +14,7 @@ import type { PosCartLine } from '~/utils/pos/cart'
 import {
   allocateBatches,
   allocationUnitPrice,
+  applyManualUnitPrice,
   availableStockInUom,
   cartDiscountTotal,
   cartSubtotal,
@@ -83,6 +84,8 @@ const deliveryPhone = ref('')
 const deliveryLocation = ref('')
 const needsDelivery = ref(false)
 const depositInput = ref(0)
+/** Debt the customer already owed outside this system, typed at checkout. */
+const outsideDebtInput = ref(0)
 const completing = ref(false)
 /** Invoice paper size chosen on the payment keypad (A4 / A5). */
 const printPaperSize = ref<PrintPaperSize>('A4')
@@ -431,10 +434,23 @@ const outstandingAmount = computed(() => checkoutOutstanding(due.value, paidAmou
 const previousDebtTotal = computed(() => roundMoney(
   openDebts.value.reduce((sum, row) => sum + row.remainingAmount, 0),
 ))
+/** Outside debt typed at checkout: a NEW customer-debt row, not part of this
+ *  sale. Only a registered customer can carry it (the raw field hides it for
+ *  the walk-in). */
+const outsideDebtAmount = computed(() =>
+  roundMoney(Math.max(0, Number(outsideDebtInput.value || 0))))
+/** Debt shown as ខ្វះមុន on the printed invoice: the open invoices PLUS the
+ *  outside debt recorded now, so the customer's running balance is complete. */
+const printedPreviousDebt = computed(() =>
+  roundMoney(previousDebtTotal.value + outsideDebtAmount.value))
+/** Old debts can only be attached to a registered customer, and recording a
+ *  receivable needs the same permission as a debt sale. */
+const canRecordOutsideDebt = computed(() =>
+  canDebtSale.value && !isWalkInCustomer.value && canOperate.value && !viewMode.value && !returnMode.value)
 // Outstanding after this sale = current-sale outstanding + previous debt not
 // settled at checkout (depositInput is the amount allocated to old debts).
 const totalOutstanding = computed(() => roundMoney(
-  outstandingAmount.value + Math.max(0, previousDebtTotal.value - Number(depositInput.value || 0)),
+  outstandingAmount.value + Math.max(0, printedPreviousDebt.value - Number(depositInput.value || 0)),
 ))
 
 const dateLabel = computed(() => {
@@ -482,6 +498,11 @@ function posPriceForUom(row: Record<string, unknown>, uomId: string): number | n
  *  per-lot prices of that UOM authoritatively at checkout). */
 function applyLineAllocations(line: PosCartLine, row: Record<string, unknown> | null) {
   const rate = saleCurrency.value === 'KHR' ? saleRate.value : 1
+  // A cashier-typed price owns the line — never re-derive it from the lots.
+  if (line.priceOverride) {
+    line.batchAllocations = undefined
+    return
+  }
   const lots = row && Array.isArray(row.posBatches) ? row.posBatches as Array<Record<string, unknown>> : []
   if (Number(line.factorToBase) === 1 && lots.length) {
     const allocations = allocateBatches(lots, line.quantity, 1)
@@ -565,6 +586,8 @@ function changeUom(productId: string, uomId: string) {
   line.uomId = uomId
   line.uom = symbol
   line.factorToBase = factor
+  // New UOM → its own pricing row owns the price again (drop any typed override).
+  line.priceOverride = false
   line.unitPrice = roundMoney(price)
   line.availableStock = availableStockInUom(Number(product.sellableStock ?? product.quantity ?? 0), factor)
   applyLineAllocations(line, product)
@@ -622,7 +645,7 @@ function changeQty(productId: string, delta: number) {
 function updatePrice(productId: string, unitPrice: number) {
   const line = cart.value.find(item => item.productId === productId)
   if (!line) return
-  line.unitPrice = Math.max(0, roundMoney(unitPrice))
+  applyManualUnitPrice(line, unitPrice)
 }
 
 function updateDiscount(productId: string, discountPercent: number) {
@@ -648,6 +671,7 @@ function clearCart() {
   deliveryLocation.value = ''
   needsDelivery.value = false
   depositInput.value = 0
+  outsideDebtInput.value = 0
   paymentMethod.value = 'Cash'
   step.value = 'cart'
   applyDefaultCustomer()
@@ -998,6 +1022,8 @@ async function saveEditSale() {
         productId: line.productId,
         quantity: line.quantity,
         unitPrice: line.unitPrice,
+        // Keep a cashier-edited price when the invoice is re-saved.
+        priceOverride: line.priceOverride === true,
         discountPercent: line.discountPercent,
         uomId: line.uomId || undefined,
         uomSymbol: line.uom || undefined,
@@ -1092,6 +1118,8 @@ async function completeSale() {
         quantity: line.quantity,
         // Line prices are already stored in the sale currency.
         unitPrice: line.unitPrice,
+        // A cashier-edited price owns the whole line on the server too.
+        priceOverride: line.priceOverride === true,
         discountPercent: line.discountPercent,
         uomId: line.uomId || undefined,
         uomSymbol: line.uom || undefined,
@@ -1111,6 +1139,8 @@ async function completeSale() {
       discount: 0,
       deliveryPrice: appliedDeliveryPrice.value,
       deposit: depositInput.value,
+      // Old debt from outside the system, recorded as its own debt document.
+      outsideDebt: outsideDebtAmount.value,
       includedDebtIds: includedDebtIds.value,
       currency: saleCurrency.value,
       exchangeRate: saleRate.value,
@@ -1151,7 +1181,7 @@ async function completeSale() {
       currency: saleCurrency.value,
       lines: printLines,
       deliveryPrice: appliedDeliveryPrice.value,
-      previousDebtAmount: previousDebtTotal.value,
+      previousDebtAmount: printedPreviousDebt.value,
       depositAmount: paidAmount.value,
       outstandingAmount: totalOutstanding.value,
     }
@@ -1159,6 +1189,21 @@ async function completeSale() {
       title: `${t('app.pos.saleCompleted')} · ${lastSaleNo.value}`,
       color: 'success',
     })
+    // The outside debt is a separate customer-debt document: confirm its own
+    // reference so the cashier/customer can quote it later.
+    if (outsideDebtAmount.value > 0) {
+      const reference = String(
+        (sale as Record<string, unknown>).outsideDebtNo
+        ?? (sale as Record<string, unknown>).outside_debt_no
+        ?? '',
+      )
+      toast.add({
+        title: reference
+          ? `${t('app.pos.outsideDebtCreated')} · ${reference}`
+          : t('app.pos.outsideDebtCreated'),
+        color: 'success',
+      })
+    }
     // Capture the post-sale delivery target before the checkout reset below
     // clears the delivery fields.
     pendingDelivery.value = shouldAutoCreateDelivery
@@ -1176,6 +1221,7 @@ async function completeSale() {
     deliveryLocation.value = ''
     needsDelivery.value = false
     depositInput.value = 0
+    outsideDebtInput.value = 0
     paymentMethod.value = 'Cash'
     saleCurrency.value = 'USD'
     exchangeRateInput.value = undefined
@@ -1363,6 +1409,7 @@ async function completeSale() {
       v-model:delivery-location="deliveryLocation"
       v-model:needs-delivery="needsDelivery"
       v-model:deposit-input="depositInput"
+      v-model:outside-debt="outsideDebtInput"
       v-model:included-debt-ids="includedDebtIds"
       v-model:paper-size="printPaperSize"
       :exchange-rate="tenderRate"
@@ -1375,6 +1422,7 @@ async function completeSale() {
       :customer-options="customerOptions"
       :can-operate="canOperate && !viewMode"
       :can-debt-sale="canDebtSale"
+      :can-record-outside-debt="canRecordOutsideDebt"
       :completing="completing"
       :disabled="viewMode || !canOperate"
       :view-mode="viewMode"

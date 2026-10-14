@@ -120,6 +120,15 @@ class SaleItemRequest(BaseModel):
         gt=0,
         validation_alias=AliasChoices("unit_price", "unitPrice"),
     )
+    # The cashier typed this unit price, so it prices the WHOLE line — every
+    # FEFO lot is charged at it instead of each lot's own scoped price. Without
+    # the flag a typed price is only honoured when it differs from both the
+    # general and the FEFO price, which would silently charge the lot price
+    # whenever the cashier happened to enter the general price.
+    price_override: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("price_override", "priceOverride"),
+    )
     discount_percent: Decimal = Field(
         default=Decimal("0"),
         ge=0,
@@ -190,6 +199,15 @@ class SaleCreateRequest(BaseModel):
     )
     # Budget for settling included prior debts (not part of sale grand_total).
     deposit: Decimal = Field(default=Decimal("0"), ge=0)
+    # Debt the customer already owed before this system (paper debt book /
+    # another shop), typed in at checkout. Recorded as a customer-debt row with
+    # NO source sale: it never changes this sale's total, it only grows the
+    # customer's outstanding balance. Requires a registered customer.
+    outside_debt: Decimal = Field(
+        default=Decimal("0"),
+        ge=0,
+        validation_alias=AliasChoices("outside_debt", "outsideDebt"),
+    )
     deposit_method: str | None = Field(default=None, pattern="^(CASH|BANK_QR)$")
     reference_no: str | None = Field(default=None, max_length=100)
     note: str | None = None
@@ -303,6 +321,11 @@ class SaleOut(BaseModel):
     currency: str = "USD"
     exchange_rate: Decimal = Decimal("1")
     items: list[SaleItemOut]
+    # Reference of an outside debt recorded with this checkout (no invoice).
+    outside_debt_no: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("outside_debt_no", "outsideDebtNo"),
+    )
 
 
 class PaymentOut(BaseModel):
@@ -421,7 +444,8 @@ class CustomerDebtOut(BaseModel):
 
     id: UUID
     customer_id: UUID
-    sale_id: UUID
+    # NULL for a debt recorded outside the invoice flow (no source sale).
+    sale_id: UUID | None = None
     invoice_no: str
     original_amount: Decimal
     paid_amount: Decimal

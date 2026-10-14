@@ -50,6 +50,27 @@ describe('format-service', () => {
     expect(formatMoney(1.5, 'USD')).toBe('$1.5')
   })
 
+  it('formats KHR as whole riel with the riel sign after the amount', () => {
+    configureFormats({ currency: 'USD', locale: 'en-US', numberFormat: '1,234.56' })
+    expect(formatMoney(45200, 'KHR')).toBe('45,200៛')
+    expect(formatMoney(22600.4, 'KHR')).toBe('22,600៛')
+    expect(formatMoney(0, 'KHR')).toBe('0៛')
+    // Never the Latin Intl style `KHR 45,200.00`.
+    expect(formatMoney(45200, 'KHR')).not.toContain('KHR')
+    expect(formatMoney(45200, 'KHR')).not.toContain('.')
+    // The shop default currency applies when the record carries none.
+    configureFormats({ currency: 'KHR' })
+    expect(formatMoney(1250)).toBe('1,250៛')
+  })
+
+  it('keeps KHR whole even with a required-decimals number pattern', () => {
+    // `#,##.000` requires 3 decimals for USD, but riel has no subunit — the
+    // KHR path overrides the minimum instead of throwing / dropping grouping.
+    configureFormats({ currency: 'USD', locale: 'en-US', numberFormat: '#,##.000' })
+    expect(formatMoney(45200, 'KHR')).toBe('45,200៛')
+    expect(formatMoney(1234.5, 'USD')).toBe('$1,234.500')
+  })
+
   it('formats compact numbers', () => {
     configureFormats({ locale: 'en-US', numberFormat: '1,234.56' })
     expect(formatCompact(1500)).toMatch(/1\.5K|1,5K/i)

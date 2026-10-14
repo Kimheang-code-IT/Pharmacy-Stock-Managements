@@ -3,6 +3,7 @@ import type { PosCartLine } from '~/utils/pos/cart'
 import {
   allocateBatches,
   allocationUnitPrice,
+  applyManualUnitPrice,
   cartSubtotal,
   lineGross,
 } from '~/utils/pos/cart'
@@ -75,5 +76,39 @@ describe('blended line total', () => {
 
   it('falls back to unitPrice × qty without allocations', () => {
     expect(lineGross(line({ unitPrice: 30, quantity: 7 }))).toBe(210)
+  })
+})
+
+describe('cashier price override on a batch-priced line', () => {
+  const lots = [
+    { batchNo: 'BATCH-001', remainingQty: 5, unitPrice: 10 },
+    { batchNo: 'BATCH-002', remainingQty: 17, unitPrice: 30 },
+  ]
+
+  it('drops the FEFO breakdown so the typed price drives the amount', () => {
+    const cartLine = line({
+      quantity: 2,
+      unitPrice: 22.6,
+      batchAllocations: allocateBatches(lots, 2, 1),
+    })
+    // Before the edit the lot prices own the line (2 × $10 = $20).
+    expect(lineGross(cartLine)).toBe(20)
+
+    applyManualUnitPrice(cartLine, 23)
+
+    expect(cartLine.unitPrice).toBe(23)
+    expect(cartLine.priceOverride).toBe(true)
+    expect(cartLine.batchAllocations).toBeUndefined()
+    // The amount, subtotal and checkout now follow the entered price.
+    expect(lineGross(cartLine)).toBe(46)
+    expect(cartSubtotal([cartLine])).toBe(46)
+  })
+
+  it('never prices below zero and rounds like the money helpers', () => {
+    const cartLine = line({ quantity: 1 })
+    applyManualUnitPrice(cartLine, -5)
+    expect(cartLine.unitPrice).toBe(0)
+    applyManualUnitPrice(cartLine, 1.000049)
+    expect(cartLine.unitPrice).toBe(1)
   })
 })

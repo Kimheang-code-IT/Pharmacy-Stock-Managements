@@ -233,6 +233,43 @@ describe('http POS/stock command endpoints (spec §7)', () => {
     })
   })
 
+  it('marks a cashier-typed price as a line override', async () => {
+    const captured = withFakeApi(() => ({ data: { id: 'sale-2', invoice_no: 'INV-000002' } }))
+    const commands = createHttpPosCommandRepository()
+    await commands.completeSale({
+      items: [
+        // Cashier edited this price → the server must charge the whole line at it.
+        { productId: 'prd-1', quantity: 2, unitPrice: 23000, priceOverride: true },
+        // Default stock price → never flagged, the lots keep pricing it.
+        { productId: 'prd-2', quantity: 1, unitPrice: 5 },
+      ],
+      paymentMethod: 'Cash',
+      paidAmount: 0,
+      currency: 'KHR',
+      exchangeRate: 4000,
+    })
+    const items = (captured[0]?.body as { items: Array<Record<string, unknown>> }).items
+    expect(items[0]).toMatchObject({ unit_price: 23000, price_override: true })
+    expect(items[1]).not.toHaveProperty('price_override')
+  })
+
+  it('sends the outside debt typed at checkout as its own field', async () => {
+    const captured = withFakeApi(() => ({ data: { id: 'sale-3', outside_debt_no: 'OD-000001' } }))
+    const commands = createHttpPosCommandRepository()
+    const sale = await commands.completeSale({
+      customerId: 'cus-1',
+      items: [{ productId: 'prd-1', quantity: 1 }],
+      paymentMethod: 'Cash',
+      paidAmount: 10,
+      outsideDebt: 50000,
+      currency: 'KHR',
+      exchangeRate: 4000,
+    })
+    expect(captured[0]?.body).toMatchObject({ outside_debt: 50000 })
+    // The backend replies with the generated debt reference (snake_case body).
+    expect(sale.outside_debt_no).toBe('OD-000001')
+  })
+
   it('posts each stock operation to its own /stock path', async () => {
     const captured = withFakeApi(() => ({ data: { id: 'op-1' } }))
     const commands = createHttpPosCommandRepository()
