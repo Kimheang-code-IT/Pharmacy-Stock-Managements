@@ -7,9 +7,14 @@ import type { PrintPaperSize } from '~/utils/print/html'
  * POS inline payment keypad: an on-screen numeric keypad (tablet/iPad friendly)
  * that replaces the checkout summary block to enter the amount paid for this
  * invoice. Shows the total due plus the change (overpay) or outstanding balance
- * (underpay) live as digits are tapped. When the customer pays existing debt
- * together with this invoice, the keypad Total becomes sale + old debt so one
- * tender covers both.
+ * (underpay) live as digits are tapped.
+ *
+ * The $/៛ buttons are the CURRENCY the customer pays in: pressing one converts
+ * the whole invoice to that currency (the parent converts the cart, delivery,
+ * discount and paid amounts at the rate), so a riel payment produces a KHR
+ * invoice and a dollar payment a USD invoice — the invoice, report and reprint
+ * always show the currency that was actually paid. A KHR switch without a known
+ * rate asks for it through the shared exchange-rate dialog first.
  */
 const props = withDefaults(defineProps<{
   total: number
@@ -17,8 +22,14 @@ const props = withDefaults(defineProps<{
   deliveryPrice?: number
   /** Existing-debt payment collected together with this sale (0 when none). */
   existingDebt?: number
+  /**
+   * Edit mode: prefill the input with the amount ALREADY paid on the invoice
+   * instead of the full total, so a correction save never records a phantom
+   * payment. Undefined = a new sale (prefill the full amount due).
+   */
+  prefillAmount?: number
   currency?: 'USD' | 'KHR'
-  /** KHR per 1 USD — reused to convert a cross-currency tender; 0 when unknown. */
+  /** KHR per 1 USD — the invoice's own rate (0 when a switch must ask for it). */
   exchangeRate?: number
   paymentMethod?: string
   busy?: boolean
@@ -26,6 +37,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   deliveryPrice: 0,
   existingDebt: 0,
+  prefillAmount: undefined,
   currency: 'USD',
   exchangeRate: 0,
   paymentMethod: 'Cash',
@@ -35,8 +47,8 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   confirm: [amount: number]
-  /** Set when the shared rate dialog collects a rate needed for the tender. */
-  'update:exchangeRate': [value: number]
+  /** Paid-currency pressed: convert the whole invoice to it at the rate. */
+  switchCurrency: [payload: { currency: 'USD' | 'KHR', rate: number }]
   cancel: []
 }>()
 
@@ -59,11 +71,8 @@ function groupEntry(raw: string): string {
 /** Raw digits kept separately from the grouped text shown in the input. */
 const display = computed(() => groupEntry(entry.value))
 
-/** Currency the cashier tenders in — independent of the invoice currency, so
- *  a USD invoice can be settled with riel (and vice versa) at the sale rate. */
-const tenderCurrency = ref<'USD' | 'KHR'>(props.currency)
-/** Cross-currency switch awaiting a rate from the shared dialog. */
-const pendingTender = ref<'USD' | 'KHR' | null>(null)
+/** KHR switch awaiting a rate from the shared dialog. */
+const pendingCurrency = ref<'KHR' | null>(null)
 const rateDialogOpen = ref(false)
 
 const currencyOptions = [
@@ -72,29 +81,14 @@ const currencyOptions = [
 ]
 
 const isCredit = computed(() => props.paymentMethod === 'Credit')
-const isTenderKhr = computed(() => tenderCurrency.value === 'KHR')
-const symbol = computed(() => (isTenderKhr.value ? '៛' : '$'))
+const isKhr = computed(() => props.currency === 'KHR')
+const symbol = computed(() => (isKhr.value ? '៛' : '$'))
 /** Auto-sized so long amounts always fit (min 3ch). */
 const inputWidth = computed(() => `${Math.max(3, display.value.length + 1)}ch`)
 const money = (value: unknown) => formatMoney(Number(value || 0), props.currency)
-const tenderMoney = (value: unknown) => formatMoney(Number(value || 0), tenderCurrency.value)
 
-/** KHR per 1 USD, reused from the sale; 0 when not yet known. */
+/** KHR per 1 USD for this invoice; 0 when a currency switch must ask for it. */
 const rate = computed(() => Math.max(0, Number(props.exchangeRate || 0)))
-/** Entered amount is in a different currency than the invoice. */
-const crossCurrency = computed(() => tenderCurrency.value !== props.currency)
-
-function toSaleCurrency(value: number): number {
-  const amount = Number(value) || 0
-  if (!crossCurrency.value || rate.value <= 0) return amount
-  return props.currency === 'USD' ? amount / rate.value : amount * rate.value
-}
-
-function toTenderCurrency(value: number): number {
-  const amount = Number(value) || 0
-  if (!crossCurrency.value || rate.value <= 0) return amount
-  return props.currency === 'USD' ? amount * rate.value : amount / rate.value
-}
 
 const amount = computed(() => {
   const value = Number(entry.value)
@@ -104,37 +98,43 @@ const amount = computed(() => {
 const debtAmount = computed(() => roundMoney(Math.max(0, Number(props.existingDebt || 0))))
 /** The single amount to collect: this sale plus any existing-debt payment. */
 const combinedTotal = computed(() => roundMoney(Math.max(0, Number(props.total || 0)) + debtAmount.value))
-/** Combined total expressed in the tender currency (prefill / change). */
-const combinedTotalTender = computed(() => toTenderCurrency(combinedTotal.value))
-/** Cash handed back, in the tender currency. */
-const change = computed(() => Math.max(0, amount.value - combinedTotalTender.value))
-/** Shortfall recorded as debt — kept in the invoice currency. */
-const outstanding = computed(() => Math.max(0, combinedTotal.value - toSaleCurrency(amount.value)))
-/** Entered tender shown in the invoice currency while currencies differ. */
-const equivalent = computed(() => toSaleCurrency(amount.value))
+/** Cash handed back. */
+const change = computed(() => Math.max(0, amount.value - combinedTotal.value))
+/** Shortfall recorded as debt. */
+const outstanding = computed(() => Math.max(0, combinedTotal.value - amount.value))
 /** Sale amount before the delivery fee (only shown when delivery is added). */
 const subtotal = computed(() => Math.max(0, Number(props.total || 0) - Number(props.deliveryPrice || 0)))
 
-function roundTender(value: number) {
-  if (tenderCurrency.value === 'KHR') return Math.round(value)
+function roundEntry(value: number) {
+  if (isKhr.value) return Math.round(value)
   return Math.round((Number(value) || 0) * 10000) / 10000
 }
 
 function prefill() {
-  entry.value = isCredit.value ? '0' : String(roundTender(combinedTotalTender.value))
+  if (isCredit.value) {
+    entry.value = '0'
+    return
+  }
+  // Edit mode: default to what is already paid on this invoice (keeps the
+  // paid/debt state unless the cashier explicitly enters more).
+  const due = props.prefillAmount != null
+    ? Math.max(0, Number(props.prefillAmount) || 0)
+    : combinedTotal.value
+  entry.value = String(roundEntry(due))
 }
-
-/** Invoice currency changed (new sale) — reset the tender currency with it. */
-watch(() => props.currency, (value) => {
-  tenderCurrency.value = value
-  pendingTender.value = null
-})
 
 function focusInput() {
   void nextTick(() => inputEl.value?.focus())
 }
 
 onMounted(() => {
+  prefill()
+  focusInput()
+})
+
+/** The invoice currency just converted: show the (converted) amount to collect. */
+watch(() => props.currency, () => {
+  pendingCurrency.value = null
   prefill()
   focusInput()
 })
@@ -146,7 +146,7 @@ function sanitize(value: string): string {
   if (firstDot !== -1) {
     next = `${next.slice(0, firstDot + 1)}${next.slice(firstDot + 1).replace(/\./g, '')}`
   }
-  if (isTenderKhr.value) next = next.replace(/\./g, '')
+  if (isKhr.value) next = next.replace(/\./g, '')
   const [intPart, decPart] = next.split('.')
   if (decPart != null) next = `${intPart}.${decPart.slice(0, 4)}`
   return next
@@ -178,7 +178,7 @@ function press(key: string) {
     return
   }
   if (key === '.') {
-    if (isTenderKhr.value || entry.value.includes('.')) return
+    if (isKhr.value || entry.value.includes('.')) return
     entry.value = `${entry.value || '0'}.`
     focusInput()
     return
@@ -195,52 +195,38 @@ function press(key: string) {
   focusInput()
 }
 
+/** $/៛ pressed: the customer pays in this currency — switch the WHOLE invoice
+ *  to it (asking for the USD→KHR rate first when it is not known yet). */
+function selectCurrency(value: 'USD' | 'KHR') {
+  if (props.disabled || value === props.currency) return
+  if (value === 'KHR' && rate.value <= 0) {
+    pendingCurrency.value = 'KHR'
+    rateDialogOpen.value = true
+    return
+  }
+  emit('switchCurrency', { currency: value, rate: rate.value })
+}
+
+/** Shared rate dialog confirmed: convert the invoice to KHR at this rate. */
+function onRateConfirm(value: number) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return
+  const target = pendingCurrency.value
+  pendingCurrency.value = null
+  if (target) emit('switchCurrency', { currency: target, rate: parsed })
+}
+
+function confirm() {
+  if (props.disabled || props.busy) return
+  emit('confirm', roundMoney(amount.value))
+}
+
 const keys = [
   ['1', '2', '3'],
   ['4', '5', '6'],
   ['7', '8', '9'],
   ['.', '0', 'back'],
 ] as const
-
-/** Switch tender currency, converting the amount already entered. */
-function applyTender(value: 'USD' | 'KHR', rateValue = rate.value) {
-  if (value === tenderCurrency.value) return
-  const current = amount.value
-  let converted = current
-  if (current > 0 && rateValue > 0) {
-    if (tenderCurrency.value === 'USD' && value === 'KHR') converted = current * rateValue
-    else if (tenderCurrency.value === 'KHR' && value === 'USD') converted = current / rateValue
-  }
-  tenderCurrency.value = value
-  if (current > 0) entry.value = String(roundTender(converted))
-  focusInput()
-}
-
-/** Toggle handler: cross-currency switches need a USD→KHR rate first. */
-function selectTender(value: 'USD' | 'KHR') {
-  if (props.disabled || value === tenderCurrency.value) return
-  if (value !== props.currency && rate.value <= 0) {
-    pendingTender.value = value
-    rateDialogOpen.value = true
-    return
-  }
-  applyTender(value)
-}
-
-/** Shared rate dialog confirmed: record the rate, then complete the switch. */
-function onRateConfirm(value: number) {
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed) || parsed <= 0) return
-  emit('update:exchangeRate', parsed)
-  const target = pendingTender.value
-  pendingTender.value = null
-  if (target) applyTender(target, parsed)
-}
-
-function confirm() {
-  if (props.disabled || props.busy) return
-  emit('confirm', roundMoney(toSaleCurrency(amount.value)))
-}
 </script>
 
 <template>
@@ -298,14 +284,14 @@ function confirm() {
             v-for="option in currencyOptions"
             :key="option.value"
             size="xs"
-            :color="tenderCurrency === option.value ? 'primary' : 'neutral'"
-            :variant="tenderCurrency === option.value ? 'solid' : 'ghost'"
+            :color="currency === option.value ? 'primary' : 'neutral'"
+            :variant="currency === option.value ? 'solid' : 'ghost'"
             :label="option.symbol"
             :title="t(option.labelKey)"
             :aria-label="t(option.labelKey)"
-            :aria-pressed="tenderCurrency === option.value"
+            :aria-pressed="currency === option.value"
             :disabled="disabled"
-            @click="selectTender(option.value)"
+            @click="selectCurrency(option.value)"
           />
         </div>
       </div>
@@ -325,12 +311,6 @@ function confirm() {
           @keydown.enter.prevent="confirm"
         >
       </div>
-      <p
-        v-if="crossCurrency && amount > 0"
-        class="text-center text-sm tabular-nums text-muted"
-      >
-        ≈ {{ money(equivalent) }}
-      </p>
     </div>
 
     <div
@@ -338,7 +318,7 @@ function confirm() {
       class="flex justify-between text-base font-semibold text-success"
     >
       <span>{{ t('app.pos.changeDue') }}</span>
-      <span class="tabular-nums">{{ tenderMoney(change) }}</span>
+      <span class="tabular-nums">{{ money(change) }}</span>
     </div>
     <div
       v-else-if="outstanding > 0"
@@ -394,10 +374,9 @@ function confirm() {
       </div>
     </div>
 
-    <!-- Shared rate dialog: opened only when a cross-currency tender needs it. -->
+    <!-- Shared rate dialog: opened only when a KHR switch needs the USD rate. -->
     <CommonAppExchangeRateDialog
       v-model:open="rateDialogOpen"
-      :initial-rate="rate > 0 ? rate : undefined"
       @confirm="onRateConfirm"
     />
   </div>

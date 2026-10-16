@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from decimal import Decimal
+from uuid import UUID
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.customers.models import Customer
+from app.modules.customers.models import Customer, CustomerDebt
 
 
 class CustomerRepository:
@@ -26,6 +29,27 @@ class CustomerRepository:
             stmt.order_by(Customer.name).offset((page - 1) * limit).limit(limit)
         )
         return list(rows.scalars().all()), int(total)
+
+    async def debt_balances(self, customer_ids: list[UUID]) -> dict[UUID, dict[str, Decimal]]:
+        """Open (remaining > 0) debt totals per customer **and document currency**
+        — the Customers list 'Outstanding Debt' column. Live sums over the debt
+        rows, so every payment is reflected immediately and amounts of different
+        currencies are never added together."""
+        if not customer_ids:
+            return {}
+        result = await self.session.execute(
+            select(
+                CustomerDebt.customer_id,
+                CustomerDebt.currency,
+                func.coalesce(func.sum(CustomerDebt.remaining_amount), 0),
+            )
+            .where(CustomerDebt.customer_id.in_(customer_ids), CustomerDebt.remaining_amount > 0)
+            .group_by(CustomerDebt.customer_id, CustomerDebt.currency)
+        )
+        balances: dict[UUID, dict[str, Decimal]] = {}
+        for customer_id, currency, total in result.all():
+            balances.setdefault(customer_id, {})[str(currency or "USD")] = total
+        return balances
 
     async def get(self, customer_id) -> Customer | None:
         return await self.session.get(Customer, customer_id)

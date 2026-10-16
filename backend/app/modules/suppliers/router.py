@@ -23,6 +23,16 @@ from app.modules.suppliers.service import SupplierService
 router = APIRouter(prefix="/suppliers", tags=["suppliers"])
 
 
+def _supplier_out(supplier, balances: dict) -> SupplierOut:
+    """Supplier row + live per-currency open-debt balances (Outstanding Debt)."""
+    out = SupplierOut.model_validate(supplier)
+    totals = balances.get(supplier.id) or {}
+    out.debt_balances = {
+        currency: str(total) for currency, total in sorted(totals.items())
+    }
+    return out
+
+
 @router.get("")
 async def list_suppliers(
     params: ListParams = Depends(list_params),
@@ -31,8 +41,9 @@ async def list_suppliers(
 ) -> dict:
     service = SupplierService(db)
     suppliers, total = await service.list(q=params.q, status=params.status, page=params.page, limit=params.limit)
+    balances = await service.debt_balances([s.id for s in suppliers])
     return envelope(
-        [SupplierOut.model_validate(s) for s in suppliers],
+        [_supplier_out(s, balances) for s in suppliers],
         {"page": params.page, "limit": params.limit, "total": total},
     )
 
@@ -70,7 +81,9 @@ async def get_supplier(
     actor: User = Depends(require_permission("supplier.view")),
 ) -> dict:
     service = SupplierService(db)
-    return envelope(SupplierOut.model_validate(await service.get(supplier_id)))
+    supplier = await service.get(supplier_id)
+    balances = await service.debt_balances([supplier.id])
+    return envelope(_supplier_out(supplier, balances))
 
 
 @router.patch("/{supplier_id}")

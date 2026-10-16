@@ -3,6 +3,8 @@ import {
   createHttpEntityRepository,
   createHttpPosCommandRepository,
 } from '../app/repositories/http/entities'
+import { configureFormats, DEFAULT_FORMAT_CONFIG } from '../app/utils/format/format-service'
+import { buildSaleInvoiceHtml, saleReceiptPrintInput } from '../app/utils/print/invoice'
 
 interface CapturedRequest {
   method: string
@@ -98,6 +100,114 @@ describe('sales report adapter (completed POS sale → report row)', () => {
     expect(row!.paymentMethodLabel).toBe('Cash')
     expect(row!.currency).toBe('USD')
     expect(row!.status).toBe('Paid')
+  })
+
+  it('reprint receipt payload keeps the KHR currency + rate and prints in ៛', async () => {
+    // Regression: the receipt adapter dropped currency/exchange_rate, so every
+    // KHR invoice reprinted from the Sales Report lost its ៛ symbol (and the
+    // stored rate). The reprint must follow the sale's own snapshot.
+    configureFormats(DEFAULT_FORMAT_CONFIG)
+    withFakeApi(() => ({
+      data: {
+        invoice_no: 'INV-000007',
+        sale_date: '2026-10-16 10:00:00',
+        customer_name: 'Walk-in Customer',
+        cashier: 'admin',
+        currency: 'KHR',
+        exchange_rate: '41000.000000',
+        payment_method: 'CASH',
+        items: [{
+          name: 'product name',
+          uom_symbol: 'btl',
+          quantity: '2',
+          unit_price: '60000',
+          discount: '0',
+          line_total: '120000',
+        }],
+        subtotal: '120000',
+        discount: '0',
+        delivery_price: '0',
+        grand_total: '120000',
+        paid: '120000',
+        debt_remaining: '0',
+      },
+    }))
+    const repository = createHttpPosCommandRepository()
+    const receipt = await repository.getSaleReceipt('sale-khr')
+    expect(receipt.currency).toBe('KHR')
+    expect(receipt.exchangeRate).toBe(41000)
+
+    const input = saleReceiptPrintInput(receipt, 'Demo Shop')
+    expect(input.currency).toBe('KHR')
+    expect(input.displayCurrency).toBe('KHR')
+    const html = buildSaleInvoiceHtml(input, 'A4').replace(/\u00A0/g, ' ')
+    expect(html).toContain('120,000៛')
+    expect(html).not.toContain('$120,000.00')
+  })
+
+  it('reopens a stored KHR sale with its own currency, rate and prices', async () => {
+    // Reopen (view/edit/print) loads the sale as it was STORED: KHR amounts at
+    // the recorded rate — a shop display preference never re-bases the invoice.
+    withFakeApi(() => ({
+      data: {
+        id: 'sale-khr',
+        invoice_no: 'INV-000032',
+        customer_id: 'c1',
+        customer_name: 'Customer',
+        currency: 'KHR',
+        exchange_rate: '41000',
+        payment_method: 'CASH',
+        payment_status: 'PAID',
+        subtotal: '410000',
+        discount_amount: '0',
+        delivery_price: '0',
+        grand_total: '410000',
+        paid_amount: '410000',
+        debt_amount: '0',
+        note: null,
+        due_date: null,
+        items: [{
+          id: 'i1',
+          product_id: 'p1',
+          product_name: 'Dr. Cold',
+          uom_symbol: 'ប្រអប់',
+          quantity: '1',
+          unit_price: '9000',
+          discount_amount: '0',
+          discount_percent: '0',
+          line_total: '9000',
+          factor_to_base: '1',
+        }],
+      },
+    }))
+    const repository = createHttpPosCommandRepository()
+    const sale = await repository.getSale('sale-khr')
+    expect(sale.currency).toBe('KHR')
+    expect(sale.exchangeRate).toBe(41000)
+    expect(sale.items[0]!.unitPrice).toBe(9000)
+    expect(sale.subtotal).toBe(410000)
+  })
+
+  it('keeps a KHR sale\u2019s own currency + rate on the grouped report row', async () => {
+    // Historical snapshot: reopening/reprinting a KHR sale must show KHR
+    // (never re-based to USD) with its own recorded exchange rate.
+    const [row] = await loadSalesReport([saleLine({
+      invoice_no: 'INV-KHR-1',
+      currency: 'KHR',
+      exchange_rate: '41000',
+      selling_price: '41000',
+      sales_amount: '41000',
+      subtotal: '41000',
+      grand_total: '41000',
+      paid_amount: '0',
+      debt_amount: '41000',
+      payment_status: 'UNPAID',
+      payment_method: 'CUSTOMER_DEBT',
+    })])
+    expect(row!.currency).toBe('KHR')
+    expect(row!.exchangeRate).toBe(41000)
+    expect(row!.total).toBe(41000)
+    expect(row!.remainingAmount).toBe(41000)
   })
 
   it('keeps the saved header discount instead of double-counting line discounts', async () => {

@@ -46,7 +46,6 @@ const PAYMENT_METHODS = ['Cash', 'Card', 'Mobile Payment', 'Bank Transfer', 'Cre
 // grouped Sales Report rows expose), so the toolbar filter can match them.
 const SALE_PAYMENT_METHODS = ['CASH', 'BANK_QR', 'CUSTOMER_DEBT'] as const
 const SALE_STATUS = ['Paid', 'Partial', 'Unpaid', 'Returned'] as const
-const DEBT_STATUS = ['UNPAID', 'PARTIAL', 'PAID'] as const
 const STOCK_MOVEMENT_TYPES = [
   'Stock In',
   'Sale',
@@ -235,7 +234,6 @@ export const stockModules: ModuleConfig[] = [
     readOnly: true,
     tableOnly: true,
     columns: [
-      col('saleNo', 'Sale No'),
       col('date', 'Date'),
       col('customer', 'Customer'),
       col('subtotal', 'Subtotal'),
@@ -305,38 +303,34 @@ export const stockModules: ModuleConfig[] = [
     path: '/reports/customer-debts',
     title: 'Customer Debt Report',
     singular: 'Customer Debt',
-    description: 'Invoice-level customer debts with invoice total, paid and remaining amounts.',
+    description: 'Customer debt summary per customer: invoice total, paid and remaining amounts.',
     icon: 'i-lucide-hand-coins',
     group: 'reports',
     permission: 'report.customer_debt',
     collection: 'customerDebts',
-    titleField: 'invoiceNo',
+    titleField: 'customer',
     kind: 'reports',
     readOnly: true,
     tableOnly: true,
+    // One summary row per customer (per currency): the page aggregates the
+    // open invoice rows before rendering (see summarizeDebtsByParty).
     columns: [
-      col('date', 'Date', { type: 'date' }),
-      col('invoiceNo', 'Invoice No.'),
       col('customer', 'Customer'),
-      col('user', 'User'),
+      col('currency', 'Currency'),
       col('invoiceTotal', 'Invoice Total'),
       col('paidAmount', 'Paid Amount'),
       col('remainingAmount', 'Remaining Amount'),
-      col('status', 'Status'),
     ],
     fields: [
       f('date', 'Date', 'Debt', 'date'),
-      f('invoiceNo', 'Invoice No.', 'Debt', 'text', undefined, { computed: true }),
       f('customer', 'Customer', 'Debt', 'text', undefined, { computed: true }),
       f('invoiceTotal', 'Invoice Total', 'Debt', 'number', undefined, { computed: true }),
       f('paidAmount', 'Paid Amount', 'Debt', 'number', undefined, { computed: true }),
       f('remainingAmount', 'Remaining Amount', 'Debt', 'number', undefined, { computed: true }),
       f('currency', 'Currency', 'Debt', 'text', undefined, { computed: true }),
-      f('dueDate', 'Due Date', 'Debt', 'date'),
     ],
     filters: [
       f('customer', 'Customer', '', 'select'),
-      f('status', 'Status', '', 'select', DEBT_STATUS),
       f('currency', 'Currency', '', 'select', ['USD', 'KHR']),
     ],
   }),
@@ -344,38 +338,34 @@ export const stockModules: ModuleConfig[] = [
     path: '/reports/supplier-debts',
     title: 'Supplier Debt Report',
     singular: 'Supplier Debt',
-    description: 'Document-level supplier debts with purchase total, paid and remaining amounts.',
+    description: 'Supplier debt summary per supplier: purchase total, paid and remaining amounts.',
     icon: 'i-lucide-landmark',
     group: 'reports',
     permission: 'report.supplier_debt',
     collection: 'supplierDebts',
-    titleField: 'purchaseNo',
+    titleField: 'supplier',
     kind: 'reports',
     readOnly: true,
     tableOnly: true,
+    // One summary row per supplier (per currency): the page aggregates the
+    // open document rows before rendering (see summarizeDebtsByParty).
     columns: [
-      col('date', 'Date', { type: 'date' }),
-      col('purchaseNo', 'Invoice No. / Purchase No.'),
       col('supplier', 'Supplier'),
-      col('user', 'User'),
+      col('currency', 'Currency'),
       col('totalAmount', 'Total Amount'),
       col('paidAmount', 'Paid Amount'),
       col('remainingAmount', 'Remaining Amount'),
-      col('status', 'Status'),
     ],
     fields: [
       f('date', 'Date', 'Debt', 'date'),
-      f('purchaseNo', 'Invoice No. / Purchase No.', 'Debt', 'text', undefined, { computed: true }),
       f('supplier', 'Supplier', 'Debt', 'text', undefined, { computed: true }),
       f('totalAmount', 'Total Amount', 'Debt', 'number', undefined, { computed: true }),
       f('paidAmount', 'Paid Amount', 'Debt', 'number', undefined, { computed: true }),
       f('remainingAmount', 'Remaining Amount', 'Debt', 'number', undefined, { computed: true }),
       f('currency', 'Currency', 'Debt', 'text', undefined, { computed: true }),
-      f('dueDate', 'Due Date', 'Debt', 'date'),
     ],
     filters: [
       f('supplier', 'Supplier', '', 'select'),
-      f('status', 'Status', '', 'select', DEBT_STATUS),
       f('currency', 'Currency', '', 'select', ['USD', 'KHR']),
     ],
   }),

@@ -501,6 +501,8 @@ export interface PosCommandRepository {
     amount: number
     paymentMethod: string
     reference?: string | null
+    /** Party-level payment: settle only this document currency (USD | KHR). */
+    currency?: string
   }): Promise<AppRecord>
   paySupplierDebt(input: {
     supplierId: string
@@ -509,6 +511,8 @@ export interface PosCommandRepository {
     amount: number
     paymentMethod: string
     reference?: string | null
+    /** Party-level payment: settle only this document currency (USD | KHR). */
+    currency?: string
   }): Promise<AppRecord>
   /** Printable receipt payload derived from the stored sale. */
   getSaleReceipt(saleId: string): Promise<SaleReceipt>

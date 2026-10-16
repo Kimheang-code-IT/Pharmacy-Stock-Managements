@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { debtCurrency, isOpenDebt, openDebts, selectedDebtsShareScope, selectedDebtsTotal } from '../app/utils/reports/debts'
+import { allocateDebtPayment, debtBalanceEntries, debtCurrency, isOpenDebt, openDebts, selectedDebtsShareScope, selectedDebtsTotal, summarizeDebtsByParty } from '../app/utils/reports/debts'
 import type { AppRecord } from '../app/config/admin-seed'
 
 function row(partial: Partial<AppRecord>): AppRecord {
@@ -66,5 +66,124 @@ describe('open debt filtering', () => {
       row({ remainingAmount: 5, status: 'UNPAID' }),
     ]
     expect(openDebts(rows).map(item => item.remainingAmount)).toEqual([12, 5])
+  })
+})
+
+describe('party summary rows (debt reports)', () => {
+  const debt = (partial: Partial<AppRecord>) => row(partial)
+
+  it('groups a customer\u2019s open invoices into ONE row with totalled amounts', () => {
+    const rows = [
+      debt({
+        id: 'd1',
+        customerId: 'c1',
+        customer: 'aaaaaaa',
+        currency: 'USD',
+        invoiceTotal: 30,
+        paidAmount: 10,
+        remainingAmount: 20,
+        createdAt: '2026-10-16T08:00:00Z',
+      }),
+      debt({
+        id: 'd2',
+        customerId: 'c1',
+        customer: 'aaaaaaa',
+        currency: 'USD',
+        invoiceTotal: 15,
+        paidAmount: 0,
+        remainingAmount: 15,
+        createdAt: '2026-10-16T09:00:00Z',
+      }),
+      // Fully settled rows never join a summary.
+      debt({
+        id: 'd3',
+        customerId: 'c1',
+        customer: 'aaaaaaa',
+        currency: 'USD',
+        invoiceTotal: 5,
+        paidAmount: 5,
+        remainingAmount: 0,
+        status: 'PAID',
+        createdAt: '2026-10-16T10:00:00Z',
+      }),
+    ]
+    const summaries = summarizeDebtsByParty(rows, 'customer')
+    expect(summaries).toHaveLength(1)
+    const summary = summaries[0]!
+    expect(summary.customer).toBe('aaaaaaa')
+    expect(summary.invoiceTotal).toBe(45)
+    expect(summary.paidAmount).toBe(10)
+    expect(summary.remainingAmount).toBe(35)
+    expect(summary.status).toBe('PARTIAL')
+    // Source documents ride along oldest-first for lump payments/receipt.
+    expect((summary.debts as AppRecord[]).map(item => item.id)).toEqual(['d1', 'd2'])
+  })
+
+  it('never sums different currencies into one row', () => {
+    const rows = [
+      debt({ id: 'd1', customerId: 'c1', customer: 'A', currency: 'USD', remainingAmount: 20, paidAmount: 0 }),
+      debt({ id: 'd2', customerId: 'c1', customer: 'A', currency: 'KHR', remainingAmount: 410000, paidAmount: 0 }),
+    ]
+    const summaries = summarizeDebtsByParty(rows, 'customer')
+    expect(summaries).toHaveLength(2)
+    const usd = summaries.find(item => item.currency === 'USD')!
+    const khr = summaries.find(item => item.currency === 'KHR')!
+    expect(usd.remainingAmount).toBe(20)
+    expect(khr.remainingAmount).toBe(410000)
+  })
+
+  it('keeps suppliers in their own rows and derives UNPAID when nothing was paid', () => {
+    const rows = [
+      debt({ id: 'd1', supplierId: 's1', supplier: 'aaa', currency: 'USD', totalAmount: 110, paidAmount: 0, remainingAmount: 110 }),
+      debt({ id: 'd2', supplierId: 's2', supplier: 'bbb', currency: 'USD', totalAmount: 1, paidAmount: 0, remainingAmount: 1 }),
+    ]
+    const summaries = summarizeDebtsByParty(rows, 'supplier')
+    expect(summaries.map(item => item.supplier)).toEqual(['aaa', 'bbb'])
+    expect(summaries[0]!.status).toBe('UNPAID')
+    expect(summaries[0]!.totalAmount).toBe(110)
+  })
+
+  it('allocates a lump payment over the summary oldest-first, clamping the last row', () => {
+    const summary = row({
+      id: 'c1::USD',
+      customerId: 'c1',
+      currency: 'USD',
+      remainingAmount: 30,
+      debts: [
+        { id: 'd2', invoiceNo: 'INV-000002', date: '2026-10-16', remainingAmount: 10, createdAt: '2026-10-16T09:00:00Z' },
+        { id: 'd1', invoiceNo: 'INV-000001', date: '2026-10-16', remainingAmount: 20, createdAt: '2026-10-16T08:00:00Z' },
+      ],
+    })
+    const allocations = allocateDebtPayment(summary, 25)
+    expect(allocations.map(item => [item.docNo, item.amount, item.remainingAfter])).toEqual([
+      ['INV-000001', 20, 0],
+      ['INV-000002', 5, 5],
+    ])
+    // Overpay is clamped to the outstanding balance.
+    expect(allocateDebtPayment(summary, 99).reduce((sum, item) => sum + item.amount, 0)).toBe(30)
+  })
+})
+
+describe('customer/supplier outstanding debt entries', () => {
+  it('returns positive balances per currency and never mixes currencies', () => {
+    expect(debtBalanceEntries(row({ debtBalances: { USD: 35, KHR: 410000 } }))).toEqual([
+      { currency: 'KHR', amount: 410000 },
+      { currency: 'USD', amount: 35 },
+    ])
+    expect(debtBalanceEntries(row({ debtBalances: { USD: 35, KHR: 0 } }))).toEqual([
+      { currency: 'USD', amount: 35 },
+    ])
+  })
+
+  it('falls back to the stored scalar (mock/local mode)', () => {
+    expect(debtBalanceEntries(row({ debtBalance: 42 }))).toEqual([{ currency: 'USD', amount: 42 }])
+    expect(debtBalanceEntries(row({ totalDebt: 7, currency: 'KHR' }))).toEqual([{ currency: 'KHR', amount: 7 }])
+  })
+
+  it('is empty when the party owes nothing', () => {
+    expect(debtBalanceEntries(row({}))).toEqual([])
+    expect(debtBalanceEntries(row({ debtBalances: { USD: 0 } }))).toEqual([])
+    expect(debtBalanceEntries(row({ debtBalance: 0 }))).toEqual([])
+    expect(debtBalanceEntries(null)).toEqual([])
   })
 })

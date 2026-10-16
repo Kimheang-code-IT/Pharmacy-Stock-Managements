@@ -45,6 +45,10 @@ class CustomerService:
     async def list(self, *, q, status, page, limit) -> tuple[list[Customer], int]:
         return await self.repo.list(q=q, status=status, page=page, limit=limit)
 
+    async def debt_balances(self, customer_ids) -> dict:
+        """Open debt totals per customer + currency (list 'Outstanding Debt')."""
+        return await self.repo.debt_balances(list(customer_ids))
+
     async def get(self, customer_id) -> Customer:
         customer = await self.repo.get(customer_id)
         if customer is None:
@@ -228,6 +232,7 @@ class CustomerService:
         debt.paid_amount = debt.paid_amount + amount
         debt.remaining_amount = debt.remaining_amount - amount
         debt.status = "PAID" if debt.remaining_amount == 0 else "PARTIAL"
+        await self._mirror_payment_on_sale(debt, amount)
 
         await record_audit(
             self.session,
@@ -246,17 +251,49 @@ class CustomerService:
         await self._queue_payment_notify(payment, debt=debt, customer=customer, amount=amount, actor=actor)
         return payment
 
+    async def _mirror_payment_on_sale(self, debt: CustomerDebt, applied: Decimal) -> None:
+        """A debt payment also updates its source SALE so the Sales Report and
+        the customer history show the money collected: paid up, remaining down,
+        status Paid/Partial. Outside debts (no source sale) skip this."""
+        if debt.sale_id is None or applied <= 0:
+            return
+        from app.modules.pos.models import Sale
+
+        sale = await self.session.get(Sale, debt.sale_id)
+        if sale is None:
+            return
+        applied_q = applied.quantize(Decimal("0.0001"))
+        sale.paid_amount = min(
+            sale.grand_total.quantize(Decimal("0.0001")),
+            (sale.paid_amount + applied_q).quantize(Decimal("0.0001")),
+        )
+        sale.debt_amount = max(
+            Decimal("0.0000"),
+            (sale.debt_amount - applied_q).quantize(Decimal("0.0001")),
+        )
+        if sale.debt_amount <= 0:
+            sale.payment_status = "PAID"
+        elif sale.paid_amount > 0:
+            sale.payment_status = "PARTIAL"
+        else:
+            sale.payment_status = "UNPAID"
+
     async def pay_open_debts(self, customer_id, payload, *, actor: User) -> list[Payment]:
         """Customer-level payment (no debt id chosen by the caller): settles
         open debts oldest-first in ONE transaction. Overpayment is rejected —
         there is no customer credit account."""
         customer = await self.get(customer_id)
+        filters = [
+            CustomerDebt.customer_id == customer.id,
+            CustomerDebt.remaining_amount > 0,
+        ]
+        # Party-level payment from the debt report targets ONE currency (its
+        # rows group per currency); omitting it settles every open debt.
+        if payload.currency:
+            filters.append(CustomerDebt.currency == payload.currency)
         result = await self.session.execute(
             select(CustomerDebt)
-            .where(
-                CustomerDebt.customer_id == customer.id,
-                CustomerDebt.remaining_amount > 0,
-            )
+            .where(*filters)
             .order_by(CustomerDebt.created_at.asc(), CustomerDebt.id.asc())
             .with_for_update()
             .execution_options(populate_existing=True)
@@ -297,6 +334,7 @@ class CustomerService:
             debt.paid_amount = debt.paid_amount + applied
             debt.remaining_amount = debt.remaining_amount - applied
             debt.status = "PAID" if debt.remaining_amount == 0 else "PARTIAL"
+            await self._mirror_payment_on_sale(debt, applied)
             payments.append(payment)
             to_apply -= applied
 

@@ -1,5 +1,6 @@
 """Sale edit (PATCH /pos/sales/{id}): reverse stock, reapply lines, recalc debt."""
 
+import uuid
 from decimal import Decimal
 
 import pytest
@@ -140,4 +141,68 @@ async def test_sale_edit_corrects_customer_payment_method_and_paid(client):
     after = refunded.json()["data"]
     assert Decimal(after["paid_amount"]) == Decimal("0.00")
     assert Decimal(after["debt_amount"]) == Decimal("20.00")
+
+
+@pytest.mark.asyncio
+async def test_sale_edit_keeps_khr_snapshot(client):
+    """A KHR invoice is STORED on KHR: after an edit the document, its receipt,
+    its report row and the customer debt all keep the KHR currency + rate —
+    never re-based to USD."""
+    headers = await admin_headers(client)
+    tag = uuid.uuid4().hex[:6]
+    product = await make_stocked_product(
+        client, headers, sku=f"EDITK-{tag}", name=f"Edit KHR {tag}"
+    )
+    customer = await make_customer(
+        client, headers, code=f"EDITK-C-{tag}", name=f"KHR Buyer {tag}"
+    )
+
+    created = await client.post(
+        "/api/v1/pos/sales",
+        json={
+            "payment_method": "CUSTOMER_DEBT",
+            "customer_id": customer["id"],
+            "currency": "KHR",
+            "exchange_rate": "41000",
+            "items": [{"product_id": product["id"], "quantity": "1", "unit_price": "410000"}],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    sale = created.json()["data"]
+    assert sale["currency"] == "KHR"
+
+    edited = await client.patch(
+        f"/api/v1/pos/sales/{sale['id']}",
+        json={
+            "currency": "KHR",
+            "exchange_rate": "41000",
+            "items": [{"product_id": product["id"], "quantity": "1", "unit_price": "820000"}],
+        },
+        headers=headers,
+    )
+    assert edited.status_code == 200, edited.text
+    updated = edited.json()["data"]
+    assert updated["currency"] == "KHR"
+    assert Decimal(updated["exchange_rate"]) == Decimal("41000")
+    assert Decimal(updated["grand_total"]) == Decimal("820000.00")
+
+    # Receipt + grouped report row + customer debt all follow the KHR snapshot.
+    receipt = await client.get(f"/api/v1/pos/sales/{sale['id']}/receipt", headers=headers)
+    assert receipt.json()["data"]["currency"] == "KHR"
+
+    report = await client.get(
+        f"/api/v1/reports/sales?q={sale['invoice_no']}", headers=headers
+    )
+    assert report.status_code == 200, report.text
+    row = report.json()["data"][0]
+    assert row["currency"] == "KHR"
+    assert Decimal(str(row["exchange_rate"])) == Decimal("41000")
+    assert Decimal(row["grand_total"]) == Decimal("820000.00")
+
+    debts = (
+        await client.get(f"/api/v1/customers/{customer['id']}/debts", headers=headers)
+    ).json()["data"]
+    assert debts and debts[0]["currency"] == "KHR"
+    assert Decimal(debts[0]["remaining_amount"]) == Decimal("820000.00")
 

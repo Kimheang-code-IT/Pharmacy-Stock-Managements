@@ -18,6 +18,16 @@ from app.modules.pos.schemas import CustomerDebtOut, DebtPaymentRequest, Payment
 router = APIRouter(prefix="/customers", tags=["customers"])
 
 
+def _customer_out(customer, balances: dict) -> CustomerOut:
+    """Customer row + live per-currency open-debt balances (Outstanding Debt)."""
+    out = CustomerOut.model_validate(customer)
+    totals = balances.get(customer.id) or {}
+    out.debt_balances = {
+        currency: str(total) for currency, total in sorted(totals.items())
+    }
+    return out
+
+
 @router.get("")
 async def list_customers(
     params: ListParams = Depends(list_params),
@@ -26,8 +36,9 @@ async def list_customers(
 ) -> dict:
     service = CustomerService(db)
     customers, total = await service.list(q=params.q, status=params.status, page=params.page, limit=params.limit)
+    balances = await service.debt_balances([c.id for c in customers])
     return envelope(
-        [CustomerOut.model_validate(c) for c in customers],
+        [_customer_out(c, balances) for c in customers],
         {"page": params.page, "limit": params.limit, "total": total},
     )
 
@@ -65,7 +76,9 @@ async def get_customer(
     actor: User = Depends(require_permission("customer.view")),
 ) -> dict:
     service = CustomerService(db)
-    return envelope(CustomerOut.model_validate(await service.get(customer_id)))
+    customer = await service.get(customer_id)
+    balances = await service.debt_balances([customer.id])
+    return envelope(_customer_out(customer, balances))
 
 
 @router.patch("/{customer_id}")

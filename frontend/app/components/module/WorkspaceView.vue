@@ -8,6 +8,7 @@ import { useConfirm } from '~/composables/common/useConfirm'
 import { usePageSeo } from '~/composables/usePageSeo'
 import {
   formatModuleCell,
+  formatMoney,
   moduleStatusBadge,
   useModuleLabel,
   useModuleRoute,
@@ -16,6 +17,7 @@ import { useAppLocalization } from '~/composables/settings/useAppLocalization'
 import type { AppRecord } from '~/config/admin-seed'
 import { appModules, type ModuleSelectOption } from '~/config/modules'
 import { isDateFieldKey, isDateTimeFieldKey, isMoneyKey, isNumericKey } from '~/utils/module/field-keys'
+import { formatDateTime } from '~/utils/format/format-service'
 import { limitFilterSelects, parseFilterQuery } from '~/utils/filter/values'
 import { documentDetailHrefFor, documentLinkTargetFor } from '~/utils/module/document-links'
 import { isFilterValueActive } from '~/utils/filter/select-ui'
@@ -29,7 +31,7 @@ import {
   statusValueFor,
   supportsStatusToggle,
 } from '~/utils/module/row-actions'
-import { openDebts, selectedDebtsShareScope } from '~/utils/reports/debts'
+import { allocateDebtPayment, debtBalanceEntries, selectedDebtsShareScope, summarizeDebtsByParty, type DebtKind } from '~/utils/reports/debts'
 import { apiErrorMessage, isApiErrorHandled } from '~/utils/api/errors'
 import { deliveryStatusOf } from '~/utils/delivery/notes'
 import { downloadTableExport } from '~/utils/export/table'
@@ -42,6 +44,7 @@ import { productImageUrl } from '~/utils/pos/cart'
 import { stockBreakdownLabel } from '~/utils/stock/uom-conversions'
 import { STOCK_OPERATION_META, STOCK_OPERATION_PERMISSIONS, STOCK_OPERATION_TYPES, type StockHistoryKind, type StockOperationType } from '~/config/pos-options'
 import type { DebtPaymentKind } from '~/components/reports/DebtPaymentDialog.vue'
+import type { PaymentReceiptInput } from '~/utils/print/payment-receipt'
 
 const { module, route } = useModuleRoute()
 const store = useAppDataStore()
@@ -98,6 +101,11 @@ const debtSelectedRows = ref<AppRecord[]>([])
 // Report row menu.
 const printSaleOpen = ref(false)
 const printSaleId = ref('')
+// "Payment Receipt" chooser (A4/A5) opened right after a debt payment is
+// recorded (customer or supplier), reprinting the party a receipt for the
+// invoices the lump payment settled.
+const paymentReceiptOpen = ref(false)
+const paymentReceiptData = ref<PaymentReceiptInput | null>(null)
 
 const current = computed(() => module.value)
 const pending = computed(() => Boolean(current.value && store.isLoading(current.value.collection)))
@@ -213,10 +221,12 @@ const result = computed(() => {
     }))
     return { rows: all, total: queried.total, all }
   }
-  // Debt reports list outstanding balances only: once a debt is paid in full
-  // it leaves the table instead of lingering as a settled row.
+  // Debt reports show ONE summary row per party (per currency): open invoice
+  // rows are aggregated, so a fully settled party leaves the table. The row
+  // keeps its source documents for lump payments + the printed receipt.
   if (current.value.collection === 'customerDebts' || current.value.collection === 'supplierDebts') {
-    const all = openDebts(queried.all)
+    const kind: DebtKind = current.value.collection === 'customerDebts' ? 'customer' : 'supplier'
+    const all = summarizeDebtsByParty(queried.all, kind)
     return { rows: all, total: all.length, all }
   }
   return queried
@@ -406,12 +416,27 @@ function cellText(row: Record<string, unknown>, key: string) {
   if (current.value?.collection === 'products' && PRODUCT_STOCK_QTY_KEYS.has(key)) {
     return stockBreakdownLabel(source[key], source)
   }
+  // Customers/Suppliers lists: Outstanding Debt is the LIVE per-currency open
+  // balance, so paying a debt updates the list at the next refresh.
+  const collection = current.value?.collection
+  if ((collection === 'customers' && key === 'debtBalance')
+    || (collection === 'suppliers' && key === 'totalDebt')) {
+    return debtCellText(source as AppRecord)
+  }
   return formatModuleCell(
     source[key],
     key,
     isMoneyKey(key) ? String(source.currency || preferences.currency) : undefined,
     fieldTypeForKey(key),
   )
+}
+
+/** Outstanding Debt display: one money amount per document currency, e.g.
+ *  "$35.00" or "$35.00 + 410,000៛" — different currencies never mix. */
+function debtCellText(row: AppRecord): string {
+  const entries = debtBalanceEntries(row)
+  if (!entries.length) return '—'
+  return entries.map(entry => formatMoney(entry.amount, entry.currency)).join(' + ')
 }
 
 function auditEntityLinkFor(row: Record<string, unknown>) {
@@ -498,7 +523,8 @@ const exportUserOptions = computed<ExportFieldOption[]>(() => {
 
 /**
  * Debt export rows: fetch EVERY document matching the dialog filters (date
- * range + party + user) from the backend, not just the page cached on screen.
+ * range + party + user) from the backend, not just the page cached on screen,
+ * then aggregate them into the same per-party summary rows the table shows.
  */
 async function fetchDebtExportRows(request: ExportRequest): Promise<Record<string, unknown>[]> {
   const collection = current.value?.collection
@@ -513,13 +539,15 @@ async function fetchDebtExportRows(request: ExportRequest): Promise<Record<strin
     supplierId: partyType === 'supplier' ? (request.partyId || undefined) : undefined,
     userId: request.userId || undefined,
   }
-  return fetchAllListRows<Record<string, unknown>>(async ({ page, limit }) => {
+  const rows = await fetchAllListRows<Record<string, unknown>>(async ({ page, limit }) => {
     const pageResult = await entityRepository.list(collection, { ...query, page, limit })
     return {
       items: pageResult.items as unknown as Record<string, unknown>[],
       total: pageResult.meta?.total ?? null,
     }
   })
+  if (!partyType) return rows
+  return summarizeDebtsByParty(rows as AppRecord[], partyType)
 }
 
 /** Excel/PDF export: the Python backend renders the page's filtered rows. */
@@ -575,7 +603,11 @@ async function onExport(request: ExportRequest) {
         }
         else if (column.type === 'money' || column.type === 'number') {
           const numeric = Number(value)
-          out[column.key] = Number.isFinite(numeric) ? numeric : cellText(row, column.key)
+          // A null money value (e.g. a mixed-currency Outstanding Debt) is not
+          // zero — send the display text ("$35 + 410,000៛") instead.
+          out[column.key] = value == null || !Number.isFinite(numeric)
+            ? cellText(row, column.key)
+            : numeric
         }
         else {
           out[column.key] = cellText(row, column.key)
@@ -857,41 +889,110 @@ function openDebtPayment(kind: DebtPaymentKind, row: AppRecord) {
   debtPayOpen.value = true
 }
 
+/** Payment document number(s) from a pay response: the party-level endpoint
+ *  returns one payment per settled invoice; a single-debt call returns one. */
+function paymentDocumentNumbers(result: unknown): string {
+  const rows = Array.isArray(result) ? result : [result]
+  return rows
+    .map((row) => {
+      const record = row as Record<string, unknown> | null
+      return String(record?.paymentNo ?? record?.payment_no ?? '')
+    })
+    .filter(Boolean)
+    .join(', ')
+}
+
+/**
+ * Receipt payload assembled BEFORE the payment mutates the debt list: the
+ * summary row's open documents allocated oldest-first (the exact order the
+ * backend settles them), the balance before/after, and the party snapshot.
+ * `collected` records the currency/amount the customer actually handed over
+ * when it differs from the debt's own currency (e.g. riel cash for a USD debt).
+ */
+function buildDebtReceipt(
+  row: AppRecord,
+  kind: DebtPaymentKind,
+  amount: number,
+  paymentMethod: string,
+  collected?: { currency: string, amount: number, rate: number | null },
+): PaymentReceiptInput {
+  const balanceBefore = Number(row.remainingAmount || 0)
+  const paid = Math.max(0, Number(amount) || 0)
+  return {
+    shopName: '',
+    partyKind: kind,
+    partyName: String(kind === 'customer' ? row.customer : row.supplier || ''),
+    receiptNo: '',
+    dateLabel: formatDateTime(new Date()),
+    cashier: String(auth.user?.name || auth.user?.email || ''),
+    currency: String(row.currency || 'USD'),
+    paymentMethod,
+    reference: '',
+    balanceBefore,
+    amountPaid: paid,
+    balanceAfter: Math.max(0, balanceBefore - paid),
+    collectedCurrency: collected?.currency,
+    collectedAmount: collected?.amount,
+    exchangeRate: collected?.rate ?? undefined,
+    documents: allocateDebtPayment(row, paid).map(allocation => ({
+      docNo: allocation.docNo,
+      date: allocation.date,
+      amount: allocation.amount,
+    })),
+  }
+}
+
+/** After a saved payment: offer the receipt (A4/A5) for the money received. */
+function offerPaymentReceipt(receipt: PaymentReceiptInput | null, paymentNumbers: string) {
+  if (!receipt) return
+  paymentReceiptData.value = { ...receipt, receiptNo: paymentNumbers }
+  paymentReceiptOpen.value = true
+}
+
 async function submitDebtPayment(payload: {
   kind: DebtPaymentKind
-  debtId: string
   partyId: string
   amount: number
   paymentMethod: string
-  reference: string | null
+  currency?: string
+  /** Collected in another currency than the debt's (receipt shows both). */
+  collectedCurrency?: string
+  collectedAmount?: number
+  exchangeRate?: number | null
 }) {
+  const row = debtPayRow.value
+  const receipt = row
+    ? buildDebtReceipt(row, payload.kind, payload.amount, payload.paymentMethod, payload.collectedCurrency
+      ? { currency: payload.collectedCurrency, amount: Number(payload.collectedAmount || 0), rate: payload.exchangeRate ?? null }
+      : undefined)
+    : null
   debtPayBusy.value = true
-  busyId.value = payload.debtId
+  busyId.value = String(row?.id || '')
   try {
+    let payments: unknown = null
     if (payload.kind === 'customer') {
-      await posCommands.payCustomerDebt({
+      payments = await posCommands.payCustomerDebt({
         customerId: payload.partyId,
-        debtId: payload.debtId,
         amount: payload.amount,
         paymentMethod: payload.paymentMethod,
-        reference: payload.reference,
+        currency: payload.currency,
       })
       await store.fetchList('customerDebts')
       await store.fetchList('customers')
     }
     else {
-      await posCommands.paySupplierDebt({
+      payments = await posCommands.paySupplierDebt({
         supplierId: payload.partyId,
-        debtId: payload.debtId,
         amount: payload.amount,
         paymentMethod: payload.paymentMethod,
-        reference: payload.reference,
+        currency: payload.currency,
       })
       await store.fetchList('supplierDebts')
       await store.fetchList('suppliers')
     }
     debtPayOpen.value = false
     toast.add({ title: t('app.reports.paymentSaved'), color: 'success' })
+    offerPaymentReceipt(receipt, paymentDocumentNumbers(payments))
   }
   catch (error: unknown) {
     if (!isApiErrorHandled(error)) {
@@ -927,30 +1028,39 @@ function openSelectedDebtPayment() {
 async function submitSelectedDebtPayment(payload: {
   amount: number
   paymentMethod: string
-  reference: string | null
+  collectedCurrency?: string
+  collectedAmount?: number
+  exchangeRate?: number | null
 }) {
   const collection = current.value?.collection
   const rows = debtSelectedRows.value
   if (!collection || !rows.length) return
-  const partyId = String(collection === 'customerDebts' ? rows[0]!.customerId : rows[0]!.supplierId)
+  const kind: DebtPaymentKind = collection === 'customerDebts' ? 'customer' : 'supplier'
+  const row = rows[0]!
+  const partyId = String(collection === 'customerDebts' ? row.customerId : row.supplierId)
+  const currency = String(row.currency || 'USD')
+  const receipt = buildDebtReceipt(row, kind, payload.amount, payload.paymentMethod, payload.collectedCurrency
+    ? { currency: payload.collectedCurrency, amount: Number(payload.collectedAmount || 0), rate: payload.exchangeRate ?? null }
+    : undefined)
   debtPayBusy.value = true
   try {
+    let payments: unknown = null
     if (collection === 'customerDebts') {
-      await posCommands.payCustomerDebt({
+      payments = await posCommands.payCustomerDebt({
         customerId: partyId,
         amount: payload.amount,
         paymentMethod: payload.paymentMethod,
-        reference: payload.reference,
+        currency,
       })
       await store.fetchList('customerDebts')
       await store.fetchList('customers')
     }
     else {
-      await posCommands.paySupplierDebt({
+      payments = await posCommands.paySupplierDebt({
         supplierId: partyId,
         amount: payload.amount,
         paymentMethod: payload.paymentMethod,
-        reference: payload.reference,
+        currency,
       })
       await store.fetchList('supplierDebts')
       await store.fetchList('suppliers')
@@ -958,6 +1068,7 @@ async function submitSelectedDebtPayment(payload: {
     debtSelectedOpen.value = false
     rowSelection.value = {}
     toast.add({ title: t('app.reports.paymentSaved'), color: 'success' })
+    offerPaymentReceipt(receipt, paymentDocumentNumbers(payments))
   }
   catch (error: unknown) {
     if (!isApiErrorHandled(error)) {
@@ -1482,6 +1593,11 @@ function filterItems(filter: { options?: readonly ModuleSelectOption[] | ModuleS
     <CommonAppInvoicePrintDialog
       v-model:open="printSaleOpen"
       :sale-id="printSaleId"
+    />
+
+    <CommonAppPaymentReceiptDialog
+      v-model:open="paymentReceiptOpen"
+      :receipt="paymentReceiptData"
     />
 
   </div>

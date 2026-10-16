@@ -437,6 +437,10 @@ class DebtPaymentRequest(BaseModel):
     payment_method: str = Field(pattern="^(CASH|BANK_QR)$")
     reference_no: str | None = Field(default=None, max_length=100)
     note: str | None = None
+    # Party-level payment only: settle just this document currency (the debt
+    # report groups a party's debts per currency; omitting it keeps the legacy
+    # behaviour of settling every open debt oldest-first).
+    currency: str | None = Field(default=None, pattern="^(USD|KHR)$")
 
 
 class CustomerDebtOut(BaseModel):

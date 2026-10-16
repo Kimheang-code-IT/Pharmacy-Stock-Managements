@@ -359,7 +359,8 @@ export function saleInvoicePrintInputFromRecord(
 
 /**
  * Reprint input from a sale receipt payload (GET receipt of a sale /
- * movement invoice). Same snapshot rule as `saleInvoicePrintInputFromRecord`.
+ * movement invoice). Same snapshot rule as `saleInvoicePrintInputFromRecord`:
+ * a KHR sale reprints in KHR with its stored rate, never re-based to USD.
  */
 export function saleReceiptPrintInput(
   receipt: SaleReceipt,
@@ -382,8 +383,11 @@ export function saleReceiptPrintInput(
       discountPercent: Number(item.discount || 0),
     })),
     deliveryPrice: Number(receipt.deliveryPrice || 0),
+    // Stored invoice: no other-invoice debt is pulled into this document.
     previousDebtAmount: 0,
-    depositAmount: Number(receipt.deposit || 0),
+    // Paid on THIS invoice = the sale's recorded paid amount (the receipt has
+    // no separate deposit; using it printed "paid 0" on every reprint).
+    depositAmount: Number(receipt.paidAmount || 0),
     outstandingAmount: Number(receipt.remaining || 0),
   }
 }

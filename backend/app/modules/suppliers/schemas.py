@@ -41,6 +41,10 @@ class SupplierOut(BaseModel):
     note: str | None
     status: str
     created_at: datetime
+    # Open debt remaining per document currency (live), e.g. {"USD": "35.0000"}.
+    # The Suppliers list renders 'Outstanding Debt' from this — never summed
+    # across currencies.
+    debt_balances: dict[str, str] = Field(default_factory=dict)
 
     @computed_field
     @property
@@ -70,3 +74,7 @@ class SupplierDebtPaymentRequest(BaseModel):
     payment_method: str = Field(pattern="^(CASH|BANK_QR)$")
     reference_no: str | None = Field(default=None, max_length=100)
     note: str | None = None
+    # Party-level payment only: settle just this document currency (the debt
+    # report groups a supplier's debts per currency; omitting it keeps the
+    # legacy behaviour of settling every open debt oldest-first).
+    currency: str | None = Field(default=None, pattern="^(USD|KHR)$")

@@ -26,6 +26,10 @@ class SupplierService:
     async def list(self, *, q, status, page, limit) -> tuple[list[Supplier], int]:
         return await self.repo.list(q=q, status=status, page=page, limit=limit)
 
+    async def debt_balances(self, supplier_ids) -> dict:
+        """Open debt totals per supplier + currency (list 'Outstanding Debt')."""
+        return await self.repo.debt_balances(list(supplier_ids))
+
     async def get(self, supplier_id) -> Supplier:
         supplier = await self.repo.get(supplier_id)
         if supplier is None:
@@ -203,12 +207,17 @@ class SupplierService:
         """Supplier-level payment (no debt id chosen by the caller): settles
         open debts oldest-first in ONE transaction. Overpayment is rejected."""
         supplier = await self.get(supplier_id)
+        filters = [
+            SupplierDebt.supplier_id == supplier.id,
+            SupplierDebt.remaining_amount > 0,
+        ]
+        # Party-level payment from the debt report targets ONE currency (its
+        # rows group per currency); omitting it settles every open debt.
+        if payload.currency:
+            filters.append(SupplierDebt.currency == payload.currency)
         result = await self.session.execute(
             select(SupplierDebt)
-            .where(
-                SupplierDebt.supplier_id == supplier.id,
-                SupplierDebt.remaining_amount > 0,
-            )
+            .where(*filters)
             .order_by(SupplierDebt.created_at.asc(), SupplierDebt.id.asc())
             .with_for_update()
             .execution_options(populate_existing=True)

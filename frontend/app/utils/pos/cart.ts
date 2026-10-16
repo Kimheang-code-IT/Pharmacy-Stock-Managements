@@ -113,6 +113,53 @@ export function roundMoney(value: number): number {
 }
 
 /**
+ * Conversion factor between the invoice currencies (`rate` = KHR per 1 USD).
+ * USD → KHR multiplies by the rate; KHR → USD divides by it. Identity when the
+ * currencies match or no valid rate is known.
+ */
+export function currencyFactor(from: 'USD' | 'KHR', to: 'USD' | 'KHR', rate: number): number {
+  if (from === to) return 1
+  const parsed = Number(rate)
+  if (!(parsed > 0)) return 1
+  return to === 'KHR' ? parsed : 1 / parsed
+}
+
+/** Convert ONE money amount between the invoice currencies (4 dp). */
+export function convertAmount(
+  value: number,
+  from: 'USD' | 'KHR',
+  to: 'USD' | 'KHR',
+  rate: number,
+): number {
+  return roundMoney(Number(value) * currencyFactor(from, to, rate))
+}
+
+/**
+ * Convert every stored cart price exactly once (line prices + FEFO batch
+ * allocations). Callers convert the header amounts (delivery, discount, paid)
+ * with `convertAmount` at the same rate so the whole document stays in ONE
+ * currency.
+ */
+export function convertCartLines(
+  lines: PosCartLine[],
+  from: 'USD' | 'KHR',
+  to: 'USD' | 'KHR',
+  rate: number,
+): void {
+  const factor = currencyFactor(from, to, rate)
+  if (factor === 1) return
+  lines.forEach((line) => {
+    line.unitPrice = roundMoney(line.unitPrice * factor)
+    if (line.batchAllocations) {
+      line.batchAllocations = line.batchAllocations.map(row => ({
+        ...row,
+        unitPrice: roundMoney(row.unitPrice * factor),
+      }))
+    }
+  })
+}
+
+/**
  * Apply a cashier-typed unit price to a line.
  *
  * An explicit price edit wins for the WHOLE line: the FEFO batch breakdown is

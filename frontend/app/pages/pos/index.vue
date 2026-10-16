@@ -18,6 +18,8 @@ import {
   availableStockInUom,
   cartDiscountTotal,
   cartSubtotal,
+  convertAmount,
+  convertCartLines,
   defaultLineUomFor,
   productImageUrl,
   roundMoney,
@@ -96,32 +98,18 @@ const saleCurrency = ref<'USD' | 'KHR'>('USD')
 const exchangeRateInput = ref<number | undefined>()
 const saleRate = computed(() =>
   saleCurrency.value === 'KHR' ? Math.max(0, Number(exchangeRateInput.value || 0)) : 1)
-/** USD→KHR rate the cashier entered on the payment keypad, used only when a
- *  tender is entered in a currency other than the (USD) invoice currency.
- *  Kept separate from `exchangeRateInput` so it can never pre-seed the cart
- *  currency switch, which must open its own rate dialog. */
-const paymentRateInput = ref<number | undefined>()
-/** Effective rate for a cross-currency tender: the keypad rate when known,
- *  else the sale's own rate (a KHR invoice always carries one). */
-const tenderRate = computed(() => {
-  const entered = Math.max(0, Number(paymentRateInput.value || 0))
-  if (entered > 0) return entered
-  return Math.max(0, Number(exchangeRateInput.value || 0))
-})
-/** Convert every stored cart price between currencies — once per switch, so
- *  toggling repeatedly never double-converts an amount. */
-function convertCartLines(from: 'USD' | 'KHR', to: 'USD' | 'KHR', rate: number) {
+/** Convert every invoice amount exactly once per currency switch: line prices
+ *  (incl. FEFO allocations), delivery fee, header discount, already-paid amount
+ *  and the outside-debt input (all recorded in the sale currency). The document
+ *  always stays in ONE currency — what the customer paid in is what the
+ *  invoice, report and reprint store. */
+function convertSaleAmounts(from: 'USD' | 'KHR', to: 'USD' | 'KHR', rate: number) {
   if (from === to || !(Number(rate) > 0)) return
-  const factor = to === 'KHR' ? rate : 1 / rate
-  cart.value.forEach((line) => {
-    line.unitPrice = roundMoney(line.unitPrice * factor)
-    if (line.batchAllocations) {
-      line.batchAllocations = line.batchAllocations.map(row => ({
-        ...row,
-        unitPrice: roundMoney(row.unitPrice * factor),
-      }))
-    }
-  })
+  convertCartLines(cart.value, from, to, rate)
+  deliveryPrice.value = convertAmount(deliveryPrice.value, from, to, rate)
+  editHeaderDiscount.value = convertAmount(editHeaderDiscount.value, from, to, rate)
+  outsideDebtInput.value = convertAmount(outsideDebtInput.value, from, to, rate)
+  if (paidInput.value != null) paidInput.value = convertAmount(Number(paidInput.value), from, to, rate)
 }
 /** Shared toggle logic: switching to KHR asks for the exchange rate through
  *  the shared dialog; cancelling keeps the previous currency. Switching
@@ -152,7 +140,7 @@ function onSaleCurrencyRequested(value: 'USD' | 'KHR') {
   }
   const rate = saleRate.value
   onSaleCurrencyChange(value)
-  convertCartLines(from, value, rate)
+  convertSaleAmounts(from, value, rate)
 }
 
 /** Shared rate dialog confirmed: record the rate, switch to KHR, convert. */
@@ -160,7 +148,23 @@ function onConfirmSaleRate(rate: number) {
   const parsed = Number(rate)
   if (!Number.isFinite(parsed) || parsed <= 0) return
   applySaleExchangeRate(parsed)
-  convertCartLines('USD', 'KHR', parsed)
+  convertSaleAmounts('USD', 'KHR', parsed)
+}
+
+/**
+ * Payment keypad currency (the $/៛ buttons while paying): the customer is
+ * paying in that currency, so the WHOLE invoice converts to it at the rate and
+ * is stored that way — a riel payment produces a KHR invoice, a dollar payment
+ * a USD invoice (never a mixed document).
+ */
+function onPaymentCurrencySwitch(payload: { currency: 'USD' | 'KHR', rate: number }) {
+  if (returnMode.value || payload.currency === saleCurrency.value) return
+  const from = saleCurrency.value
+  const rate = Number(payload.rate || saleRate.value || 0)
+  if (!(rate > 0)) return
+  if (payload.currency === 'KHR') applySaleExchangeRate(rate)
+  else onSaleCurrencyChange('USD')
+  convertSaleAmounts(from, payload.currency, rate)
 }
 const lastSaleNo = ref('')
 const lastSaleId = ref('')
@@ -189,6 +193,10 @@ const editLoading = ref(false)
  *  POS has no header-discount UI, so it must round-trip unchanged). */
 const editHeaderDiscount = ref(0)
 const editNote = ref('')
+/** True between a successful edit save and closing the print chooser: the
+ *  corrected invoice is offered for printing (A4/A5) right away, and the
+ *  Sales Report navigation runs only once the chooser is closed. */
+const editSavedPendingExit = ref(false)
 
 /** View-only: Sales Report Sale No → checkout panel, no edits / no submit. */
 const viewMode = ref(false)
@@ -376,14 +384,22 @@ function applyDefaultCustomer() {
   customerId.value = walkInCustomerId.value
 }
 
+/** The sale loaded in edit/view mode — its OWN debt row is this document, so
+ *  it must never be offered as "existing debt" to settle at the POS. */
+const loadedSaleId = computed(() => editSaleId.value || viewSaleId.value)
+
 const openDebts = computed<CheckoutDebtRow[]>(() => {
-  if (isWalkInCustomer.value) return []
+  // Editing is about THIS sale only: prior-debt settlement is not part of an
+  // edit (the sale edit endpoint cannot record it), so no debts are offered.
+  if (isWalkInCustomer.value || editMode.value) return []
   const salesById = Object.fromEntries(
     store.list('sales').map(row => [String(row.id), row]),
   )
   return store.list('customerDebts')
     .filter(row => String(row.customerId) === String(customerId.value))
     .filter(row => Number(row.remainingAmount || 0) > 0)
+    // Viewing a sale: hide its own debt from the "existing debt" summary too.
+    .filter(row => !loadedSaleId.value || String(row.saleId) !== loadedSaleId.value)
     .map((row) => {
       const sale = salesById[String(row.saleId)]
       return {
@@ -444,9 +460,11 @@ const outsideDebtAmount = computed(() =>
 const printedPreviousDebt = computed(() =>
   roundMoney(previousDebtTotal.value + outsideDebtAmount.value))
 /** Old debts can only be attached to a registered customer, and recording a
- *  receivable needs the same permission as a debt sale. */
+ *  receivable needs the same permission as a debt sale. Never on an edit
+ *  (the sale edit endpoint cannot record outside debt). */
 const canRecordOutsideDebt = computed(() =>
-  canDebtSale.value && !isWalkInCustomer.value && canOperate.value && !viewMode.value && !returnMode.value)
+  canDebtSale.value && !isWalkInCustomer.value && canOperate.value
+  && !viewMode.value && !returnMode.value && !editMode.value)
 // Outstanding after this sale = current-sale outstanding + previous debt not
 // settled at checkout (depositInput is the amount allocated to old debts).
 const totalOutstanding = computed(() => roundMoney(
@@ -712,6 +730,9 @@ watch(customerId, (id) => {
 })
 
 watch(paymentMethod, (method) => {
+  // Editing an invoice: the recorded paid amount is never cleared by a tender
+  // change (the edit keypad shows and keeps it; only the cashier edits it).
+  if (editMode.value) return
   if (method === 'Credit') paidInput.value = 0
   else paidInput.value = undefined
 })
@@ -742,7 +763,7 @@ async function loadReturnSale(saleId: string) {
     const productById = new Map(store.list('products').map(row => [String(row.id), row]))
     saleCurrency.value = sale.currency
     exchangeRateInput.value = sale.currency === 'KHR' ? sale.exchangeRate : undefined
-    paymentRateInput.value = undefined
+
     customerId.value = sale.customerId ? String(sale.customerId) : undefined
     customerName.value = sale.customerName
     returnInvoiceNo.value = sale.invoiceNo
@@ -886,13 +907,18 @@ async function loadEditSale(saleId: string) {
     return
   }
   editLoading.value = true
+  // An edit is about THIS sale only: never carry prior-debt settlement /
+  // outside-debt input over from a previous checkout session.
+  includedDebtIds.value = []
+  depositInput.value = 0
+  outsideDebtInput.value = 0
   try {
     await store.fetchList('products')
     const sale = await posCommands.getSale(saleId)
     const productById = new Map(store.list('products').map(row => [String(row.id), row]))
     saleCurrency.value = sale.currency
     exchangeRateInput.value = sale.currency === 'KHR' ? sale.exchangeRate : undefined
-    paymentRateInput.value = undefined
+
     customerId.value = sale.customerId ? String(sale.customerId) : undefined
     customerName.value = sale.customerName
     editInvoiceNo.value = sale.invoiceNo
@@ -941,6 +967,9 @@ function exitEditMode() {
   cart.value = []
   customerId.value = undefined
   customerName.value = ''
+  includedDebtIds.value = []
+  depositInput.value = 0
+  outsideDebtInput.value = 0
   step.value = 'cart'
   applyDefaultCustomer()
 }
@@ -954,7 +983,7 @@ async function loadViewSale(saleId: string) {
     const productById = new Map(store.list('products').map(row => [String(row.id), row]))
     saleCurrency.value = sale.currency
     exchangeRateInput.value = sale.currency === 'KHR' ? sale.exchangeRate : undefined
-    paymentRateInput.value = undefined
+
     customerId.value = sale.customerId ? String(sale.customerId) : undefined
     customerName.value = sale.customerName
     viewInvoiceNo.value = sale.invoiceNo
@@ -1005,6 +1034,22 @@ async function exitViewMode() {
   await navigateTo('/reports/sales')
 }
 
+/** View → Edit: the view flow already loaded the sale's checkout values, so
+ *  only the mode flags switch. Save then reprints via the A4/A5 chooser. */
+function editFromViewMode() {
+  if (!viewSaleId.value || !canSaleEdit.value) return
+  editMode.value = true
+  editSaleId.value = viewSaleId.value
+  editInvoiceNo.value = viewInvoiceNo.value
+  viewMode.value = false
+  viewSaleId.value = ''
+  viewInvoiceNo.value = ''
+  // Editing is sale-only: clear any debt-settlement state from the view.
+  includedDebtIds.value = []
+  depositInput.value = 0
+  outsideDebtInput.value = 0
+}
+
 /** Save the edited invoice (reverse + reapply on the backend). */
 async function saveEditSale() {
   if (!editSaleId.value || !cart.value.length || !canOperate.value || completing.value) return
@@ -1030,7 +1075,9 @@ async function saveEditSale() {
         factorToBase: line.factorToBase || 1,
       })),
       paymentMethod: paymentMethod.value,
-      paidAmount: paidAmount.value,
+      // Keypad-confirmed amount = this invoice's total paid after the edit
+      // (clamped to the new grand total; never below zero).
+      paidAmount: Math.min(Math.max(0, Number(paidInput.value || 0)), due.value),
       // Header-level discount only — line discounts ride on the items, so
       // sending the line total here would double-discount the sale.
       discount: editHeaderDiscount.value,
@@ -1047,6 +1094,14 @@ async function saveEditSale() {
     void store.fetchList('sales')
     void store.fetchList('customerDebts')
     void store.fetchList('stockMovements')
+    // Offer the corrected invoice for printing right away: the A4/A5 chooser
+    // opens automatically, and the report navigation waits until it closes
+    // (printed or dismissed). Without `pos.print` the flow stays as before.
+    if (canPrint.value) {
+      editSavedPendingExit.value = true
+      reprintOpen.value = true
+      return
+    }
     const invoice = editInvoiceNo.value
     exitEditMode()
     await navigateTo(`/reports/sales?q=${encodeURIComponent(invoice)}`)
@@ -1065,6 +1120,17 @@ async function saveEditSale() {
   }
 }
 
+/** The post-save print chooser closed (A4/A5 printed, or dismissed without
+ *  printing): leave edit mode and return to the Sales Report with the edited
+ *  invoice prefilled. The sale is already saved either way. */
+watch(reprintOpen, (open) => {
+  if (open || !editSavedPendingExit.value) return
+  editSavedPendingExit.value = false
+  const invoice = editInvoiceNo.value
+  exitEditMode()
+  void navigateTo(`/reports/sales?q=${encodeURIComponent(invoice)}`)
+})
+
 /* ------------------------------ Invoice print size ------------------------------ */
 
 /** Paper-size chooser opened after a successful Submit (A4 default). The
@@ -1076,9 +1142,18 @@ async function saveEditSale() {
 const pendingDelivery = ref<{ saleId: string, phone: string, location: string, fee: number } | null>(null)
 /** Checkout keypad confirmed: the keypad Total is this sale + existing-debt
  *  payment. Split the single tender into the part that pays the sale and the
- *  part that settles prior invoices, then submit. */
+ *  part that settles prior invoices, then submit. In EDIT mode the keypad
+ *  amount is the invoice's total paid after the edit — never split into old
+ *  debts and never zeroed by a Credit tender (which would refund the payment
+ *  already recorded on the invoice). */
 function onPaymentConfirm(amount: number) {
   const entered = Number.isFinite(amount) ? amount : 0
+  if (editMode.value) {
+    paidInput.value = Math.max(0, entered)
+    depositInput.value = 0
+    void completeSale()
+    return
+  }
   const split = checkoutTenderSplit(entered, due.value, depositInput.value, isCredit.value)
   paidInput.value = isCredit.value ? 0 : split.paid
   depositInput.value = split.deposit
@@ -1225,7 +1300,7 @@ async function completeSale() {
     paymentMethod.value = 'Cash'
     saleCurrency.value = 'USD'
     exchangeRateInput.value = undefined
-    paymentRateInput.value = undefined
+
     step.value = 'cart'
     applyDefaultCustomer()
     void store.fetchList('products')
@@ -1318,6 +1393,15 @@ async function completeSale() {
       <span>{{ t('app.pos.viewMode') }}</span>
       <span v-if="viewInvoiceNo" class="text-muted">· {{ viewInvoiceNo }}</span>
       <div class="ms-auto flex items-center gap-2">
+        <UButton
+          v-if="canSaleEdit && viewSaleId"
+          color="primary"
+          variant="soft"
+          size="xs"
+          icon="i-lucide-pencil"
+          :label="t('app.reports.edit')"
+          @click="editFromViewMode"
+        />
         <UButton
           v-if="canPrint && viewSaleId"
           color="neutral"
@@ -1412,7 +1496,7 @@ async function completeSale() {
       v-model:outside-debt="outsideDebtInput"
       v-model:included-debt-ids="includedDebtIds"
       v-model:paper-size="printPaperSize"
-      :exchange-rate="tenderRate"
+      :exchange-rate="Number(exchangeRateInput || 0)"
       :customer-phone="customerPhone"
       :customer-location="customerLocation"
       :sale-currency="saleCurrency"
@@ -1426,6 +1510,7 @@ async function completeSale() {
       :completing="completing"
       :disabled="viewMode || !canOperate"
       :view-mode="viewMode"
+      :edit-mode="editMode"
       :return-mode="returnMode"
       :return-reason="returnReason"
       :return-restock="returnRestock"
@@ -1436,7 +1521,7 @@ async function completeSale() {
       @update:return-restock="returnRestock = $event"
       @update:refund-disposition="returnRefundDisposition = $event"
       @update:refund-note="returnRefundNote = $event"
-      @update:exchange-rate="paymentRateInput = $event"
+      @switch-currency="onPaymentCurrencySwitch"
       @back="goBack"
       @complete="completeSale"
       @pay="onPaymentConfirm"

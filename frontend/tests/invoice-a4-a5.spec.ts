@@ -208,6 +208,40 @@ describe('USD/KHR invoice printing (stored currency + rate)', () => {
     expect(html).toContain('INV-000016')
     expect(html).toContain('4,100៛')
   })
+
+  it('reprint paid amount comes from the sale, never from a missing deposit', () => {
+    // The receipt contract has no `deposit` value (always 0); the paid line
+    // must use the sale's recorded paid amount — an invoice with $10 paid and
+    // $20 remaining used to reprint as "paid 0".
+    const receipt: SaleReceipt = {
+      saleId: 's1',
+      saleNo: 'SALE-000002',
+      invoiceNo: 'INV-000017',
+      date: '2026-02-01',
+      customer: 'Walk-in customer',
+      cashier: 'Sokha',
+      paymentMethod: 'CUSTOMER_DEBT',
+      note: '',
+      currency: 'USD',
+      exchangeRate: 1,
+      items: [{ name: 'Glove', quantity: 2, uom: 'PCS', unitPrice: 15, discount: 0, total: 30 }],
+      subtotal: 30,
+      discount: 0,
+      deliveryPrice: 0,
+      deposit: 0,
+      total: 30,
+      paidAmount: 10,
+      remaining: 20,
+    }
+    const input = saleReceiptPrintInput(receipt, 'Demo Shop')
+    expect(input.depositAmount).toBe(10)
+    expect(input.previousDebtAmount).toBe(0)
+    expect(input.outstandingAmount).toBe(20)
+    const html = normalize(buildSaleInvoiceHtml(input, 'A4'))
+    // Paid $10 and outstanding $20 both render on the paper.
+    expect(html).toContain('$10.00')
+    expect(html).toContain('$20.00')
+  })
 })
 
 describe('smart one-page invoice layout (A4/A5)', () => {

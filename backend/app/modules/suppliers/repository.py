@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from decimal import Decimal
+from uuid import UUID
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.suppliers.models import Supplier
+from app.modules.suppliers.models import Supplier, SupplierDebt
 
 
 class SupplierRepository:
@@ -26,6 +29,27 @@ class SupplierRepository:
             stmt.order_by(Supplier.name).offset((page - 1) * limit).limit(limit)
         )
         return list(rows.scalars().all()), int(total)
+
+    async def debt_balances(self, supplier_ids: list[UUID]) -> dict[UUID, dict[str, Decimal]]:
+        """Open (remaining > 0) debt totals per supplier **and document currency**
+        — the Suppliers list 'Outstanding Debt' column. Live sums over the debt
+        rows, so every payment is reflected immediately and amounts of different
+        currencies are never added together."""
+        if not supplier_ids:
+            return {}
+        result = await self.session.execute(
+            select(
+                SupplierDebt.supplier_id,
+                SupplierDebt.currency,
+                func.coalesce(func.sum(SupplierDebt.remaining_amount), 0),
+            )
+            .where(SupplierDebt.supplier_id.in_(supplier_ids), SupplierDebt.remaining_amount > 0)
+            .group_by(SupplierDebt.supplier_id, SupplierDebt.currency)
+        )
+        balances: dict[UUID, dict[str, Decimal]] = {}
+        for supplier_id, currency, total in result.all():
+            balances.setdefault(supplier_id, {})[str(currency or "USD")] = total
+        return balances
 
     async def get(self, supplier_id) -> Supplier | None:
         return await self.session.get(Supplier, supplier_id)

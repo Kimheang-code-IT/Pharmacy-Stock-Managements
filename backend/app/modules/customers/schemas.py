@@ -35,6 +35,10 @@ class CustomerOut(BaseModel):
     status: str
     is_walk_in: bool
     created_at: datetime
+    # Open debt remaining per document currency (live), e.g. {"USD": "35.0000"}.
+    # The Customers list renders 'Outstanding Debt' from this — never summed
+    # across currencies.
+    debt_balances: dict[str, str] = Field(default_factory=dict)
 
     @computed_field
     @property

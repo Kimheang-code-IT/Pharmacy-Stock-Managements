@@ -346,7 +346,7 @@ function adaptEntityOut(collection: ApiCollection, row: Record<string, unknown>)
   if (collection === 'categories' || collection === 'uoms') {
     return { ...row, status: statusToUiDialect(row.status) }
   }
-  if (collection === 'customers' || collection === 'suppliers') return adaptPartyLocationOut(row)
+  if (collection === 'customers' || collection === 'suppliers') return adaptPartyLocationOut(row, collection)
   if (collection === 'customerDebts') return adaptCustomerDebtOut(row)
   if (collection === 'supplierDebts') return adaptSupplierDebtOut(row)
   if (collection === 'deliveryNotes') return adaptDeliveryNoteOut(row)
@@ -519,15 +519,35 @@ function adaptStockMovementOut(row: Record<string, unknown>): Record<string, unk
 }
 
 /** UI `location` maps to backend `address`; email is not used on parties. */
-function adaptPartyLocationOut(row: Record<string, unknown>): Record<string, unknown> {
+function adaptPartyLocationOut(row: Record<string, unknown>, collection: ApiCollection): Record<string, unknown> {
   const location = String(row.location ?? row.address ?? '').trim()
+  const balances = adaptPartyDebtBalances(row.debt_balances ?? row.debtBalances)
+  const scalarKey = collection === 'customers' ? 'debtBalance' : 'totalDebt'
+  const scalarValues = Object.values(balances)
   return {
     ...row,
     id: asRecordId(row.id),
     location,
     address: location,
     status: statusToUiDialect(row.status),
+    // Live open-debt totals per document currency (Customers/Suppliers list
+    // 'Outstanding Debt'). Mixed currencies never collapse into one number.
+    debtBalances: balances,
+    [scalarKey]: scalarValues.length === 1
+      ? scalarValues[0]
+      : (scalarValues.length === 0 ? Number(row[scalarKey] ?? 0) : null),
   }
+}
+
+/** Backend per-currency debt balances (string amounts) → positive UI numbers. */
+function adaptPartyDebtBalances(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object') return {}
+  const balances: Record<string, number> = {}
+  for (const [currency, amount] of Object.entries(value as Record<string, unknown>)) {
+    const numeric = Number(amount)
+    if (Number.isFinite(numeric) && numeric > 0) balances[String(currency).toUpperCase()] = numeric
+  }
+  return balances
 }
 
 function adaptPartyLocationIn(input: Record<string, unknown>): Record<string, unknown> {
@@ -1213,6 +1233,8 @@ export function createHttpPosCommandRepository(): PosCommandRepository {
       amount: input.amount,
       payment_method: canonicalPaymentMethod(input.paymentMethod),
       reference_no: input.reference ?? null,
+      // Party-level payment: settle one document currency only (debt report row).
+      ...(input.currency ? { currency: input.currency } : {}),
     })) as AppRecord
   }
 
@@ -1225,6 +1247,7 @@ export function createHttpPosCommandRepository(): PosCommandRepository {
       amount: input.amount,
       payment_method: canonicalPaymentMethod(input.paymentMethod),
       reference_no: input.reference ?? null,
+      ...(input.currency ? { currency: input.currency } : {}),
     })) as AppRecord
   }
 
@@ -1376,6 +1399,10 @@ function adaptSaleReceiptOut(data: Record<string, unknown>, fallbackSaleId: stri
     cashier: String(data.cashier ?? data.created_by_name ?? ''),
     paymentMethod: String(data.payment_method ?? data.paymentMethod ?? ''),
     note: String(data.note ?? ''),
+    // Document currency + rate snapshot: a KHR invoice reprints in KHR with
+    // its stored rate — never re-based to USD.
+    currency: String(data.currency ?? data.currencyCode ?? 'USD'),
+    exchangeRate: Number(data.exchange_rate ?? data.exchangeRate ?? 1) || 1,
     items: items.map(item => ({
       name: String(item.name ?? item.product_name ?? ''),
       quantity: Number(item.quantity ?? item.qty ?? 0),

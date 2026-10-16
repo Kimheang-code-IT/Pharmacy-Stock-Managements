@@ -18,7 +18,7 @@ export const PRINT_IFRAME_SIZES: Record<PrintPaperSize, { width: string, height:
 }
 
 /** Khmer-first stack so invoice Khmer (and Latin) use a Khmer font, not Arial. */
-const PRINT_FONT_STACK = '"Khmer OS Content", "Khmer OS", "Noto Sans Khmer", "Hanuman", sans-serif'
+export const PRINT_FONT_STACK = '"Khmer OS Content", "Khmer OS", "Noto Sans Khmer", "Hanuman", sans-serif'
 
 /** Load Khmer fonts inside the print iframe (main app fonts are not inherited). */
 export const PRINT_FONT_LINKS = `<link rel="preconnect" href="https://fonts.googleapis.com">

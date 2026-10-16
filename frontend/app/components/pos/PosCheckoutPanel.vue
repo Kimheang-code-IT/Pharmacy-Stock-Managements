@@ -30,7 +30,8 @@ const props = defineProps<{
   deliveryLocation: string
   paymentMethod: string
   paidInput?: number
-  /** KHR per 1 USD — lets the keypad settle a cross-currency tender. */
+  /** KHR per 1 USD — the invoice's rate; the keypad asks for it when a KHR
+   *  currency switch needs one. */
   exchangeRate?: number
   deliveryPrice: number
   needsDelivery: boolean
@@ -59,6 +60,12 @@ const props = defineProps<{
   disabled?: boolean
   /** View-only: sale detail from Sales Report — no edits, Close instead of Submit. */
   viewMode?: boolean
+  /**
+   * Edit mode: the checkout is about THIS sale only. Prior-debt settlement /
+   * outside debt never appear (the sale edit endpoint cannot record them), so
+   * the payment keypad totals exactly the edited invoice amount.
+   */
+  editMode?: boolean
   /** Return mode: the cart holds original-invoice lines to return. */
   returnMode?: boolean
   returnReason?: string
@@ -80,7 +87,8 @@ const emit = defineEmits<{
   'update:customerLocation': [value: string]
   'update:paymentMethod': [value: string]
   'update:paidInput': [value: number | undefined]
-  'update:exchangeRate': [value: number]
+  /** Payment keypad currency: the invoice converts to the paid currency. */
+  'switchCurrency': [payload: { currency: 'USD' | 'KHR', rate: number }]
   'update:deliveryPrice': [value: number]
   'update:deliveryPhone': [value: string]
   'update:deliveryLocation': [value: string]
@@ -413,13 +421,14 @@ watch(() => props.cart.length, (length) => {
           :total="due"
           :delivery-price="appliedDeliveryPrice"
           :existing-debt="depositInput"
+          :prefill-amount="editMode ? Number(paidInput || 0) : undefined"
           :currency="saleCurrency"
           :exchange-rate="exchangeRate"
           :payment-method="paymentMethod"
           :busy="completing"
           :disabled="disabled"
           @confirm="onKeypadConfirm"
-          @update:exchange-rate="emit('update:exchangeRate', $event)"
+          @switch-currency="emit('switchCurrency', $event)"
           @cancel="paying = false"
         />
         <div v-else-if="returnMode" class="grid gap-3">
@@ -513,8 +522,9 @@ watch(() => props.cart.length, (length) => {
           </div>
         </div>
         <div v-else class="flex flex-1 flex-col gap-6">
-          <!-- Top: Delivery / Debt / Add customer on one line. -->
-          <div class="grid grid-cols-3 gap-2">
+          <!-- Top: Delivery / Debt / Add customer on one line. Edit mode is
+               about this sale only, so the debt entry point is hidden. -->
+          <div class="grid gap-2" :class="editMode ? 'grid-cols-2' : 'grid-cols-3'">
             <UButton
               block
               size="lg"
@@ -526,6 +536,7 @@ watch(() => props.cart.length, (length) => {
               @click="openDelivery"
             />
             <UButton
+              v-if="!editMode"
               block
               size="lg"
               color="neutral"
@@ -586,7 +597,7 @@ watch(() => props.cart.length, (length) => {
           </UFormField>
 
           <UFormField
-            v-if="hasCustomerDebts"
+            v-if="hasCustomerDebts && !editMode"
             :label="t('app.pos.depositTotal')"
             size="md"
             :error="errorFor('includedDebtIds')"
