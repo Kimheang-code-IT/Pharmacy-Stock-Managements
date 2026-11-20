@@ -210,6 +210,30 @@ Inside the app, destructive reset/clear is guarded (password reauth + one-use
 confirmation token + exact phrase + automatic pre-deletion backup) — see the
 Settings page. Audit history and the protected system-event store survive.
 
+### Demo data
+
+`backend/scripts/seed_demo.py` fills an (empty) database with a complete demo
+dataset through the real backend services: categories/brands, 3 suppliers,
+4 customers, 11 products (some batch + expiry tracked, BOX/CAN pricing rows),
+4 purchases (supplier debts included), 5 POS sales (cash, bank QR, partial
+payment, unpaid KHR invoice), a customer debt payment, a damage movement and a
+delivery note. It creates `admin@gmail.com` / `123456` when no user exists and
+skips itself when demo data is already present. Never for production.
+
+```powershell
+# reset first if the database already has data (irreversible!):
+docker compose run --rm api python scripts/clear_data.py --yes
+# then seed the demo data (run from this folder, where docker-compose.yml is):
+docker compose run --rm api python scripts/seed_demo.py
+```
+
+The stack runs with `ENVIRONMENT=production`, so the last command needs the
+explicit `--confirm-production` flag (demo data never belongs in real
+production):
+```powershell
+docker compose run --rm api python scripts/seed_demo.py --confirm-production
+```
+
 ## 5. Upgrade
 
 ```powershell
@@ -253,6 +277,7 @@ in step by restoring the backup taken before the upgrade.
 | `scripts\restore-test.ps1` | Restore the newest backup into a scratch DB. |
 | `scripts\init-env.ps1` | Create `.env` with strong random secrets. |
 | `scripts\install-client.ps1` / `.sh` | Clone + build + start from source. |
+| `backend\scripts\seed_demo.py` | Fill an empty DB with the demo dataset (products, purchases, sales, debts; admin@gmail.com / 123456). |
 | `scripts\deploy-from-registry.ps1` / `.sh` | Pull prebuilt GHCR images and start (remote prod). |
 | `scripts\start-docker.ps1` / `.sh` | Start the **development** stack (`docker compose up -d --build`). |
 | `scripts\prepare-production.ps1` | First-time local prep (creates `.env`, cleans caches). |

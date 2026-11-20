@@ -217,13 +217,21 @@ class POSService:
             selling_price=base_price if base_price is not None else product.selling_price,
             quantity=sellable_stock if sellable_stock is not None else (balance.quantity if balance else Decimal("0")),
             sellable_stock=sellable_stock if sellable_stock is not None else (balance.quantity if balance else Decimal("0")),
+            # The camelCase twin fields are separate schema fields, not aliases:
+            # left unfilled they serialise with their DEFAULT (sellableStock=0,
+            # uomConversions=[]) and the SPA's adapter, which prefers the camel
+            # key, saw every scanned product as "Out of stock".
+            sellableStock=sellable_stock if sellable_stock is not None else (balance.quantity if balance else Decimal("0")),
             next_batch_no=pos_info.get("next_batch_no"),
+            nextBatchNo=pos_info.get("next_batch_no"),
             price_configured=price_configured,
+            priceConfigured=price_configured,
             image_object_key=product.image_object_key,
             image_url=resolve_media_url(product.image_object_key),
             uom_id=product.uom_id,
             uom_symbol=product.uom_ref.symbol if product.uom_ref else None,
             uom_conversions=conversions,
+            uomConversions=conversions,
             status=product.status,
         )
 
@@ -1110,6 +1118,20 @@ class POSService:
         )
         debt_remaining = Decimal(debt_result.scalar_one())
 
+        # Customer's TOTAL open debt across ALL invoices (this sale + any other
+        # unpaid ones), in this sale's currency so the printed amounts never mix
+        # currencies. The reprint shows it on ខ្វះសរុប whenever it is > 0.
+        customer_total_debt = Decimal("0")
+        if sale.customer_id is not None:
+            total_debt_result = await self.session.execute(
+                select(func.coalesce(func.sum(CustomerDebt.remaining_amount), 0)).where(
+                    CustomerDebt.customer_id == sale.customer_id,
+                    CustomerDebt.currency == sale.currency,
+                    CustomerDebt.remaining_amount > 0,
+                )
+            )
+            customer_total_debt = Decimal(total_debt_result.scalar_one())
+
         method_result = await self.session.execute(
             select(Payment.payment_method)
             .where(Payment.sale_id == sale.id, Payment.payment_type == "SALE_PAYMENT")
@@ -1175,6 +1197,9 @@ class POSService:
             if sale.debt_amount == 0
             else "0.00",
             "debt_remaining": str(debt_remaining),
+            # Total open debt of this customer over all invoices (sale currency).
+            "customer_total_debt": str(customer_total_debt),
+            "customerTotalDebt": str(customer_total_debt),
             "payment_method": payment_method,
             "payment_status": sale.payment_status,
             "note": sale.note,

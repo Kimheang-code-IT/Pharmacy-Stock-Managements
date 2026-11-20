@@ -389,6 +389,9 @@ export interface SaleReceipt {
   total: number
   paidAmount: number
   remaining: number
+  /** Total open debt of the customer over ALL invoices, in the sale currency
+   *  (0 when the sale has no registered customer or the backend is older). */
+  customerTotalDebt?: number
   /** Currency snapshot of the sale (defaults to USD). */
   currency?: string
   /** Exchange rate snapshot as 1 USD = X KHR (when recorded). */

@@ -49,7 +49,6 @@ export const adminModules: ModuleConfig[] = [
     collection: 'users',
     titleField: 'displayName',
     columns: [
-      col('username', 'Username', 'ឈ្មោះអ្នកប្រើ'),
       col('displayName', 'Display Name', 'ឈ្មោះបង្ហាញ'),
       col('email', 'Email', 'អ៊ីមែល'),
       col('role', 'Role', 'តួនាទី', { labelKey: 'core.fields.roleAssignments' }),
@@ -58,10 +57,9 @@ export const adminModules: ModuleConfig[] = [
       col('lastLogin', 'Last Login', 'ចូលចុងក្រោយ'),
     ],
     fields: [
-      f('username', 'Username', 'ឈ្មោះអ្នកប្រើ', 'General', 'ទូទៅ', 'text', undefined, {
-        required: true,
-        helpKey: 'app.modules.users.fieldHelp.username',
-      }),
+      // No username field: backend users authenticate with the email only, so
+      // a typed username was silently dropped by adaptUserIn and the list then
+      // showed an email-derived value — the "wrong data after save" bug.
       f('displayName', 'Display Name', 'ឈ្មោះបង្ហាញ', 'General', 'ទូទៅ', 'text', undefined, { required: true }),
       f('email', 'Email', 'អ៊ីមែល', 'General', 'ទូទៅ', 'text', undefined, { required: true }),
       f('password', 'Password', 'ពាក្យសម្ងាត់', 'General', 'ទូទៅ', 'password', undefined, {

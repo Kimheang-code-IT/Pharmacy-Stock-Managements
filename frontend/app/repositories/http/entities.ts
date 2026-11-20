@@ -1418,6 +1418,8 @@ function adaptSaleReceiptOut(data: Record<string, unknown>, fallbackSaleId: stri
     total: Number(data.grand_total ?? data.total ?? 0),
     paidAmount: Number(data.paid_amount ?? data.paid ?? data.paidAmount ?? 0),
     remaining: Number(data.debt_remaining ?? data.remaining ?? data.remaining_amount ?? 0),
+    // Customer's total open debt over all invoices (sale currency).
+    customerTotalDebt: Number(data.customer_total_debt ?? data.customerTotalDebt ?? 0),
   }
 }
 

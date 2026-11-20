@@ -304,13 +304,13 @@ async def test_sales_summary_period_totals(client, db_session):
     tag = uuid.uuid4().hex[:8]
     headers = await admin_headers(client)
 
-    def totals(text: str) -> tuple[int, Decimal]:
+    def totals(text: str, currency: str = "USD") -> tuple[int, Decimal]:
+        # USD and KHR are reported as separate buckets (never summed); pick the
+        # requested currency's line so the delta is not broken by another
+        # bucket happening to render first.
         count = int(next(line for line in text.splitlines() if line.startswith("Invoices:")).split(":")[1])
         gross = Decimal(
-            next(line for line in text.splitlines() if line.startswith("Gross sales:"))
-            .split(":")[1]
-            .strip()
-            .split()[-1]
+            next(line for line in text.splitlines() if line.startswith(f"Gross sales: {currency} ")).split()[-1]
         )
         return count, gross
 

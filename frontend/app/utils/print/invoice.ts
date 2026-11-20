@@ -366,6 +366,8 @@ export function saleReceiptPrintInput(
   receipt: SaleReceipt,
   shopName: string,
 ): SaleInvoicePrintInput {
+  const customerTotalDebt = Number(receipt.customerTotalDebt || 0)
+  const invoiceRemaining = Number(receipt.remaining || 0)
   return {
     shopName,
     invoiceNo: receipt.invoiceNo || receipt.saleNo,
@@ -383,11 +385,16 @@ export function saleReceiptPrintInput(
       discountPercent: Number(item.discount || 0),
     })),
     deliveryPrice: Number(receipt.deliveryPrice || 0),
-    // Stored invoice: no other-invoice debt is pulled into this document.
-    previousDebtAmount: 0,
+    // The reprint always shows the customer's remaining debt when there is
+    // any: ខ្វះសរុប = the customer's TOTAL open debt over all invoices (this
+    // sale + other unpaid ones), ខ្វះមុន = the part owed on OTHER invoices.
+    // Falls back to this sale's own remaining when the total is unavailable.
+    previousDebtAmount: customerTotalDebt > 0
+      ? Math.max(0, customerTotalDebt - invoiceRemaining)
+      : 0,
     // Paid on THIS invoice = the sale's recorded paid amount (the receipt has
     // no separate deposit; using it printed "paid 0" on every reprint).
     depositAmount: Number(receipt.paidAmount || 0),
-    outstandingAmount: Number(receipt.remaining || 0),
+    outstandingAmount: customerTotalDebt > 0 ? customerTotalDebt : invoiceRemaining,
   }
 }

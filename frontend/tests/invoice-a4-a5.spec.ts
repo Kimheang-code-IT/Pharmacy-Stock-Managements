@@ -242,6 +242,39 @@ describe('USD/KHR invoice printing (stored currency + rate)', () => {
     expect(html).toContain('$10.00')
     expect(html).toContain('$20.00')
   })
+
+  it('reprint shows the customer TOTAL open debt over all invoices', () => {
+    // The receipt reports the customer's grand open debt: ខ្វះសរុប prints it
+    // whenever it is more than 0, and ខ្វះមុន carries the part owed on OTHER
+    // invoices so previous + this-remaining = grand total.
+    const receipt: SaleReceipt = {
+      saleId: 's1',
+      saleNo: 'SALE-000003',
+      invoiceNo: 'INV-000018',
+      date: '2026-02-01',
+      customer: 'Sokha',
+      cashier: 'Sokha',
+      paymentMethod: 'CUSTOMER_DEBT',
+      note: '',
+      currency: 'USD',
+      exchangeRate: 1,
+      items: [{ name: 'Glove', quantity: 2, uom: 'PCS', unitPrice: 15, discount: 0, total: 30 }],
+      subtotal: 30,
+      discount: 0,
+      deliveryPrice: 0,
+      deposit: 0,
+      total: 30,
+      paidAmount: 10,
+      remaining: 20,
+      customerTotalDebt: 35,
+    }
+    const input = saleReceiptPrintInput(receipt, 'Demo Shop')
+    expect(input.previousDebtAmount).toBe(15)
+    expect(input.outstandingAmount).toBe(35)
+    const html = normalize(buildSaleInvoiceHtml(input, 'A4'))
+    expect(html).toContain('$35.00')
+    expect(html).toContain('$15.00')
+  })
 })
 
 describe('smart one-page invoice layout (A4/A5)', () => {

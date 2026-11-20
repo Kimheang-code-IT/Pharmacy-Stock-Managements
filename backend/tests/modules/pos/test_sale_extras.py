@@ -349,6 +349,59 @@ async def test_receipt_payload_full_invoice_contract(client):
 
 
 @pytest.mark.asyncio
+async def test_receipt_reports_customer_total_open_debt(client):
+    """The reprint payload carries the customer's TOTAL open debt over ALL
+    invoices (sale currency) so the reprinted ខ្វះសរុប always shows what the
+    customer still owes — not only this invoice's part."""
+    headers = await admin_headers(client)
+    tag = uuid.uuid4().hex[:6]
+    product = await make_stocked_product(client, headers, sku=f"POSDT-{tag}", name=f"POSDT Widget {tag}")
+    customer = await make_customer(client, headers, code=f"POSDT-C-{tag}", name="Total Debt Customer")
+
+    async def debt_sale(deposit: str) -> dict:
+        response = await client.post(
+            "/api/v1/pos/sales",
+            json={
+                "payment_method": "CUSTOMER_DEBT",
+                "customer_id": customer["id"],
+                "amount_received": deposit,
+                "items": [{"product_id": product["id"], "quantity": "1"}],
+            },
+            headers=headers,
+        )
+        assert response.status_code == 201, response.text
+        return response.json()["data"]
+
+    # Two unpaid invoices: 10.00 and 4.00 remaining on the same customer.
+    first = await debt_sale("0.00")
+    second = await debt_sale("0.00")
+
+    receipt = await client.get(f"/api/v1/pos/sales/{first['id']}/receipt", headers=headers)
+    assert receipt.status_code == 200, receipt.text
+    data = receipt.json()["data"]
+    assert Decimal(data["debt_remaining"]) == Decimal("10.00")
+    # Grand total the customer still owes over every invoice (10 + 10).
+    assert Decimal(data["customer_total_debt"]) == Decimal("20.00")
+    assert Decimal(data["customerTotalDebt"]) == Decimal("20.00")
+
+    # Settling part of the OTHER invoice reduces the printed total, not just
+    # this document's remaining.
+    debts = (await client.get(f"/api/v1/customers/{customer['id']}/debts", headers=headers)).json()["data"]
+    second_debt = next(row for row in debts if row["sale_id"] == second["id"])
+    paid = await client.post(
+        f"/api/v1/customers/{customer['id']}/debts/{second_debt['id']}/payments",
+        json={"amount": "4.00", "payment_method": "CASH", "reference_no": "RC-TD"},
+        headers=headers,
+    )
+    assert paid.status_code == 201, paid.text
+
+    receipt = await client.get(f"/api/v1/pos/sales/{first['id']}/receipt", headers=headers)
+    data = receipt.json()["data"]
+    assert Decimal(data["debt_remaining"]) == Decimal("10.00")
+    assert Decimal(data["customer_total_debt"]) == Decimal("16.00")
+
+
+@pytest.mark.asyncio
 async def test_receipt_payload_preserves_khr_sale_exchange_rate(client):
     """A historical KHR sale keeps the exchange rate used at sale time."""
     headers = await admin_headers(client)
