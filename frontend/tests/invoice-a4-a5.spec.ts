@@ -336,11 +336,18 @@ describe('smart one-page invoice layout (A4/A5)', () => {
     expect(a4.fillerRows).toBe(0)
     expect(a4.pageRows.reduce((sum, count) => sum + count, 0)).toBe(60)
     expect(a4.pageRows.every((count, index) => count <= (
-      index === a4.pages - 1 ? a4.firstPageCapacity : a4.continuationPageCapacity
+      index === a4.pages - 1 ? a4.lastPageCapacity : a4.continuationPageCapacity
     ))).toBe(true)
     const a4Html = buildSaleInvoiceHtml(invoiceInput(60), 'A4')
     expect((a4Html.match(/class="invoice-page/g) || []).length).toBe(3)
-    expect((a4Html.match(/វិក្កយបត្រ \/ INVOICE/g) || []).length).toBe(3)
+    // Full header prints on page 1 only; continuation sheets carry the
+    // compact "continued" line plus the repeated table header.
+    expect((a4Html.match(/<p class="title">វិក្កយបត្រ \/ INVOICE<\/p>/g) || []).length).toBe(1)
+    expect((a4Html.match(/class="continued"/g) || []).length).toBe(2)
+    expect(a4.continuationPageCapacity).toBeGreaterThan(a4.firstPageCapacity)
+    // The full meta block (invoice no / date / customer / cashier) is page-1 only.
+    expect((a4Html.match(/លេខ Invoice/g) || []).length).toBe(1)
+    expect((a4Html.match(/អតិថិជន Customer/g) || []).length).toBe(1)
     expect(a4Html).toContain('Page 3 / 3')
     expect(a4Html).toContain('Product 60')
     expect((a4Html.match(/class="doc-footer"/g) || []).length).toBe(1)
@@ -350,6 +357,23 @@ describe('smart one-page invoice layout (A4/A5)', () => {
     expect(a5.pages).toBeGreaterThanOrEqual(2)
     expect(a5.fillerRows).toBe(0)
     expect(a5.pageRows.reduce((sum, count) => sum + count, 0)).toBe(40)
+  })
+
+  it('fills every page to capacity — no blank free space mid-invoice', () => {
+    // 90 A4 rows: page 1 keeps the full header (no footer), pages 2-3 are
+    // completely full, and only the final page holds the remainder + footer.
+    const plan = planInvoiceLayout(90, 'A4')
+    expect(plan.pages).toBe(4)
+    expect(plan.pageRows).toEqual([
+      plan.pageRows[0], plan.continuationPageCapacity, plan.continuationPageCapacity, plan.pageRows[3],
+    ])
+    // Non-final pages carry no filler rows — the products reach the page end.
+    expect(plan.pageFillerRows.slice(0, plan.pages - 1).every(filler => filler === 0)).toBe(true)
+    expect(plan.pageFillerRows[plan.pages - 1]).toBeGreaterThan(0)
+    const html = buildSaleInvoiceHtml(invoiceInput(90), 'A4')
+    expect((html.match(/class="invoice-page/g) || []).length).toBe(4)
+    expect((html.match(/class="doc-footer"/g) || []).length).toBe(1)
+    expect(html).toContain('Product 90')
   })
 
   it('uses one continuous blank grid area instead of many horizontal filler lines', () => {

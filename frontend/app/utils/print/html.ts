@@ -94,6 +94,8 @@ export const PAPER_STYLES: Record<PrintPaperSize, {
   tableHeadMm: number
   /** Estimated title + customer/cashier meta block (mm). */
   headerMm: number
+  /** Estimated compact "continued" header line on continuation pages (mm). */
+  continuedHeaderMm: number
   /** Estimated totals + signatures block, kept together as one unit (mm). */
   footerMm: number
   /** Page-1 slack so rounding never spills the footer onto page 2 (mm). */
@@ -108,6 +110,7 @@ export const PAPER_STYLES: Record<PrintPaperSize, {
     rowMm: 8.5,
     tableHeadMm: 12,
     headerMm: 35,
+    continuedHeaderMm: 12,
     footerMm: 56,
     safetyMm: 6,
   },
@@ -120,6 +123,7 @@ export const PAPER_STYLES: Record<PrintPaperSize, {
     rowMm: 6.8,
     tableHeadMm: 10,
     headerMm: 28,
+    continuedHeaderMm: 9,
     footerMm: 44,
     safetyMm: 5,
   },
@@ -205,6 +209,13 @@ html, body {
 }
 .meta strong { font-weight: 700; }
 .meta .right { text-align: right; }
+/* Continuation pages carry only this compact header line: the invoice title
+   and the full meta block print on page 1, so the rows reclaim that space. */
+.continued {
+  font-size: ${px(BASE_PX.meta - 1)};
+  font-weight: 700;
+  margin: 0 0 8px;
+}
 /* Separate borders with zero spacing: every cell paints its own edge inside
    its own box, so no border is centred on the table edge (nothing is clipped
    at the page margin) and no shared grid line is painted twice. Column

@@ -88,12 +88,14 @@ export type InvoiceLayout = {
   paperSize: PrintPaperSize
   /** Actual product rows in the invoice. */
   productRows: number
-  /** Rows (products + blank grid) that fit on the final page above the footer. */
+  /** Rows that fit on a ONE-page invoice above the footer (full header). */
   firstPageCapacity: number
   /** Blank grid-row budget on a one-page invoice (0 for multi-page invoices). */
   fillerRows: number
-  /** Product-row capacity on pages that do not carry totals/signatures. */
+  /** Product-row capacity on middle sheets (compact header, no footer). */
   continuationPageCapacity: number
+  /** Product-row capacity on the final sheet (compact header + totals/signatures). */
+  lastPageCapacity: number
   /** Actual product rows assigned to each physical sheet. */
   pageRows: number[]
   /** Blank grid-row budget on each sheet. */
@@ -107,13 +109,14 @@ export type InvoiceLayout = {
 /**
  * Decide the invoice layout for a paper size.
  *
- * The final-page budget is the printable height minus the header (title + meta),
- * the table header and the totals/signatures block, plus a small safety
- * margin. When the products fit that budget, the leftover space is filled with
- * blank grid area so the table reaches the footer — but never so much that the
- * footer is pushed to another sheet. Larger invoices are explicitly divided
- * into physical sheets; continuation sheets use the space otherwise reserved
- * for totals and signatures.
+ * One-page invoices keep the photographed-form budget: full header
+ * (title + meta) + table header + totals/signatures, with the leftover space
+ * filled by blank grid area so the table reaches the footer.
+ *
+ * Multi-page invoices never waste paper: page 1 keeps the full header but no
+ * footer, middle pages carry only the compact continued header, and only the
+ * final page reserves the totals/signatures block. Pages fill to capacity
+ * greedily (no blank gaps mid-invoice); the remainder lands on the last page.
  */
 export function planInvoiceLayout(
   productRows: number,
@@ -127,7 +130,17 @@ export function planInvoiceLayout(
   const continuationPageCapacity = Math.max(
     1,
     Math.floor(
-      (style.printableMm - style.headerMm - style.tableHeadMm - style.safetyMm)
+      // Continuation sheets repeat only the compact "continued" header line
+      // plus the table header — the full title/meta block lives on page 1.
+      (style.printableMm - style.continuedHeaderMm - style.tableHeadMm - style.safetyMm)
+      / style.rowMm,
+    ),
+  )
+  const lastPageCapacity = Math.max(
+    1,
+    Math.floor(
+      // The final sheet repeats the compact header and carries totals/signatures.
+      (style.printableMm - style.continuedHeaderMm - style.tableHeadMm - style.footerMm - style.safetyMm)
       / style.rowMm,
     ),
   )
@@ -139,6 +152,7 @@ export function planInvoiceLayout(
       firstPageCapacity,
       fillerRows: firstPageCapacity - rows,
       continuationPageCapacity,
+      lastPageCapacity: firstPageCapacity,
       pageRows: [rows],
       pageFillerRows: [firstPageCapacity - rows],
       pages: 1,
@@ -146,27 +160,34 @@ export function planInvoiceLayout(
     }
   }
 
-  // Every physical sheet repeats the title/meta/table header. Only the final
-  // one reserves space for totals and signatures. Find the smallest sheet
-  // count that can hold every item without truncation (three sheets is a
-  // normal supported outcome, not a hard limit).
-  const pages = 1 + Math.ceil((rows - firstPageCapacity) / continuationPageCapacity)
+  // Multi-page budgets: page 1 keeps the full header but no footer (the
+  // totals block lives on the last page); middle pages are the largest.
+  const multiFirstCapacity = Math.max(
+    1,
+    Math.floor(
+      (style.printableMm - style.headerMm - style.tableHeadMm - style.safetyMm)
+      / style.rowMm,
+    ),
+  )
+
+  // Fill every page greedily to capacity; the remainder lands on the final
+  // page (never over it: each step keeps at least one row for the last page).
   const pageRows: number[] = []
   let remaining = rows
-  for (let index = 0; index < pages; index += 1) {
-    const remainingPages = pages - index
-    const capacity = index === pages - 1 ? firstPageCapacity : continuationPageCapacity
-    const capacityAfter = remainingPages <= 1
-      ? 0
-      : ((remainingPages - 2) * continuationPageCapacity) + firstPageCapacity
-    const balanced = Math.ceil(remaining / remainingPages)
-    const requiredNow = Math.max(1, remaining - capacityAfter)
-    const take = Math.min(capacity, Math.max(balanced, requiredNow))
+  while (remaining > lastPageCapacity) {
+    const capacity = pageRows.length === 0 ? multiFirstCapacity : continuationPageCapacity
+    const take = Math.min(capacity, remaining - 1)
     pageRows.push(take)
     remaining -= take
   }
+  pageRows.push(remaining)
+  const pages = pageRows.length
   const pageFillerRows = pageRows.map((count, index) => {
-    const capacity = index === pages - 1 ? firstPageCapacity : continuationPageCapacity
+    const capacity = index === 0
+      ? multiFirstCapacity
+      : index === pages - 1
+        ? lastPageCapacity
+        : continuationPageCapacity
     return Math.max(0, capacity - count)
   })
   return {
@@ -175,6 +196,7 @@ export function planInvoiceLayout(
     firstPageCapacity,
     fillerRows: 0,
     continuationPageCapacity,
+    lastPageCapacity,
     pageRows,
     pageFillerRows,
     pages,
@@ -212,10 +234,11 @@ function summaryRow(label: string, amountHtml: string, strong = false): string {
 }
 
 /**
- * Build invoice HTML. Product rows are assigned to explicit physical sheets;
- * every sheet retains the vertical grid and only the last carries totals and
- * signatures. This prevents a short invoice from creating a blank page 2 and
- * makes two/three-page invoices deterministic.
+ * Build invoice HTML. The full header (title + invoice no/date/customer/
+ * cashier meta) prints on page 1 only; continuation sheets repeat a compact
+ * header line (invoice no) plus the table header. Product rows are assigned
+ * to explicit physical sheets; every sheet retains the vertical grid and only
+ * the last carries totals and signatures.
  * Totals label aligns with Price+Discount; amount aligns with Amount.
  */
 export function buildSaleInvoiceHtml(
@@ -248,6 +271,20 @@ export function buildSaleInvoiceHtml(
     const pageOffset = offset
     offset += rowCount
     const isLast = pageIndex === layout.pages - 1
+    // Full header (title + meta) on page 1; compact continued line after it.
+    const pageHeader = pageIndex === 0
+      ? `<p class="title">វិក្កយបត្រ / INVOICE</p>
+  <div class="meta">
+    <div>
+      <p>លេខ Invoice : <strong>${escapeHtml(input.invoiceNo)}</strong></p>
+      <p>កាលបរិច្ឆេទ Date : <strong>${escapeHtml(input.dateLabel)}</strong>${converting ? `\n      <p>អត្រាប្តូរប្រាក់ Exchange rate : <strong>1 USD = ${escapeHtml(formatNumber(Math.round(exchangeRate)))} KHR</strong></p>` : ''}
+    </div>
+    <div class="right">
+      <p>អតិថិជន Customer : <strong>${escapeHtml(input.customerName)}</strong></p>
+      <p>បេឡា Cashier : <strong>${escapeHtml(input.cashier)}</strong></p>
+    </div>
+  </div>`
+      : `<p class="continued">វិក្កយបត្រ / INVOICE ${escapeHtml(input.invoiceNo)} — បន្ត / continued</p>`
     const pageLabel = layout.pages > 1
       ? `<p class="page-number">Page ${pageIndex + 1} / ${layout.pages}</p>`
       : ''
@@ -277,17 +314,7 @@ export function buildSaleInvoiceHtml(
     return `
 <section class="invoice-page${isLast ? ' last' : ''}">
   ${pageLabel}
-  <p class="title">វិក្កយបត្រ / INVOICE</p>
-  <div class="meta">
-    <div>
-      <p>លេខ Invoice : <strong>${escapeHtml(input.invoiceNo)}</strong></p>
-      <p>កាលបរិច្ឆេទ Date : <strong>${escapeHtml(input.dateLabel)}</strong></p>${converting ? `\n      <p>អត្រាប្តូរប្រាក់ Exchange rate : <strong>1 USD = ${escapeHtml(formatNumber(Math.round(exchangeRate)))} KHR</strong></p>` : ''}
-    </div>
-    <div class="right">
-      <p>អតិថិជន Customer : <strong>${escapeHtml(input.customerName)}</strong></p>
-      <p>បេឡា Cashier : <strong>${escapeHtml(input.cashier)}</strong></p>
-    </div>
-  </div>
+  ${pageHeader}
   <table class="lines">
     ${colgroup}
     <thead>
